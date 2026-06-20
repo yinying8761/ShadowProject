@@ -1,0 +1,33 @@
+# Environment (contains API keys)
+.env
+
+# Dependencies
+frontend/node_modules/
+backend/.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Build output
+frontend/dist/
+frontend/out/
+
+# Runtime data
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log

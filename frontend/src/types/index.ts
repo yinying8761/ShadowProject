@@ -1,0 +1,97 @@
+export interface CharacterProfile {
+  id: string;
+  name: string;
+  gender?: string;
+  personality: string;
+  role: string;
+  archetype: string;
+  voice_style?: string;
+  avatar_path?: string;
+  created_at?: string;
+}
+
+export interface Message {
+  id: string;
+  conversationId: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  toolCalls?: ToolCall[];
+  createdAt: string;
+  isProactive?: boolean;
+}
+
+export interface ApiMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  tool_calls?: ToolCall[];
+  created_at: string;
+}
+
+export interface ToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: string;
+  isError?: boolean;
+}
+
+export interface Conversation {
+  id: string;
+  characterId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProactiveLevel = 'off' | 'low' | 'medium' | 'high';
+
+export interface AppConfig {
+  theme: string;
+  alwaysOnTop: boolean;
+  fontSize: number;
+  llmProvider: string;
+  llmModel: string;
+  hasApiKey: boolean;
+  showFloatingIcon: boolean;
+  floatingIconX: number;
+  floatingIconY: number;
+  proactiveChatLevel: ProactiveLevel;
+  proactiveSilentToolApproval: boolean;
+  proactiveAutoSeeScreen: boolean;
+  proactiveDailyLimit: number;
+  proactiveFixedScheduleEnabled: boolean;
+  proactiveSystemNotification: boolean;
+  language: string;
+}
+
+export interface ApprovalRequest {
+  requestId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface MemoryEntry {
+  id: string;
+  content: string;
+  memory_type: string;
+  importance: number;
+  access_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+  last_accessed_at: string | null;
+  source_conversation_id: string | null;
+}
+
+export interface WsMessage {
+  type: 'token' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'approval_request' | 'proactive_skip' | 'memory_updated';
+  content?: string;
+  message_id?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  result?: string;
+  is_error?: boolean;
+  message?: string;
+  request_id?: string;
+  proactive?: boolean;
+  count?: number;
+}
