@@ -255,6 +255,8 @@ async def research(query: str) -> str:
 
     answer = _re.sub(r"\[confidence:\s*(high|medium|low)\]", "", raw, flags=_re.IGNORECASE).strip()
 
+    print(f"[Search] query=" + query[:80] + " | confidence=" + confidence + " | summary=" + answer[:200], flush=True)
+
     return json.dumps({
         "answer": answer,
         "sources": sources,

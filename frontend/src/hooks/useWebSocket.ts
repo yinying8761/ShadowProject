@@ -59,9 +59,10 @@ export function useWebSocketBridge(conversationId: string | null) {
               break;
             case 'done':
               if (data.message_id) {
+                const isProactiveLike = !!(data.proactive || data.daily_greeting);
                 const content = useChatStore.getState().streamingContent;
-                finalizeStreamingMessage(data.message_id, data.proactive);
-                if (data.proactive) {
+                finalizeStreamingMessage(data.message_id, isProactiveLike);
+                if (isProactiveLike) {
                   console.log('[WS] proactive done, calling notifyProactiveReply, content length=', content.length);
                   window.electronAPI?.notifyProactiveReply?.({
                     title: 'AI Companion',
@@ -93,7 +94,8 @@ export function useWebSocketBridge(conversationId: string | null) {
               });
               break;
             case 'proactive_skip':
-              // Model decided not to speak — silently drop
+            case 'daily_greeting_skip':
+              // Model decided not to speak, or greeting already done today
               break;
             case 'memory_updated':
               if (data.count && data.count > 0) {
@@ -148,14 +150,23 @@ export function useWebSocketBridge(conversationId: string | null) {
       setPendingApproval(null);
     };
 
-    setWsBridge(sendMessage, sendApprovalResponse);
+    const sendJson = (data: Record<string, unknown>) => {
+      if (ws.current?.readyState !== WebSocket.OPEN) {
+        connect();
+        return false;
+      }
+      ws.current.send(JSON.stringify(data));
+      return true;
+    };
+
+    setWsBridge(sendMessage, sendApprovalResponse, sendJson);
     connect();
 
     return () => {
       closingOnPurpose.current = true;
       ws.current?.close();
       ws.current = null;
-      setWsBridge(null, null);
+      setWsBridge(null, null, null);
     };
   }, [
     conversationId,

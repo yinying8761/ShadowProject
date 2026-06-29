@@ -7,7 +7,7 @@ from models.conversation import Conversation
 class ConversationManager:
     """Manages conversation history with sliding window context."""
 
-    def __init__(self, max_tokens: int = 8000):
+    def __init__(self, max_tokens: int = 16000):
         self.max_tokens = max_tokens
 
     @staticmethod

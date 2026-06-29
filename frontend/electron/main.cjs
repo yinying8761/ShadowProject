@@ -100,6 +100,8 @@ function createWindow() {
   mainWindow.on('show', () => {
     console.log('[MainWindow] show event');
     dismissFloating();
+    // Notify renderer of visibility change for daily greeting
+    mainWindow.webContents.send('window:visibility-changed', { visible: true });
   });
 
   mainWindow.on('restore', () => {

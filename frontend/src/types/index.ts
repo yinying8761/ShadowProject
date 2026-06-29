@@ -83,7 +83,7 @@ export interface MemoryEntry {
 }
 
 export interface WsMessage {
-  type: 'token' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'approval_request' | 'proactive_skip' | 'memory_updated';
+  type: 'token' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'approval_request' | 'proactive_skip' | 'memory_updated' | 'daily_greeting_skip';
   content?: string;
   message_id?: string;
   name?: string;
@@ -93,5 +93,7 @@ export interface WsMessage {
   message?: string;
   request_id?: string;
   proactive?: boolean;
+  daily_greeting?: boolean;
   count?: number;
+  reason?: string;
 }

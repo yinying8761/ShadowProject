@@ -26,6 +26,7 @@ declare global {
         enabled?: boolean;
       }) => Promise<boolean>;
       setContentProtection: (enable: boolean) => Promise<boolean>;
+      onWindowVisibilityChanged: (cb: (value: { visible: boolean }) => void) => void;
     };
   }
 }

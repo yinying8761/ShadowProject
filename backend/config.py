@@ -134,6 +134,14 @@ class Settings(BaseSettings):
     bing_api_key: str = ""
     search_proxy: str = ""  # e.g. http://127.0.0.1:7890 for VPN/proxy
 
+    # ---- Location & Weather ----
+    amap_api_key: str = ""  # 高德地图 API Key (Web服务)
+    daily_greeting_enabled: bool = True
+    weather_enabled: bool = True
+    user_city: str = ""  # 手动指定城市，留空则 IP 自动定位
+    user_lat: float = 0.0
+    user_lon: float = 0.0
+
     def get_embedding_provider(self) -> str:
         return self.embedding_provider or self.llm_provider
 

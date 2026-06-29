@@ -39,6 +39,10 @@ ADDITIVE_MIGRATIONS = [
     ("user_config", "proactive_state_date", "VARCHAR(20) DEFAULT ''"),
     ("user_config", "proactive_scheduled_slots", "VARCHAR(100) DEFAULT ''"),
     ("user_config", "language", "VARCHAR(10) DEFAULT 'zh'"),
+    ("user_config", "last_daily_greeting_at", "DATETIME"),
+    ("user_config", "last_daily_greeting_date", "VARCHAR(20) DEFAULT ''"),
+    ("user_config", "location_city", "VARCHAR(100) DEFAULT ''"),
+    ("user_config", "location_country", "VARCHAR(100) DEFAULT ''"),
     ("conversations", "summary", "TEXT"),
 ]
 

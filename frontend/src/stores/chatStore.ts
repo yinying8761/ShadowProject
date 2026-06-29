@@ -22,6 +22,7 @@ interface ChatState {
   // WebSocket bridge — populated by the singleton connection in App.
   wsSendMessage: ((content: string, characterId: string, opts?: { forceVision?: boolean }) => boolean) | null;
   wsSendApprovalResponse: ((requestId: string, approved: boolean) => void) | null;
+  wsSendJson: ((data: Record<string, unknown>) => boolean) | null;
 
   addMessage: (msg: Message) => void;
   setMessages: (msgs: Message[]) => void;
@@ -37,6 +38,7 @@ interface ChatState {
   setWsBridge: (
     send: ((content: string, characterId: string, opts?: { forceVision?: boolean }) => boolean) | null,
     sendApproval: ((requestId: string, approved: boolean) => void) | null,
+    sendJson: ((data: Record<string, unknown>) => boolean) | null,
   ) => void;
   addMemoryNotification: (count: number) => void;
   dismissMemoryNotification: () => void;
@@ -57,6 +59,7 @@ export const useChatStore = create<ChatState>((set) => ({
   showMemoryViewer: false,
   wsSendMessage: null,
   wsSendApprovalResponse: null,
+  wsSendJson: null,
 
   addMessage: (msg) =>
     set((state) => ({ messages: [...state.messages, msg] })),
@@ -144,8 +147,8 @@ export const useChatStore = create<ChatState>((set) => ({
       ),
     })),
 
-  setWsBridge: (send, sendApproval) =>
-    set({ wsSendMessage: send, wsSendApprovalResponse: sendApproval }),
+  setWsBridge: (send, sendApproval, sendJson) =>
+    set({ wsSendMessage: send, wsSendApprovalResponse: sendApproval, wsSendJson: sendJson }),
 
   addMemoryNotification: (count) =>
     set((state) => ({

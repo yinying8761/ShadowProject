@@ -455,6 +455,90 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         await emit_tool_result("see_screen", result_json, is_error)
         return description if not is_error else None
 
+    async def handle_daily_greeting():
+        """Trigger once-per-day greeting with location/weather/memory context."""
+        print("[DAILY] handler invoked", flush=True)
+        char_id = last_known_character_id
+        if not char_id:
+            print("[DAILY] no character_id known, skipping", flush=True)
+            await websocket.send_json({"type": "daily_greeting_skip", "reason": "no_character"})
+            return
+
+        from datetime import datetime, timezone
+        from config import settings as app_settings
+        from database import async_session
+        from services.memory_service import memory_service
+        from services.location_service import get_location
+        from services.weather_service import get_weather
+
+        if not app_settings.daily_greeting_enabled:
+            await websocket.send_json({"type": "daily_greeting_skip", "reason": "disabled"})
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Check if already greeted today (persisted in DB)
+        async with async_session() as session:
+            cfg = await session.get(UserConfig, 1)
+            if cfg and cfg.last_daily_greeting_date == today:
+                print("[DAILY] already greeted today, skip", flush=True)
+                await websocket.send_json({"type": "daily_greeting_skip", "reason": "already_greeted"})
+                return
+
+            # Location first, then weather using the resolved adcode
+            location_info = await get_location()
+            weather_info = None
+            if location_info:
+                weather_info = await get_weather(
+                    adcode=location_info.get("adcode", ""),
+                    city=location_info.get("city", ""),
+                )
+
+            # Search relevant memories
+            memories = await memory_service.search(session, query="", top_k=3)
+            memory_texts = [m.content for m in memories]
+
+            # Calculate days since last message
+            from sqlalchemy import select, desc
+            from models.message import Message
+
+            result = await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(desc(Message.created_at))
+                .limit(1)
+            )
+            last_msg = result.scalar_one_or_none()
+            days_since_last = 0
+            if last_msg:
+                delta = datetime.now(timezone.utc) - last_msg.created_at.replace(tzinfo=timezone.utc)
+                days_since_last = delta.days
+            print(f"[DAILY] days_since_last={days_since_last}", flush=True)
+
+            # Persist location cache
+            if cfg is None:
+                print("[DAILY] no UserConfig found, skipping", flush=True)
+                await websocket.send_json({"type": "daily_greeting_skip", "reason": "no_config"})
+                return
+            if location_info:
+                cfg.location_city = location_info.get("city", "")
+                cfg.location_country = location_info.get("country", "")
+            cfg.last_daily_greeting_date = today
+            cfg.last_daily_greeting_at = datetime.now().isoformat()
+            await session.commit()
+
+            # Run greeting
+            async for event in agent.run_daily_greeting(
+                session=session,
+                conversation_id=conversation_id,
+                character_id=char_id,
+                location=location_info,
+                weather=weather_info,
+                days_since_last=days_since_last,
+                memories=memory_texts,
+            ):
+                await websocket.send_json(event)
+
     async def handle_message(data: dict):
         msg_type = data.get("type", "chat")
 
@@ -467,6 +551,11 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                 future.set_result(approved)
             else:
                 print(f"[APPROVAL] WARNING future not found id={request_id}", flush=True)
+            return
+
+        if msg_type == "daily_greeting":
+            print("[WS] dispatching to handle_daily_greeting", flush=True)
+            asyncio.create_task(handle_daily_greeting())
             return
 
         if msg_type != "chat":

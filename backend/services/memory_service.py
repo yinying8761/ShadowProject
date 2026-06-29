@@ -378,23 +378,23 @@ class MemoryService:
                 lines.append(f"[{role_label}]: {msg.content or '(tool)'}")
             transcript = "\n".join(lines)
 
-            # 2. Call LLM for extraction
+            # 2. Call LLM for extraction (diary-style first-person narrative)
             extraction_prompt = (
-                "You are a memory extraction system. Given the conversation below, "
-                "extract concise, memorable facts about the USER (not the AI). "
-                "Output ONLY a valid JSON array. Each object must have:\n"
-                '- "content": a concise fact in the user\'s language (1-2 sentences)\n'
+                "你是一个记忆记录员。看了下面的对话后，用写日记的方式记录下你（AI 角色）"
+                "在这次对话中了解到的事情。输出格式为严格的 JSON 数组。\n\n"
+                "每条记录包含：\n"
+                '- "content": 一小段日记（1-3句话），用第一人称叙述。例如：'
+                '"今天和用户聊了他最近在学的 Rust，他似乎遇到了一些所有权概念的困惑，我帮他梳理了一下。" '
+                '或 "主人今天心情不太好，说工作压力很大，我陪他聊了一会儿。"\n'
                 '- "memory_type": "user_fact" / "user_preference" / "important_event"\n'
-                '- "importance": 1-10 (10 = highly personal, emotional, or likely to be referenced later)\n\n'
-                "Rules:\n"
-                "- Only extract facts about the USER, not the AI character.\n"
-                '- Do NOT extract trivial chitchat (e.g., "user said hello").\n'
-                '- Extract preferences ("user likes dark mode"), personal facts '
-                '("user is a software engineer"), events ("user has an exam next week"), '
-                'emotional states ("user is stressed about work").\n'
-                "- If nothing notable, output empty array [].\n"
-                "- Merge/update rather than duplicate.\n\n"
-                "Conversation:\n"
+                '- "importance": 1-10（10=非常个人化、情感上重要、以后很可能需要回忆起）\n\n'
+                "规则：\n"
+                '- 用 AI 角色（你自己）的视角写，称自己为「我」。\n'
+                "- 对用户的称呼根据对话氛围自然选择——用户、主人、他/她、对方的名字等都行。\n"
+                "- 重点记录你了解到的关于用户的事情、发生了什么、用户的情绪状态。\n"
+                "- 不要记录琐碎的问候和闲聊。\n"
+                "- 如果没有值得记录的内容，输出空数组 []。\n\n"
+                "对话内容：\n"
                 f"{transcript}"
             )
 
@@ -471,7 +471,7 @@ class MemoryService:
     async def _call_llm_for_extraction(self, llm_service, prompt: str) -> str:
         """Call the LLM non-streaming for memory extraction."""
         messages = [
-            {"role": "system", "content": "You are a memory extraction tool. Always output valid JSON array only."},
+            {"role": "system", "content": "你是一个记忆记录员。用第一人称日记体记录对话中的重要信息。只输出有效的 JSON 数组。"},
             {"role": "user", "content": prompt},
         ]
         return await llm_service.chat_sync(messages, max_tokens=1024, temperature=0.3)

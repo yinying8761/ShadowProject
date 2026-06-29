@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimize: () => ipcRenderer.invoke('window-minimize'),
   hide: () => ipcRenderer.invoke('window-hide'),
   close: () => ipcRenderer.invoke('window-close'),
+  onWindowVisibilityChanged: (cb) => {
+    ipcRenderer.on('window:visibility-changed', (_event, value) => cb(value));
+  },
 });
 
 contextBridge.exposeInMainWorld('isElectron', true);

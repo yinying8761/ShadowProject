@@ -222,16 +222,16 @@ def register_tools():
     tool_registry.register(
         name="save_memory",
         description=(
-            "Save an important fact about the user to persistent memory. "
-            "Use when the user explicitly asks you to remember something, "
-            "or when you learn something highly personal or important about them."
+            "以第一人称日记体记录关于用户的重要信息。当用户明确要求记住某事，"
+            "或当你了解到关于他们的高度个人化或重要的信息时使用。"
+            "用你的视角写，对用户的称呼根据对话氛围自然选择。"
         ),
         parameters={
             "type": "object",
             "properties": {
                 "content": {
                     "type": "string",
-                    "description": "The fact to remember, e.g. 'User's cat is named Mochi'",
+                    "description": "日记体记忆内容，例如 '今天用户告诉我他的猫叫麻薯，他说它特别爱吃鸡肉条'",
                 },
                 "memory_type": {
                     "type": "string",
@@ -243,7 +243,7 @@ def register_tools():
                     "minimum": 1,
                     "maximum": 10,
                     "default": 5,
-                    "description": "1=trivial, 10=highly personal/emotional",
+                    "description": "1=琐碎, 10=高度个人化/情感上重要",
                 },
             },
             "required": ["content"],

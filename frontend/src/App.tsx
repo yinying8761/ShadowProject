@@ -13,6 +13,7 @@ import { useCharacters } from './hooks/useCharacters';
 import { useAppStore } from './stores/appStore';
 import { useChatStore } from './stores/chatStore';
 import { useWebSocketBridge } from './hooks/useWebSocket';
+import { useDailyGreeting } from './hooks/useDailyGreeting';
 import { api } from './services/api';
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
 
   // Single global WebSocket connection — must live at the App root only.
   useWebSocketBridge(currentConversationId);
+  useDailyGreeting();
 
   useEffect(() => {
     api.fetchConfig()

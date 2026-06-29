@@ -206,6 +206,109 @@ class Agent:
             self._extract_memories_background(conversation_id)
         )
 
+    async def run_daily_greeting(
+        self,
+        session: AsyncSession,
+        conversation_id: str,
+        character_id: str,
+        location: dict | None = None,
+        weather: dict | None = None,
+        days_since_last: int = 0,
+        memories: list[str] | None = None,
+    ) -> AsyncIterator[dict]:
+        """Generate a context-rich daily greeting. Only once per day (4am reset)."""
+        from datetime import datetime
+
+        char = await session.get(CharacterProfile, character_id)
+        if not char:
+            yield {"type": "error", "message": f"Character {character_id} not found"}
+            return
+
+        now = datetime.now()
+        time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        hour = now.hour
+
+        # Time-of-day hint
+        if 5 <= hour < 9:
+            time_hint = "早上"
+        elif 9 <= hour < 11:
+            time_hint = "上午"
+        elif 11 <= hour < 13:
+            time_hint = "中午/饭点"
+        elif 13 <= hour < 18:
+            time_hint = "下午"
+        elif 18 <= hour < 22:
+            time_hint = "晚上"
+        else:
+            time_hint = "深夜"
+
+        # Build context-rich greeting prompt
+        prompt_parts = [
+            f"你是{char.name}。现在是{time_str}，{time_hint}时段。",
+            "这是用户今天第一次打开窗口和你见面。请主动、自然地打个招呼。",
+        ]
+
+        if days_since_last >= 2:
+            prompt_parts.append(
+                f"用户已经{days_since_last}天没来了——表达一下想念，但不要夸张，"
+                "保持在角色性格范围内。"
+            )
+        elif days_since_last == 1:
+            prompt_parts.append('用户昨天来过，今天又来了。可以简单说一句「又见面了」之类的话。')
+
+        if location:
+            city = location.get("city", "")
+            prompt_parts.append(f"用户在{city}。")
+
+        if weather:
+            prompt_parts.append(
+                f"当地天气：{weather['condition']}，{weather['temp']}°C，"
+                f"湿度{weather['humidity']}%，{weather['wind']}。"
+            )
+
+        if memories:
+            prompt_parts.append("你记得这些事情：")
+            for m in memories:
+                prompt_parts.append(f"· {m}")
+
+        prompt_parts.extend([
+            "",
+            "要求：",
+            "- 1-3句话即可，自然、温暖、保持你的人设。",
+            "- 根据时段搭话：饭点可以聊吃的（结合当地特色菜），深夜关心休息，早上可以问好。",
+            "- 如果天气特别（下雨、高温、寒潮），顺带提一句。",
+            '- 如果记得上次聊的事，自然追问「上次那个XX后来怎么样了？」',
+            '- 不要提工具、不要提AI、不要用「检测到」「根据系统」之类的词。',
+            "- 不要调用任何工具，纯聊天。",
+        ])
+
+        system_prompt = "\n".join(prompt_parts)
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "（系统：现在是每日问候时刻，请主动和用户打招呼。）"},
+        ]
+
+        full_response = ""
+        async for event in self.llm_service.stream_chat(
+            messages=messages,
+            tools=None,  # no tools for greeting
+        ):
+            if event["type"] == "token":
+                full_response += event["content"]
+                yield {"type": "token", "content": event["content"], "daily_greeting": True}
+            elif event["type"] == "error":
+                yield event
+                return
+
+        if full_response.strip():
+            msg = await self.conversation_manager.add_message(
+                session, conversation_id, "assistant", full_response
+            )
+            yield {"type": "done", "message_id": msg.id, "daily_greeting": True}
+        else:
+            yield {"type": "daily_greeting_skip"}
+
     async def _extract_memories_background(self, conversation_id: str):
         """Run memory extraction in background after the agent responds."""
         try:
