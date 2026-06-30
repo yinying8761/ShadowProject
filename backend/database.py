@@ -43,6 +43,9 @@ ADDITIVE_MIGRATIONS = [
     ("user_config", "last_daily_greeting_date", "VARCHAR(20) DEFAULT ''"),
     ("user_config", "location_city", "VARCHAR(100) DEFAULT ''"),
     ("user_config", "location_country", "VARCHAR(100) DEFAULT ''"),
+    ("user_config", "location_weather", "VARCHAR(200) DEFAULT ''"),
+    ("user_config", "location_lat", "REAL DEFAULT 0.0"),
+    ("user_config", "location_lng", "REAL DEFAULT 0.0"),
     ("conversations", "summary", "TEXT"),
 ]
 

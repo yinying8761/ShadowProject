@@ -539,6 +539,50 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             ):
                 await websocket.send_json(event)
 
+    async def handle_location_update(data: dict):
+        """Receive browser geolocation, reverse-geocode via Amap, cache results."""
+        lat = data.get("lat")
+        lng = data.get("lng")
+        if lat is None or lng is None:
+            return
+
+        from database import async_session
+        from services.location_service import geocode_reverse
+        from services.weather_service import get_weather
+
+        location_info = await geocode_reverse(float(lat), float(lng))
+        if not location_info:
+            print("[LOC] geocode_reverse returned nothing", flush=True)
+            return
+
+        weather_info = await get_weather(
+            adcode=location_info.get("adcode", ""),
+            city=location_info.get("city", ""),
+        )
+
+        async with async_session() as session:
+            cfg = await session.get(UserConfig, 1)
+            if cfg is None:
+                cfg = UserConfig(id=1)
+                session.add(cfg)
+            cfg.location_city = location_info.get("city", "")
+            cfg.location_country = location_info.get("country", "")
+            cfg.location_lat = float(lat)
+            cfg.location_lng = float(lng)
+            if weather_info:
+                cfg.location_weather = (
+                    f"{weather_info['condition']} {weather_info['temp']}°C "
+                    f"湿度{weather_info['humidity']}%"
+                )
+            await session.commit()
+
+        print(
+            f"[LOC] updated: {location_info['city']} "
+            f"{location_info.get('district', '')} "
+            f"weather={'ok' if weather_info else 'none'}",
+            flush=True,
+        )
+
     async def handle_message(data: dict):
         msg_type = data.get("type", "chat")
 
@@ -556,6 +600,10 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         if msg_type == "daily_greeting":
             print("[WS] dispatching to handle_daily_greeting", flush=True)
             asyncio.create_task(handle_daily_greeting())
+            return
+
+        if msg_type == "update_location":
+            asyncio.create_task(handle_location_update(data))
             return
 
         if msg_type != "chat":
@@ -594,6 +642,33 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     f"{content}\n\n"
                     f"[Screen capture request did not succeed, likely denied or failed.]"
                 )
+
+        # Detect food/restaurant intent → inject nearby POI results
+        FOOD_KEYWORDS = [
+            "吃什么", "推荐", "好吃的", "美食", "附近", "餐厅", "饭店",
+            "外卖", "外卖点", "点外卖", "饿了", "吃饭", "想吃", "请客",
+            "特色", "小吃", "夜宵", "早餐", "午餐", "晚餐", "火锅",
+            "烧烤", "面馆", "奶茶", "咖啡", "甜品",
+        ]
+        if any(kw in content for kw in FOOD_KEYWORDS):
+            from database import async_session as _db_async
+            from services.location_service import search_nearby_places, nearby_to_context
+            from models.user_config import UserConfig as _UC
+
+            async with _db_async() as _s:
+                _cfg = await _s.get(_UC, 1)
+                if _cfg and _cfg.location_lat and _cfg.location_lng:
+                    _places = await search_nearby_places(
+                        _cfg.location_lat, _cfg.location_lng,
+                        keywords="餐饮|美食|小吃|特色",
+                    )
+                    if _places:
+                        _ctx = nearby_to_context(_places)
+                        augmented_message = (
+                            f"{augmented_message}\n\n"
+                            f"[帮助AI回答的本地参考信息，自然地融入回复，不要照念：\n{_ctx}]"
+                        )
+                        print(f"[POI] injected {len(_places)} nearby places", flush=True)
 
         from database import async_session
 

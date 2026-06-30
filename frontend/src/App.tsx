@@ -14,6 +14,7 @@ import { useAppStore } from './stores/appStore';
 import { useChatStore } from './stores/chatStore';
 import { useWebSocketBridge } from './hooks/useWebSocket';
 import { useDailyGreeting } from './hooks/useDailyGreeting';
+import { useGeolocation } from './hooks/useGeolocation';
 import { api } from './services/api';
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
   // Single global WebSocket connection — must live at the App root only.
   useWebSocketBridge(currentConversationId);
   useDailyGreeting();
+  useGeolocation();
 
   useEffect(() => {
     api.fetchConfig()

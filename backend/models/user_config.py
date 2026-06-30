@@ -28,3 +28,6 @@ class UserConfig(Base):
     last_daily_greeting_date: Mapped[str] = mapped_column(String(20), default="")
     location_city: Mapped[str] = mapped_column(String(100), default="")
     location_country: Mapped[str] = mapped_column(String(100), default="")
+    location_weather: Mapped[str] = mapped_column(String(200), default="")
+    location_lat: Mapped[float] = mapped_column(default=0.0)
+    location_lng: Mapped[float] = mapped_column(default=0.0)

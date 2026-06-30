@@ -32,7 +32,7 @@ export function useWebSocketBridge(conversationId: string | null) {
 
   useEffect(() => {
     if (!conversationId) {
-      setWsBridge(null, null);
+      setWsBridge(null, null, null);
       return;
     }
 

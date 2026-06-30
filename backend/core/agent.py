@@ -8,7 +8,7 @@ from core.prompt_manager import PromptManager
 from core.conversation_manager import ConversationManager
 from core.tool_registry import tool_registry
 from services.llm_service import LLMService
-from services.memory_service import memory_service, pop_memory_notifications, push_memory_notification
+from services.memory_service import memory_service, pop_memory_notifications
 from models.character import CharacterProfile
 from models.conversation import Conversation
 
@@ -57,19 +57,14 @@ class Agent:
         conv = await session.get(Conversation, conversation_id)
         conversation_summary = conv.summary if conv else None
 
-        # Trigger summarization when conversation grows long
+        # Trigger summarization in background when conversation grows long
         msg_count = await self.conversation_manager.count_messages(
             session, conversation_id
         )
         if msg_count > 30:
-            await self.conversation_manager.summarize_and_trim(
-                session, conversation_id,
-                keep_count=20,
-                llm_service=self.llm_service,
+            asyncio.create_task(
+                self._summarize_background(conversation_id)
             )
-            # Reload summary after summarization
-            await session.refresh(conv) if conv else None
-            conversation_summary = conv.summary if conv else None
 
         # Retrieve relevant memories
         retrieved_memories = await memory_service.search(
@@ -78,6 +73,20 @@ class Agent:
             top_k=3,
         )
         memory_texts = [m.content for m in retrieved_memories]
+
+        # Load location context from cached UserConfig
+        location_context = ""
+        try:
+            from models.user_config import UserConfig
+            cfg = await session.get(UserConfig, 1)
+            if cfg and cfg.location_city:
+                parts = [f"用户当前在{cfg.location_city}"]
+                if cfg.location_weather:
+                    parts.append(f"当地天气：{cfg.location_weather}")
+                parts.append("在对话中自然地运用这些信息——比如聊到吃的可以结合当地特色，聊到天气可以提一下实际天气。不要刻意强调你知道位置。")
+                location_context = "。".join(parts)
+        except Exception:
+            pass
 
         system_prompt = self.prompt_manager.build_system_prompt(
             character_name=character.name,
@@ -99,6 +108,9 @@ class Agent:
         history = await self.conversation_manager.get_context_messages(
             session, conversation_id
         )
+
+        if location_context:
+            system_prompt += f"\n\n## 位置与环境\n{location_context}"
 
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
@@ -156,18 +168,12 @@ class Agent:
                         session, conversation_id, "assistant", full_response
                     )
                     yield {"type": "done", "message_id": msg.id, "proactive": True}
-                    asyncio.create_task(
-                        self._extract_memories_background(conversation_id)
-                    )
                     return
 
                 msg = await self.conversation_manager.add_message(
                     session, conversation_id, "assistant", full_response
                 )
                 yield {"type": "done", "message_id": msg.id}
-                asyncio.create_task(
-                    self._extract_memories_background(conversation_id)
-                )
                 return
 
             messages.append({
@@ -200,11 +206,6 @@ class Agent:
             full_response or "I've used several tools but reached the limit."
         )
         yield {"type": "done", "message_id": msg.id}
-
-        # Schedule background memory extraction (fire-and-forget)
-        asyncio.create_task(
-            self._extract_memories_background(conversation_id)
-        )
 
     async def run_daily_greeting(
         self,
@@ -309,15 +310,20 @@ class Agent:
         else:
             yield {"type": "daily_greeting_skip"}
 
-    async def _extract_memories_background(self, conversation_id: str):
-        """Run memory extraction in background after the agent responds."""
+    async def _summarize_background(self, conversation_id: str):
+        """Summarize old messages in background — avoids blocking the user."""
         try:
-            await memory_service.extract_and_store(
-                conversation_id=conversation_id,
-                llm_service=self.llm_service,
-            )
+            from database import async_session
+
+            async with async_session() as bg_session:
+                await self.conversation_manager.summarize_and_trim(
+                    bg_session,
+                    conversation_id,
+                    keep_count=20,
+                    llm_service=self.llm_service,
+                )
         except Exception as e:
-            print(f"[Agent] background memory extraction failed: {e}", flush=True)
+            print(f"[Agent] background summarization failed: {e}", flush=True)
 
     async def _execute_tools_with_approval(
         self,
