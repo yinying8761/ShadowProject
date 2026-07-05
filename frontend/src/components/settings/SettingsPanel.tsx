@@ -26,7 +26,9 @@ export function SettingsPanel() {
         .catch(() => setHealthStatus(t('Offline')));
       api.fetchConfig().then((c) => setConfig(c));
     }
-  }, [showSettings, setConfig, t]);
+    // Only re-run when settings panel opens/closes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSettings]);
 
   const handleTestConnection = async () => {
     setTesting(true);

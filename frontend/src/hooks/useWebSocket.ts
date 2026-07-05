@@ -39,7 +39,11 @@ export function useWebSocketBridge(conversationId: string | null) {
     closingOnPurpose.current = false;
 
     const connect = () => {
-      if (ws.current?.readyState === WebSocket.OPEN) return;
+      // Close any existing socket (handles StrictMode double-mount)
+      if (ws.current) {
+        ws.current.close();
+        ws.current = null;
+      }
       const url = `${WS_BASE}/${conversationId}`;
       const socket = new WebSocket(url);
       ws.current = socket;

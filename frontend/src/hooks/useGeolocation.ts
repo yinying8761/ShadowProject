@@ -1,36 +1,41 @@
 import { useEffect } from 'react';
 import { useChatStore } from '../stores/chatStore';
 
-/**
- * On mount, request browser geolocation and send coordinates to backend.
- * Only fires once per session. Requires HTTPS or localhost in Electron.
- */
+const MAX_RETRIES = 60;
+
 export function useGeolocation() {
   useEffect(() => {
-    if (!('geolocation' in navigator)) {
-      console.log('[Geo] browser does not support geolocation');
-      return;
-    }
+    if (!('geolocation' in navigator)) return;
 
-    const sendCoords = (lat: number, lng: number) => {
-      const fn = useChatStore.getState().wsSendJson;
-      if (!fn) {
-        console.log('[Geo] ws not ready, retrying in 2s');
-        setTimeout(() => sendCoords(lat, lng), 2000);
-        return;
-      }
-      fn({ type: 'update_location', lat, lng });
-      console.log('[Geo] sent coords:', lat.toFixed(4), lng.toFixed(4));
-    };
+    let lat = 0;
+    let lng = 0;
 
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        sendCoords(pos.coords.latitude, pos.coords.longitude);
+        lat = pos.coords.latitude;
+        lng = pos.coords.longitude;
+        console.log('[Geo] got coords:', lat.toFixed(4), lng.toFixed(4));
+        trySend();
       },
       (err) => {
-        console.log('[Geo] permission denied or error:', err.message);
+        console.log('[Geo] denied or error:', err.message);
       },
-      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 }, // cache 10 min
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 },
     );
+
+    function trySend(attempt: number = 0) {
+      if (!lat || !lng) return; // no coords yet
+      const fn = useChatStore.getState().wsSendJson;
+      if (!fn) {
+        if (attempt < MAX_RETRIES) {
+          setTimeout(() => trySend(attempt + 1), 1000);
+        } else {
+          console.log('[Geo] gave up after', MAX_RETRIES, 'retries');
+        }
+        return;
+      }
+      fn({ type: 'update_location', lat, lng });
+      console.log('[Geo] sent successfully');
+    }
   }, []);
 }

@@ -485,8 +485,12 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                 await websocket.send_json({"type": "daily_greeting_skip", "reason": "already_greeted"})
                 return
 
-            # Location first, then weather using the resolved adcode
+            # Location: try IP/manual config first, fall back to cached browser geolocation
             location_info = await get_location()
+            if not location_info and cfg and cfg.location_city:
+                print(f"[DAILY] using cached location: {cfg.location_city}", flush=True)
+                location_info = {"city": cfg.location_city, "country": cfg.location_country or "中国", "adcode": "", "province": ""}
+
             weather_info = None
             if location_info:
                 weather_info = await get_weather(
