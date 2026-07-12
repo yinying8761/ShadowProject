@@ -46,6 +46,10 @@ ADDITIVE_MIGRATIONS = [
     ("user_config", "location_weather", "VARCHAR(200) DEFAULT ''"),
     ("user_config", "location_lat", "REAL DEFAULT 0.0"),
     ("user_config", "location_lng", "REAL DEFAULT 0.0"),
+    ("user_config", "tts_enabled", "BOOLEAN DEFAULT 1"),
+    ("user_config", "last_character_id", "VARCHAR(36)"),
+    ("character_profiles", "tts_ref_audio", "VARCHAR(500)"),
+    ("character_profiles", "tts_prompt_text", "TEXT"),
     ("conversations", "summary", "TEXT"),
 ]
 

@@ -65,6 +65,8 @@ export const api = {
       proactiveSystemNotification:
         (raw.proactive_system_notification as boolean) ?? true,
       language: (raw.language as string) ?? 'zh',
+      ttsEnabled: (raw.tts_enabled as boolean) ?? true,
+      lastCharacterId: (raw.last_character_id as string) ?? '',
     };
   },
   updateConfig: (data: Record<string, unknown>) =>

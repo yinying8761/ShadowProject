@@ -81,6 +81,15 @@ export function DialogueBox() {
       <div className="no-drag dialogue-box mx-3 px-4 py-3 animate-fade-in">
       <div className="flex items-center gap-2 mb-2">
         <span className="name-tag">{characterName}</span>
+        {lastAssistant && !isStreaming && (
+          <button
+            onClick={() => useChatStore.getState().speakMessage?.(lastAssistant.content)}
+            className="text-[11px] text-white/40 hover:text-companion-accent transition-colors ml-1"
+            title={t('Replay')}
+          >
+            🔊
+          </button>
+        )}
         {isProactive && (
           <span
             className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300/90 border border-amber-500/30"

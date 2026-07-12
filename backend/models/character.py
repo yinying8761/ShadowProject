@@ -19,6 +19,8 @@ class CharacterProfile(Base):
     voice_style: Mapped[str | None] = mapped_column(String(100), nullable=True)
     system_prompt_template: Mapped[str] = mapped_column(Text, default="")
     avatar_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    tts_ref_audio: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    tts_prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

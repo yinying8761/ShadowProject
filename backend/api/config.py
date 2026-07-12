@@ -25,6 +25,8 @@ class ConfigUpdate(BaseModel):
     proactive_fixed_schedule_enabled: bool | None = None
     proactive_system_notification: bool | None = None
     language: str | None = None
+    tts_enabled: bool | None = None
+    last_character_id: str | None = None
 
 
 @router.get("/health")
@@ -56,6 +58,8 @@ async def get_config(session: AsyncSession = Depends(get_session)):
         "proactive_fixed_schedule_enabled": config.proactive_fixed_schedule_enabled,
         "proactive_system_notification": config.proactive_system_notification,
         "language": config.language,
+        "tts_enabled": config.tts_enabled,
+        "last_character_id": config.last_character_id,
         "llm_provider": settings.llm_provider,
         "llm_model": settings.get_model(),
         "has_api_key": bool(settings.llm_api_key),
@@ -99,6 +103,10 @@ async def update_config(
         config.proactive_system_notification = data.proactive_system_notification
     if data.language is not None:
         config.language = data.language
+    if data.tts_enabled is not None:
+        config.tts_enabled = data.tts_enabled
+    if data.last_character_id is not None:
+        config.last_character_id = data.last_character_id
 
     await session.commit()
     return {"status": "updated"}

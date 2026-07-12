@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useChat } from '../../hooks/useChat';
 import { useAppStore } from '../../stores/appStore';
+import { useChatStore } from '../../stores/chatStore';
 import { useTranslation } from '../../i18n/useTranslation';
 
 export function InputBar() {
@@ -22,6 +23,7 @@ export function InputBar() {
     const trimmed = input.trim();
     if (!trimmed || isStreaming) return;
     setInput('');
+    useChatStore.getState().stopSpeaking?.();
     send(trimmed);
   };
 

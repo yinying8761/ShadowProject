@@ -498,8 +498,8 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     city=location_info.get("city", ""),
                 )
 
-            # Search relevant memories
-            memories = await memory_service.search(session, query="", top_k=3)
+            # Search relevant memories (only for this character)
+            memories = await memory_service.search(session, query="", top_k=3, character_id=char_id)
             memory_texts = [m.content for m in memories]
 
             # Calculate days since last message

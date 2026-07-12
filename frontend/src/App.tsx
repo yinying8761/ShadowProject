@@ -15,6 +15,7 @@ import { useChatStore } from './stores/chatStore';
 import { useWebSocketBridge } from './hooks/useWebSocket';
 import { useDailyGreeting } from './hooks/useDailyGreeting';
 import { useGeolocation } from './hooks/useGeolocation';
+import { useTTS } from './hooks/useTTS';
 import { api } from './services/api';
 
 export default function App() {
@@ -29,6 +30,7 @@ export default function App() {
   useWebSocketBridge(currentConversationId);
   useDailyGreeting();
   useGeolocation();
+  useTTS();
 
   useEffect(() => {
     api.fetchConfig()

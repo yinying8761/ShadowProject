@@ -41,6 +41,8 @@ export const useAppStore = create<AppState>((set) => ({
     proactiveFixedScheduleEnabled: true,
     proactiveSystemNotification: true,
     language: 'zh',
+    ttsEnabled: true,
+    lastCharacterId: '',
   },
   isConnected: false,
   showSettings: false,
@@ -50,6 +52,12 @@ export const useAppStore = create<AppState>((set) => ({
 
   setActiveCharacter: (char) => {
     set({ activeCharacter: char });
+    // Persist last selected character
+    fetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ last_character_id: char.id }),
+    }).catch(() => {});
     const avatarUrl = char.avatar_path
       ? `http://localhost:8722/data/${char.avatar_path}`
       : undefined;

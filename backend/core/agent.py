@@ -71,6 +71,7 @@ class Agent:
             session,
             query=user_message or "",
             top_k=3,
+            character_id=character_id,
         )
         memory_texts = [m.content for m in retrieved_memories]
 

@@ -7,6 +7,8 @@ FastAPI server providing:
 - LLM agent orchestration with tool calling
 """
 
+import asyncio
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -260,10 +262,27 @@ register_tools()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── Start GPT-SoVITS TTS API (spawn, don't block startup) ──
+    tts_proc = None
+    tts_dir = settings.tts_ref_base
+    tts_runtime = f"{tts_dir}/runtime/python.exe"
+    try:
+        tts_proc = subprocess.Popen(
+            [tts_runtime, "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
+             "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
+            cwd=tts_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print("[TTS] GPT-SoVITS API starting in background...", flush=True)
+    except FileNotFoundError:
+        print(f"[TTS] GPT-SoVITS runtime not found at {tts_runtime} — TTS disabled", flush=True)
+    except Exception as e:
+        print(f"[TTS] failed to start: {e} — TTS disabled", flush=True)
+
     await init_db()
     from services.memory_service import _ensure_fts5, memory_service
     await _ensure_fts5()
-    # Prune stale memories on startup
     try:
         pruned = await memory_service.prune()
         if pruned:
@@ -272,6 +291,14 @@ async def lifespan(app: FastAPI):
         print(f"[Startup] memory prune failed: {e}", flush=True)
     await seed_default_data()
     yield
+    # ── Shutdown: kill TTS ──
+    if tts_proc:
+        print("[TTS] shutting down GPT-SoVITS API...", flush=True)
+        tts_proc.terminate()
+        try:
+            tts_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            tts_proc.kill()
 
 
 async def seed_default_data():
@@ -325,11 +352,13 @@ from api.chat import router as chat_router
 from api.character import router as character_router
 from api.conversation import router as conversation_router
 from api.config import router as config_router
+from api.tts import router as tts_router
 
 app.include_router(chat_router)
 app.include_router(character_router)
 app.include_router(conversation_router)
 app.include_router(config_router)
+app.include_router(tts_router)
 
 
 if __name__ == "__main__":

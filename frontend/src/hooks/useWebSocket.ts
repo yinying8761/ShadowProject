@@ -39,8 +39,9 @@ export function useWebSocketBridge(conversationId: string | null) {
     closingOnPurpose.current = false;
 
     const connect = () => {
-      // Close any existing socket (handles StrictMode double-mount)
+      // Close any existing socket and prevent its onclose from reconnecting
       if (ws.current) {
+        closingOnPurpose.current = true;
         ws.current.close();
         ws.current = null;
       }
@@ -52,6 +53,7 @@ export function useWebSocketBridge(conversationId: string | null) {
         setIsConnected(true);
         setConnected(true);
         reconnectCount.current = 0;
+        closingOnPurpose.current = false; // old socket's onclose has fired by now
       };
 
       socket.onmessage = (event) => {

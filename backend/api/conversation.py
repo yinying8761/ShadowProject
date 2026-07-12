@@ -93,6 +93,44 @@ async def get_messages(
     ]
 
 
+@router.delete("/{conversation_id}/messages/{message_id}")
+async def delete_message(
+    conversation_id: str,
+    message_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    msg = await session.get(Message, message_id)
+    if not msg or msg.conversation_id != conversation_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await session.delete(msg)
+    await session.commit()
+    return {"status": "deleted"}
+
+
+@router.delete("/{conversation_id}/messages")
+async def clear_messages(
+    conversation_id: str, session: AsyncSession = Depends(get_session)
+):
+    """Delete all messages in a conversation + related memories."""
+    from sqlalchemy import delete
+    from models.memory import Memory
+
+    # Delete messages
+    result = await session.execute(
+        delete(Message).where(Message.conversation_id == conversation_id)
+    )
+    msg_count = result.rowcount
+
+    # Delete related memories
+    mem_result = await session.execute(
+        delete(Memory).where(Memory.source_conversation_id == conversation_id)
+    )
+    mem_count = mem_result.rowcount
+
+    await session.commit()
+    return {"status": "cleared", "messages_deleted": msg_count, "memories_deleted": mem_count}
+
+
 @router.delete("/{conversation_id}")
 async def delete_conversation(
     conversation_id: str, session: AsyncSession = Depends(get_session)

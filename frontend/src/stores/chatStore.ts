@@ -19,6 +19,8 @@ interface ChatState {
   recentTools: ToolActivity[];
   memoryNotificationCount: number;
   showMemoryViewer: boolean;
+  speakMessage: ((content: string) => void) | null;
+  stopSpeaking: (() => void) | null;
   // WebSocket bridge — populated by the singleton connection in App.
   wsSendMessage: ((content: string, characterId: string, opts?: { forceVision?: boolean }) => boolean) | null;
   wsSendApprovalResponse: ((requestId: string, approved: boolean) => void) | null;
@@ -57,6 +59,8 @@ export const useChatStore = create<ChatState>((set) => ({
   recentTools: [],
   memoryNotificationCount: 0,
   showMemoryViewer: false,
+  speakMessage: null,
+  stopSpeaking: null,
   wsSendMessage: null,
   wsSendApprovalResponse: null,
   wsSendJson: null,

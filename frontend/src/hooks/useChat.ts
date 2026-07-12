@@ -1,13 +1,9 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useChatStore } from '../stores/chatStore';
 import { useAppStore } from '../stores/appStore';
 import { api } from '../services/api';
 import type { ApiMessage } from '../types';
 
-/**
- * Pure data hook — no WebSocket. The WS connection is owned by App via
- * useWebSocketBridge, which exposes its send methods on the chat store.
- */
 export function useChat() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
@@ -22,19 +18,31 @@ export function useChat() {
   const clearMessages = useChatStore((s) => s.clearMessages);
   const activeCharacter = useAppStore((s) => s.activeCharacter);
   const isConnected = useAppStore((s) => s.isConnected);
+  const epoch = useRef(0);
 
   useEffect(() => {
     if (!activeCharacter) return;
+
+    const gen = ++epoch.current; // bump generation to discard stale results
+    clearMessages();             // immediately clear old character's messages
+    setConversationId('');
+    setMessages([]);
+
     (async () => {
       try {
         const convs = await api.fetchConversations(activeCharacter.id);
+        if (gen !== epoch.current) return; // stale
+
         if (convs.length > 0) {
-          setConversationId(convs[0].id);
-          const msgs = await api.fetchMessages(convs[0].id);
+          const convId = convs[0].id;
+          const msgs = await api.fetchMessages(convId);
+          if (gen !== epoch.current) return; // stale
+
+          setConversationId(convId);
           setMessages(
             msgs.map((m: ApiMessage) => ({
               id: m.id,
-              conversationId: convs[0].id,
+              conversationId: convId,
               role: m.role,
               content: m.content,
               createdAt: m.created_at,
@@ -42,6 +50,8 @@ export function useChat() {
           );
         } else {
           const conv = await api.createConversation(activeCharacter.id);
+          if (gen !== epoch.current) return; // stale
+
           setConversationId(conv.id);
           setMessages([]);
         }

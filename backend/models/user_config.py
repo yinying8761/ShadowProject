@@ -24,6 +24,8 @@ class UserConfig(Base):
     proactive_state_date: Mapped[str] = mapped_column(String(20), default="")
     proactive_scheduled_slots: Mapped[str] = mapped_column(String(100), default="")
     language: Mapped[str] = mapped_column(String(10), default="zh")
+    tts_enabled: Mapped[bool] = mapped_column(default=True)
+    last_character_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_daily_greeting_at: Mapped[str | None] = mapped_column(String(30), nullable=True)
     last_daily_greeting_date: Mapped[str] = mapped_column(String(20), default="")
     location_city: Mapped[str] = mapped_column(String(100), default="")

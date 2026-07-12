@@ -45,6 +45,8 @@ async def list_characters(session: AsyncSession = Depends(get_session)):
             "archetype": c.archetype,
             "voice_style": c.voice_style,
             "avatar_path": c.avatar_path,
+            "tts_ref_audio": c.tts_ref_audio,
+            "tts_prompt_text": c.tts_prompt_text,
             "created_at": c.created_at.isoformat() if c.created_at else None,
         }
         for c in characters

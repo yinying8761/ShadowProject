@@ -7,6 +7,8 @@ export interface CharacterProfile {
   archetype: string;
   voice_style?: string;
   avatar_path?: string;
+  tts_ref_audio?: string;
+  tts_prompt_text?: string;
   created_at?: string;
 }
 
@@ -62,6 +64,8 @@ export interface AppConfig {
   proactiveFixedScheduleEnabled: boolean;
   proactiveSystemNotification: boolean;
   language: string;
+  ttsEnabled: boolean;
+  lastCharacterId: string;
 }
 
 export interface ApprovalRequest {

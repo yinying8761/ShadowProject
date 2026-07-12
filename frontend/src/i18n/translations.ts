@@ -50,6 +50,10 @@ const zh: TranslationDict = {
   'System Notification For Proactive Reply': '主动回复系统通知',
   'When minimized or hidden, show a system notification for proactive replies.':
     '最小化或隐藏时，为主动回复显示系统通知。',
+  'Voice (TTS)': '语音朗读 (TTS)',
+  'Automatically read AI replies aloud. Voice adapts to character personality.':
+    '自动朗读 AI 的回复，声音会根据角色性格自动适配。',
+  Replay: '重新朗读',
   Close: '关闭',
   Language: '语言',
   Chinese: '中文',

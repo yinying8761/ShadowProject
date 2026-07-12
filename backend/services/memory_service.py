@@ -119,8 +119,9 @@ class MemoryService:
         session: AsyncSession,
         query: str,
         top_k: int = 3,
+        character_id: str | None = None,
     ) -> list[Memory]:
-        """Retrieve top-k memories using FTS5 + optional embedding hybrid search."""
+        """Retrieve top-k memories filtered by character (if provided)."""
         if not query or not query.strip():
             # No query: return important recent memories
             from sqlalchemy import select as _select
@@ -230,6 +231,17 @@ class MemoryService:
 
         scored.sort(key=lambda x: x[1], reverse=True)
         results = [mem for mem, _ in scored[:top_k]]
+
+        # Filter by character_id if provided
+        if character_id:
+            from models.conversation import Conversation
+            conv_ids = {m.source_conversation_id for m in results if m.source_conversation_id}
+            if conv_ids:
+                conv_result = await session.execute(
+                    _select(Conversation).where(Conversation.id.in_(conv_ids))
+                )
+                conv_char_map = {c.id: c.character_id for c in conv_result.scalars().all()}
+                results = [m for m in results if conv_char_map.get(m.source_conversation_id) == character_id]
 
         # Update access metadata
         for mem in results:
