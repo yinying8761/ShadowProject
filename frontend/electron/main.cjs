@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, Notification, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -354,6 +354,14 @@ ipcMain.handle('window-close', () => {
 // Temporary content protection for screen capture — makes the window
 // invisible to screen-capture APIs (mss, OBS, etc.) while still visible to the user.
 // Uses SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) on Windows.
+ipcMain.handle('select-folder', async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: '选择 GPT-SoVITS 安装目录',
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
 ipcMain.handle('set-content-protection', (_, enable) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {

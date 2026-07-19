@@ -309,6 +309,7 @@ class Agent:
             )
             yield {"type": "done", "message_id": msg.id, "daily_greeting": True}
         else:
+            print(f"[DAILY] greeting was empty or SKIP, full_response={repr(full_response[:100])}", flush=True)
             yield {"type": "daily_greeting_skip"}
 
     async def _summarize_background(self, conversation_id: str):

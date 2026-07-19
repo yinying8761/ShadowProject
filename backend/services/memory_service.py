@@ -98,19 +98,11 @@ class MemoryService:
 
     @staticmethod
     def _sanitize_fts5(query: str) -> str:
-        """Make a user search string safe for SQLite FTS5 MATCH by stripping
-        special characters and wrapping as a phrase query."""
+        """Strip FTS5 special characters from a user search string."""
         import re
-        # Escape double quotes and truncate to reasonable length
-        safe = query.replace('"', '').replace("'", '')
-        safe = safe[:300]
-        # FTS5 special chars that break query parsing
-        safe = re.sub(r'[\(\)\[\]\{\}\^\~\:\*\-\+\=\/\\]', ' ', safe)
+        safe = re.sub(r'[\(\)\[\]\{\}\^\~\:\*\-\+\=\/\\\"\']', ' ', query)
         safe = re.sub(r'\s+', ' ', safe).strip()
-        if not safe:
-            safe = 'unknown'
-        # Wrap in double quotes so FTS5 treats content as a literal phrase
-        return f'"{safe}"'
+        return safe or 'unknown'
 
     # ---- Search ----
 
@@ -493,29 +485,24 @@ class MemoryService:
     async def prune(self) -> int:
         """Delete stale low-importance memories. Returns count of deleted rows."""
         async with async_session() as session:
-            from sqlalchemy import delete, select
-            cutoff = datetime.now(timezone.utc)
-            # Delete memories older than 90 days with importance < 3 and access_count < 2
+            from sqlalchemy import delete
+            from datetime import timedelta
+
+            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+
+            # Filter in SQL: old, low-importance, rarely accessed
             result = await session.execute(
-                select(Memory.id).where(
-                    Memory.created_at < "1970-01-01"  # placeholder, we filter in Python
+                delete(Memory).where(
+                    Memory.importance < 3,
+                    Memory.access_count < 2,
+                    Memory.created_at < cutoff,
                 )
             )
-            all_ids = [row[0] for row in result.fetchall()]
-
-            to_delete = []
-            result2 = await session.execute(select(Memory))
-            for mem in result2.scalars().all():
-                age_days = (cutoff.replace(tzinfo=None) - mem.created_at.replace(tzinfo=None)).days
-                if age_days > 90 and mem.importance < 3 and mem.access_count < 2:
-                    to_delete.append(mem.id)
-
-            if to_delete:
-                await session.execute(delete(Memory).where(Memory.id.in_(to_delete)))
-                await session.commit()
-                print(f"[Memory] pruned {len(to_delete)} stale memories", flush=True)
-
-            return len(to_delete)
+            await session.commit()
+            count = result.rowcount
+            if count:
+                print(f"[Memory] pruned {count} stale memories", flush=True)
+            return count
 
 
 # Singleton

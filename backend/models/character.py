@@ -21,6 +21,7 @@ class CharacterProfile(Base):
     avatar_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tts_ref_audio: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tts_prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_daily_greeting_date: Mapped[str] = mapped_column(String(20), default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

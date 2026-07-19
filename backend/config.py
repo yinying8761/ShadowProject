@@ -144,7 +144,7 @@ class Settings(BaseSettings):
 
     # ---- TTS (GPT-SoVITS) ----
     tts_api_url: str = "http://127.0.0.1:9880/tts"
-    tts_ref_base: str = "F:/GPT-SoVITS-v2pro-20250604-nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50"
+    tts_ref_base: str = ""  # set in .env, e.g. ./tools/GPT-SoVITS/GPT-SoVITS
 
     def get_embedding_provider(self) -> str:
         return self.embedding_provider or self.llm_provider

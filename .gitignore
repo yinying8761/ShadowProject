@@ -16,8 +16,14 @@ __pycache__/
 frontend/dist/
 frontend/out/
 
-# Runtime data
+# Runtime data (includes companion.db, uploaded files, reference audio)
 data/
+
+# GPT-SoVITS (optional, installed by setup-tts.bat)
+tools/GPT-SoVITS/
+
+# Claude Code
+.claude/
 
 # IDE
 .idea/

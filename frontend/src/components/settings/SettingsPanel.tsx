@@ -4,6 +4,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useCharacters } from '../../hooks/useCharacters';
 import { useTranslation } from '../../i18n/useTranslation';
 import { api } from '../../services/api';
+import { VoiceClonePanel } from './VoiceClonePanel';
 
 export function SettingsPanel() {
   const showSettings = useAppStore((s) => s.showSettings);
@@ -402,6 +403,9 @@ export function SettingsPanel() {
                 }`}
               />
             </button>
+          </div>
+          <div className="pt-1 border-t border-white/10">
+            <VoiceClonePanel />
           </div>
         </section>
 

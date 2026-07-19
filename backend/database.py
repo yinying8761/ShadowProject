@@ -50,6 +50,7 @@ ADDITIVE_MIGRATIONS = [
     ("user_config", "last_character_id", "VARCHAR(36)"),
     ("character_profiles", "tts_ref_audio", "VARCHAR(500)"),
     ("character_profiles", "tts_prompt_text", "TEXT"),
+    ("character_profiles", "last_daily_greeting_date", "VARCHAR(20) DEFAULT ''"),
     ("conversations", "summary", "TEXT"),
 ]
 

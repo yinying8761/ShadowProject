@@ -1,8 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useChatStore } from '../stores/chatStore';
 
-const STORAGE_KEY = 'daily_greeting_date';
-
 function todayStr(): string {
   const now = new Date();
   if (now.getHours() < 4) {
@@ -19,9 +17,6 @@ export function useDailyGreeting() {
   const doneRef = useRef(false);
 
   useEffect(() => {
-    // Already sent today — skip
-    if (localStorage.getItem(STORAGE_KEY) === todayStr()) return;
-
     let attempts = 0;
     const MAX = 60;
 
@@ -41,9 +36,7 @@ export function useDailyGreeting() {
 
       if (ok) {
         clearInterval(id);
-        localStorage.setItem(STORAGE_KEY, todayStr());
         doneRef.current = true;
-        console.log('[DailyGreeting] sent successfully');
       } else if (attempts >= MAX) {
         clearInterval(id);
         console.log('[DailyGreeting] send failed after', MAX, 'attempts');
@@ -51,7 +44,7 @@ export function useDailyGreeting() {
     }, 1000);
 
     return () => clearInterval(id);
-  }, []); // empty deps — runs once on mount
+  }, []);
 
   // Window visibility listener for hide/show during the day
   useEffect(() => {
@@ -62,7 +55,6 @@ export function useDailyGreeting() {
 
     api.onWindowVisibilityChanged((value: { visible: boolean }) => {
       if (!value.visible) return;
-      if (localStorage.getItem(STORAGE_KEY) === todayStr()) return;
 
       let n = 0;
       const id = setInterval(() => {
@@ -70,7 +62,6 @@ export function useDailyGreeting() {
         const fn = useChatStore.getState().wsSendJson;
         if (fn?.({ type: 'daily_greeting' })) {
           clearInterval(id);
-          localStorage.setItem(STORAGE_KEY, todayStr());
         } else if (n >= 10) {
           clearInterval(id);
         }

@@ -1,6 +1,7 @@
 """TTS service — calls GPT-SoVITS API for neural voice synthesis."""
 
 import re
+import subprocess
 import httpx
 from config import settings
 
@@ -10,6 +11,55 @@ TTS_API_URL = getattr(settings, "tts_api_url", "http://127.0.0.1:9880/tts")
 TTS_TEMPERATURE = 0.6
 TTS_TOP_K = 30
 TTS_SPLIT_METHOD = "cut5"
+
+# Process management
+_tts_process: subprocess.Popen | None = None
+
+
+def start_api() -> bool:
+    """Start GPT-SoVITS API as a subprocess. Returns True if started."""
+    global _tts_process
+    if _tts_process and _tts_process.poll() is None:
+        return False  # already running
+
+    tts_dir = settings.tts_ref_base
+    if not tts_dir:
+        print("[TTS] WARNING: TTS_REF_BASE is empty, set via panel or .env", flush=True)
+        return False
+
+    runtime = f"{tts_dir}/runtime/python.exe"
+    print(f"[TTS] starting API from: {tts_dir}", flush=True)
+    try:
+        _tts_process = subprocess.Popen(
+            [runtime, "api_v2.py", "-a", "127.0.0.1", "-p", "9880",
+             "-c", "GPT_SoVITS/configs/tts_infer.yaml"],
+            cwd=tts_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print("[TTS] API process started", flush=True)
+        return True
+    except Exception as e:
+        print(f"[TTS] failed to start: {e}", flush=True)
+        return False
+
+
+def stop_api():
+    """Stop the GPT-SoVITS API process."""
+    global _tts_process
+    if _tts_process and _tts_process.poll() is None:
+        _tts_process.terminate()
+        try:
+            _tts_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _tts_process.kill()
+        print("[TTS] API process stopped", flush=True)
+    _tts_process = None
+
+
+def is_api_running() -> bool:
+    """Check if the GPT-SoVITS process is running."""
+    return _tts_process is not None and _tts_process.poll() is None
 
 def _clean_char(c: str) -> str:
     """Keep only speakable characters for TTS — CJK + ASCII + punctuation."""

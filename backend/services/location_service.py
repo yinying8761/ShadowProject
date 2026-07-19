@@ -58,18 +58,10 @@ async def geocode_reverse(lat: float, lng: float) -> dict | None:
 
 
 async def get_location() -> dict | None:
-    """Return {city, province, country, adcode} from IP or manual config. Prefer geocode_reverse if coordinates available."""
+    """Return {city, province, country, adcode} from IP or manual config.
+    Browser geolocation is preferred; USER_CITY is the last-resort fallback."""
     if not settings.amap_api_key:
         return None
-
-    if settings.user_city:
-        print(f"[Location] using manual city: {settings.user_city}", flush=True)
-        return {
-            "city": settings.user_city,
-            "province": "",
-            "country": "中国",
-            "adcode": "",
-        }
 
     # IP geolocation fallback
     try:

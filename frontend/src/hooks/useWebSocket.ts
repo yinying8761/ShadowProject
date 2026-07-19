@@ -68,6 +68,9 @@ export function useWebSocketBridge(conversationId: string | null) {
                 const isProactiveLike = !!(data.proactive || data.daily_greeting);
                 const content = useChatStore.getState().streamingContent;
                 finalizeStreamingMessage(data.message_id, isProactiveLike);
+                if (data.daily_greeting) {
+                  localStorage.setItem('daily_greeting_date', new Date().toISOString().slice(0, 10));
+                }
                 if (isProactiveLike) {
                   console.log('[WS] proactive done, calling notifyProactiveReply, content length=', content.length);
                   window.electronAPI?.notifyProactiveReply?.({
@@ -100,8 +103,10 @@ export function useWebSocketBridge(conversationId: string | null) {
               });
               break;
             case 'proactive_skip':
+              break;
             case 'daily_greeting_skip':
-              // Model decided not to speak, or greeting already done today
+              // Server confirms greeting already done — mark complete
+              localStorage.setItem('daily_greeting_date', new Date().toISOString().slice(0, 10));
               break;
             case 'memory_updated':
               if (data.count && data.count > 0) {

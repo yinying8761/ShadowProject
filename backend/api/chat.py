@@ -477,19 +477,26 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
 
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # Check if already greeted today (persisted in DB)
+        # Check if this character already greeted today
         async with async_session() as session:
-            cfg = await session.get(UserConfig, 1)
-            if cfg and cfg.last_daily_greeting_date == today:
-                print("[DAILY] already greeted today, skip", flush=True)
+            from models.character import CharacterProfile
+            char = await session.get(CharacterProfile, char_id)
+            if char and char.last_daily_greeting_date == today:
+                print(f"[DAILY] char {char.name} already greeted today, skip", flush=True)
                 await websocket.send_json({"type": "daily_greeting_skip", "reason": "already_greeted"})
                 return
 
-            # Location: try IP/manual config first, fall back to cached browser geolocation
-            location_info = await get_location()
-            if not location_info and cfg and cfg.location_city:
+            cfg = await session.get(UserConfig, 1)
+
+            # Location priority: cached browser geolocation > IP > USER_CITY
+            location_info = None
+            if cfg and cfg.location_city:
                 print(f"[DAILY] using cached location: {cfg.location_city}", flush=True)
                 location_info = {"city": cfg.location_city, "country": cfg.location_country or "中国", "adcode": "", "province": ""}
+            if not location_info:
+                location_info = await get_location()
+            if not location_info and app_settings.user_city:
+                location_info = {"city": app_settings.user_city, "province": "", "country": "中国", "adcode": ""}
 
             weather_info = None
             if location_info:
@@ -519,7 +526,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                 days_since_last = delta.days
             print(f"[DAILY] days_since_last={days_since_last}", flush=True)
 
-            # Persist location cache
+            # Persist location cache to UserConfig
             if cfg is None:
                 print("[DAILY] no UserConfig found, skipping", flush=True)
                 await websocket.send_json({"type": "daily_greeting_skip", "reason": "no_config"})
@@ -527,11 +534,9 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             if location_info:
                 cfg.location_city = location_info.get("city", "")
                 cfg.location_country = location_info.get("country", "")
-            cfg.last_daily_greeting_date = today
-            cfg.last_daily_greeting_at = datetime.now().isoformat()
-            await session.commit()
 
-            # Run greeting
+            # Run greeting first — only mark if something was actually said
+            had_content = False
             async for event in agent.run_daily_greeting(
                 session=session,
                 conversation_id=conversation_id,
@@ -541,7 +546,16 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                 days_since_last=days_since_last,
                 memories=memory_texts,
             ):
+                if event.get("type") == "token":
+                    had_content = True
                 await websocket.send_json(event)
+
+            # Only mark as done if greeting had actual content
+            if had_content:
+                char_prof = await session.get(CharacterProfile, char_id)
+                if char_prof:
+                    char_prof.last_daily_greeting_date = today
+                await session.commit()
 
     async def handle_location_update(data: dict):
         """Receive browser geolocation, reverse-geocode via Amap, cache results."""
