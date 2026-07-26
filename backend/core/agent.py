@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.prompt_manager import PromptManager
 from core.conversation_manager import ConversationManager
-from core.tool_registry import tool_registry
+from core.tool_registry import ToolRegistry, tool_registry as _default_tool_registry
 from services.llm_service import LLMService
 from services.memory_service import memory_service, pop_memory_notifications
 from models.character import CharacterProfile
@@ -18,10 +18,15 @@ ApprovalCallback = Callable[[str, dict], Awaitable[bool]]
 class Agent:
     """Central orchestrator: prompt assembly -> LLM call -> tool execution loop."""
 
-    def __init__(self, llm_service: LLMService | None = None):
+    def __init__(
+        self,
+        llm_service: LLMService | None = None,
+        tool_registry: ToolRegistry | None = None,
+    ):
         self.prompt_manager = PromptManager()
         self.conversation_manager = ConversationManager()
         self.llm_service = llm_service or LLMService()
+        self.tool_registry = tool_registry or _default_tool_registry
 
     async def run(
         self,
@@ -33,21 +38,78 @@ class Agent:
         proactive_hint: str | None = None,
         force_tool_context: list[dict] | None = None,
         suppress_tool_calls: bool = False,
+        mode: str = "chat",
+        extra_context: dict | None = None,
     ) -> AsyncIterator[dict]:
         """
         Execute the agent loop, yielding events.
 
-        If user_message is None and proactive_hint is provided, runs in
-        proactive mode: no user message is added to history, the system
-        prompt instructs the character to spontaneously initiate a short
-        message. If the model returns the literal string "__SKIP__", we
-        emit an "abort" event instead of saving the response.
+        Parameters
+        ----------
+        mode:
+            ``"chat"`` (default) — full agent loop with tools, memory
+            retrieval, conversation history, and location context from DB.
+
+            ``"greeting"`` — context-rich daily greeting.  No tools, no
+            agent loop, no history.  Context (location, weather, memories,
+            days_since_last) is drawn from *extra_context* rather than
+            fetched internally.  Events carry ``daily_greeting: True``.
+        extra_context:
+            Used when *mode* is ``"greeting"``.  Expected keys:
+            ``location``, ``weather``, ``days_since_last``, ``memories``.
         """
         character = await session.get(CharacterProfile, character_id)
         if not character:
             yield {"type": "error", "message": f"Character {character_id} not found"}
             return
 
+        # ── Greeting mode ────────────────────────────────────────────
+        if mode == "greeting":
+            extra = extra_context or {}
+            greeting_prompt = self.prompt_manager.build_greeting_prompt(
+                character_name=character.name,
+                location=extra.get("location"),
+                weather=extra.get("weather"),
+                days_since_last=extra.get("days_since_last", 0),
+                memories=extra.get("memories"),
+            )
+
+            messages = [
+                {"role": "system", "content": greeting_prompt},
+                {"role": "user", "content": "（系统：现在是每日问候时刻，请主动和用户打招呼。）"},
+            ]
+
+            full_response = ""
+            async for event in self.llm_service.stream_chat(
+                messages=messages,
+                tools=None,  # no tools for greeting
+            ):
+                if event["type"] == "token":
+                    full_response += event["content"]
+                    yield {"type": "token", "content": event["content"], "daily_greeting": True}
+                elif event["type"] == "error":
+                    if full_response.strip():
+                        msg = await self.conversation_manager.add_message(
+                            session, conversation_id, "assistant", full_response
+                        )
+                        yield {"type": "done", "message_id": msg.id, "daily_greeting": True, "partial_error": True}
+                    yield event
+                    return
+
+            if full_response.strip():
+                msg = await self.conversation_manager.add_message(
+                    session, conversation_id, "assistant", full_response
+                )
+                yield {"type": "done", "message_id": msg.id, "daily_greeting": True}
+            else:
+                print(
+                    f"[Agent] greeting was empty or SKIP, full_response={repr(full_response[:100])}",
+                    flush=True,
+                )
+                yield {"type": "daily_greeting_skip"}
+            return
+
+        # ── Chat / proactive mode ─────────────────────────────────────
         # Emit any pending memory-update notifications from prior background tasks
         pending_count = pop_memory_notifications(conversation_id)
         if pending_count > 0:
@@ -130,7 +192,7 @@ class Agent:
         if force_tool_context:
             messages.extend(force_tool_context)
 
-        tools = tool_registry.get_tool_definitions()
+        tools = self.tool_registry.get_tool_definitions()
 
         max_tool_rounds = 5 if not is_proactive else 1
         full_response = ""
@@ -154,6 +216,16 @@ class Agent:
                     })
                     yield event
                 elif event["type"] == "error":
+                    # Stream error — save partial response so the frontend
+                    # can finalize the streaming message, then surface the error.
+                    if round_text.strip():
+                        msg = await self.conversation_manager.add_message(
+                            session, conversation_id, "assistant", round_text
+                        )
+                        done = {"type": "done", "message_id": msg.id, "partial_error": True}
+                        if is_proactive:
+                            done["proactive"] = True
+                        yield done
                     yield event
                     return
 
@@ -208,110 +280,6 @@ class Agent:
         )
         yield {"type": "done", "message_id": msg.id}
 
-    async def run_daily_greeting(
-        self,
-        session: AsyncSession,
-        conversation_id: str,
-        character_id: str,
-        location: dict | None = None,
-        weather: dict | None = None,
-        days_since_last: int = 0,
-        memories: list[str] | None = None,
-    ) -> AsyncIterator[dict]:
-        """Generate a context-rich daily greeting. Only once per day (4am reset)."""
-        from datetime import datetime
-
-        char = await session.get(CharacterProfile, character_id)
-        if not char:
-            yield {"type": "error", "message": f"Character {character_id} not found"}
-            return
-
-        now = datetime.now()
-        time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-        hour = now.hour
-
-        # Time-of-day hint
-        if 5 <= hour < 9:
-            time_hint = "早上"
-        elif 9 <= hour < 11:
-            time_hint = "上午"
-        elif 11 <= hour < 13:
-            time_hint = "中午/饭点"
-        elif 13 <= hour < 18:
-            time_hint = "下午"
-        elif 18 <= hour < 22:
-            time_hint = "晚上"
-        else:
-            time_hint = "深夜"
-
-        # Build context-rich greeting prompt
-        prompt_parts = [
-            f"你是{char.name}。现在是{time_str}，{time_hint}时段。",
-            "这是用户今天第一次打开窗口和你见面。请主动、自然地打个招呼。",
-        ]
-
-        if days_since_last >= 2:
-            prompt_parts.append(
-                f"用户已经{days_since_last}天没来了——表达一下想念，但不要夸张，"
-                "保持在角色性格范围内。"
-            )
-        elif days_since_last == 1:
-            prompt_parts.append('用户昨天来过，今天又来了。可以简单说一句「又见面了」之类的话。')
-
-        if location:
-            city = location.get("city", "")
-            prompt_parts.append(f"用户在{city}。")
-
-        if weather:
-            prompt_parts.append(
-                f"当地天气：{weather['condition']}，{weather['temp']}°C，"
-                f"湿度{weather['humidity']}%，{weather['wind']}。"
-            )
-
-        if memories:
-            prompt_parts.append("你记得这些事情：")
-            for m in memories:
-                prompt_parts.append(f"· {m}")
-
-        prompt_parts.extend([
-            "",
-            "要求：",
-            "- 1-3句话即可，自然、温暖、保持你的人设。",
-            "- 根据时段搭话：饭点可以聊吃的（结合当地特色菜），深夜关心休息，早上可以问好。",
-            "- 如果天气特别（下雨、高温、寒潮），顺带提一句。",
-            '- 如果记得上次聊的事，自然追问「上次那个XX后来怎么样了？」',
-            '- 不要提工具、不要提AI、不要用「检测到」「根据系统」之类的词。',
-            "- 不要调用任何工具，纯聊天。",
-        ])
-
-        system_prompt = "\n".join(prompt_parts)
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "（系统：现在是每日问候时刻，请主动和用户打招呼。）"},
-        ]
-
-        full_response = ""
-        async for event in self.llm_service.stream_chat(
-            messages=messages,
-            tools=None,  # no tools for greeting
-        ):
-            if event["type"] == "token":
-                full_response += event["content"]
-                yield {"type": "token", "content": event["content"], "daily_greeting": True}
-            elif event["type"] == "error":
-                yield event
-                return
-
-        if full_response.strip():
-            msg = await self.conversation_manager.add_message(
-                session, conversation_id, "assistant", full_response
-            )
-            yield {"type": "done", "message_id": msg.id, "daily_greeting": True}
-        else:
-            print(f"[DAILY] greeting was empty or SKIP, full_response={repr(full_response[:100])}", flush=True)
-            yield {"type": "daily_greeting_skip"}
-
     async def _summarize_background(self, conversation_id: str):
         """Summarize old messages in background — avoids blocking the user."""
         try:
@@ -336,7 +304,7 @@ class Agent:
         out: list[tuple[dict, dict]] = []
 
         for tb in tool_use_blocks:
-            needs_approval = tool_registry.needs_approval(tb["name"])
+            needs_approval = self.tool_registry.needs_approval(tb["name"])
 
             if needs_approval and approval_callback:
                 approved = await approval_callback(tb["name"], tb["arguments"])
@@ -358,13 +326,24 @@ class Agent:
                     continue
 
             try:
-                result = await tool_registry.dispatch(tb["name"], tb["arguments"])
+                result = await self.tool_registry.dispatch(tb["name"], tb["arguments"])
                 content = str(result)
+                is_error = False
+                # dispatch() returns JSON error strings for tool failures
+                # (unknown tool, handler exception) — unwrap them so the
+                # caller sees a clean error message and is_error: True.
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and "error" in parsed:
+                        is_error = True
+                        content = parsed["error"]
+                except (json.JSONDecodeError, TypeError):
+                    pass
                 event = {
                     "type": "tool_result",
                     "name": tb["name"],
                     "result": content,
-                    "is_error": False,
+                    "is_error": is_error,
                 }
             except Exception as e:
                 content = f"Error: {e}"

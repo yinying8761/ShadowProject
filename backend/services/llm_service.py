@@ -1,6 +1,7 @@
 import json
 from typing import AsyncIterator
 from config import settings
+from services.formatters import get_formatter, MessageFormatter
 
 
 class LLMService:
@@ -8,6 +9,14 @@ class LLMService:
 
     def __init__(self):
         self._clients: dict[str, object] = {}
+
+    def _get_formatter(self) -> MessageFormatter | None:
+        """Return a provider-specific formatter, or ``None`` when the
+        SDK type is not yet supported by the formatters package."""
+        try:
+            return get_formatter(settings.get_sdk_type())
+        except (NotImplementedError, ValueError):
+            return None
 
     def _get_openai_client(self):
         if "openai" not in self._clients:
@@ -39,14 +48,18 @@ class LLMService:
         sdk_type = settings.get_sdk_type()
 
         if sdk_type == "anthropic":
+            formatter = self._get_formatter()
             client = self._get_anthropic_client()
-            system_msg = None
-            user_messages = []
-            for m in messages:
-                if m["role"] == "system":
-                    system_msg = m["content"]
-                else:
-                    user_messages.append({"role": m["role"], "content": m["content"]})
+            if formatter:
+                system_msg, user_messages = formatter.format_messages(messages)
+            else:
+                system_msg = None
+                user_messages = []
+                for m in messages:
+                    if m["role"] == "system":
+                        system_msg = m["content"]
+                    else:
+                        user_messages.append({"role": m["role"], "content": m["content"]})
             kwargs = {
                 "model": effective_model,
                 "max_tokens": max_tokens,
@@ -90,22 +103,29 @@ class LLMService:
         self, messages: list[dict], tools: list[dict] | None, model: str
     ) -> AsyncIterator[dict]:
         try:
-            system_msg = None
-            user_messages = []
-            for m in messages:
-                if m["role"] == "system":
-                    system_msg = m["content"]
-                elif m["role"] == "tool":
-                    user_messages.append({
-                        "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": m.get("tool_call_id", "unknown"),
-                            "content": m["content"],
-                        }],
-                    })
-                else:
-                    user_messages.append({"role": m["role"], "content": m["content"]})
+            formatter = self._get_formatter()
+            if formatter:
+                system_msg, user_messages = formatter.format_messages(messages)
+                provider_tools = formatter.format_tools(tools)
+            else:
+                # Fallback — keep the inline logic until formatter is available
+                system_msg = None
+                user_messages = []
+                for m in messages:
+                    if m["role"] == "system":
+                        system_msg = m["content"]
+                    elif m["role"] == "tool":
+                        user_messages.append({
+                            "role": "user",
+                            "content": [{
+                                "type": "tool_result",
+                                "tool_use_id": m.get("tool_call_id", "unknown"),
+                                "content": m["content"],
+                            }],
+                        })
+                    else:
+                        user_messages.append({"role": m["role"], "content": m["content"]})
+                provider_tools = tools
 
             kwargs = {
                 "model": model,
@@ -115,25 +135,40 @@ class LLMService:
             }
             if system_msg:
                 kwargs["system"] = system_msg
-            if tools:
-                kwargs["tools"] = tools
+            if provider_tools:
+                kwargs["tools"] = provider_tools
 
             client = self._get_anthropic_client()
             async with client.messages.stream(**kwargs) as stream:
-                async for event in stream:
-                    if event.type == "content_block_delta":
-                        if event.delta.type == "text_delta":
-                            yield {"type": "token", "content": event.delta.text}
+                if formatter:
+                    async for event in stream:
+                        token = formatter.parse_stream_event(event)
+                        if token:
+                            yield {"type": "token", "content": token}
+                else:
+                    async for event in stream:
+                        if event.type == "content_block_delta":
+                            if event.delta.type == "text_delta":
+                                yield {"type": "token", "content": event.delta.text}
 
                 final_msg = stream.get_final_message()
-                for block in final_msg.content:
-                    if block.type == "tool_use":
+                if formatter:
+                    for tc in formatter.extract_tool_calls(final_msg):
                         yield {
                             "type": "tool_use",
-                            "id": block.id,
-                            "name": block.name,
-                            "arguments": block.input,
+                            "id": tc["id"],
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
                         }
+                else:
+                    for block in final_msg.content:
+                        if block.type == "tool_use":
+                            yield {
+                                "type": "tool_use",
+                                "id": block.id,
+                                "name": block.name,
+                                "arguments": block.input,
+                            }
         except Exception as e:
             yield {"type": "error", "message": str(e)}
 

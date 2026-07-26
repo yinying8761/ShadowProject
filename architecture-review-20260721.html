@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowProject — 架构审查报告</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'dark', themeVariables: {
+    primaryColor: '#6366f1', primaryTextColor: '#e2e8f0', lineColor: '#94a3b8',
+    secondaryColor: '#1e293b', tertiaryColor: '#0f172a'
+  }});
+  tailwind.config = { darkMode: 'class' };
+</script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+  body { font-family: 'Inter', 'Noto Sans SC', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; transition: border-color 0.2s; }
+  .card:hover { border-color: #6366f1; }
+  .badge-strong { background: #7c3aed20; color: #a78bfa; border: 1px solid #7c3aed40; }
+  .badge-worth { background: #0ea5e920; color: #38bdf8; border: 1px solid #0ea5e940; }
+  .badge-spec { background: #6b728020; color: #9ca3af; border: 1px solid #6b728040; }
+  .depth-bar { height: 4px; border-radius: 2px; }
+  .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 768px) { .before-after { grid-template-columns: 1fr; } }
+  .mermaid-container { background: #0f172a; border-radius: 8px; padding: 16px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+  .tag-backend { background: #7c3aed20; color: #a78bfa; }
+  .tag-frontend { background: #0ea5e920; color: #38bdf8; }
+  .tag-both { background: #f59e0b20; color: #fbbf24; }
+</style>
+</head>
+<body class="min-h-screen">
+<div class="max-w-5xl mx-auto px-4 py-12">
+
+  <!-- 头部 -->
+  <div class="mb-12">
+    <div class="flex items-center gap-3 mb-4">
+      <span class="text-4xl">🏗️</span>
+      <h1 class="text-3xl font-bold">ShadowProject 架构审查报告</h1>
+    </div>
+    <p class="text-slate-400 text-lg mb-2">
+      发现架构摩擦并提出<strong class="text-indigo-400">深化机会</strong>——
+      将浅层模块重构为深层模块，以提升局部性和杠杆效应。
+    </p>
+    <div class="flex gap-3 text-sm text-slate-500 mt-3">
+      <span>📅 2026-07-21</span>
+      <span>·</span>
+      <span>🔍 分析了 6 个提交</span>
+      <span>·</span>
+      <span>📁 28 个后端模块 + 22 个前端模块</span>
+      <span>·</span>
+      <span>📐 <a href="https://github.com/yinying8761/ShadowProject" class="text-indigo-400 hover:underline">yinying8761/ShadowProject</a></span>
+    </div>
+  </div>
+
+  <!-- 变更热点摘要 -->
+  <div class="card p-6 mb-10">
+    <h2 class="text-xl font-semibold mb-3">🔥 变更热点</h2>
+    <p class="text-slate-400 text-sm mb-4">修改最频繁的文件（来自 <code>git log</code> 和工作区差异）：</p>
+    <div class="flex flex-wrap gap-2">
+      <span class="tag tag-backend text-sm">backend/api/chat.py <span class="opacity-60">（6 个提交中有 4 次改动）</span></span>
+      <span class="tag tag-backend text-sm">backend/core/agent.py <span class="opacity-60">（6 个提交中有 3 次改动）</span></span>
+      <span class="tag tag-backend text-sm">backend/core/prompt_manager.py <span class="opacity-60">（6 个提交中有 2 次改动）</span></span>
+      <span class="tag tag-frontend text-sm">frontend/src/hooks/useDailyGreeting.ts <span class="opacity-60">（6 个提交中有 3 次改动）</span></span>
+      <span class="tag tag-frontend text-sm">frontend/src/hooks/useWebSocket.ts <span class="opacity-60">（6 个提交中有 2 次改动）</span></span>
+      <span class="tag tag-backend text-sm">backend/services/memory_service.py <span class="opacity-60">（6 个提交中有 2 次改动）</span></span>
+    </div>
+  </div>
+
+  <!-- 当前架构依赖图 -->
+  <div class="card p-6 mb-10">
+    <h2 class="text-xl font-semibold mb-3">📊 当前模块依赖图</h2>
+    <div class="mermaid-container">
+      <div class="mermaid">
+graph TD
+    subgraph "API 层（路由）"
+        CHAT[chat.py<br/>WebSocket 处理器<br/>⚠️ 754 行]
+        CHAR_API[character.py]
+        CONV_API[conversation.py]
+        CONFIG_API[config.py]
+        TTS_API[tts.py]
+    end
+
+    subgraph "核心层（编排）"
+        AGENT[agent.py<br/>Agent 循环 + 问候]
+        PROMPT[prompt_manager.py<br/>模板渲染]
+        CONVMGR[conversation_manager.py<br/>历史记录 + 摘要]
+        ROUTER[router.py<br/>搜索意图检测]
+        TOOLREG[tool_registry.py<br/>全局单例]
+    end
+
+    subgraph "服务层（适配器）"
+        LLM[llm_service.py<br/>OpenAI + Anthropic]
+        MEM[memory_service.py<br/>FTS5 + 搜索<br/>⚠️ 510 行]
+        LOC[location_service.py<br/>高德地图 API]
+        WEATHER[weather_service.py<br/>高德天气 API]
+        TTS[tts_service.py<br/>GPT-SoVITS]
+        WATCHER[proactive_watcher.py<br/>空闲 + 定时]
+        EMBED[embedding_service.py]
+        VISION[vision_service.py]
+    end
+
+    subgraph "工具层（Agent 工具处理器）"
+        FILE_T[file_tools.py]
+        SCREEN_T[screen_tools.py]
+        TIME_T[time_tools.py]
+        SEARCH_T[search_tools.py]
+        MEM_T[memory_tools.py]
+    end
+
+    CHAT -->|创建| AGENT
+    CHAT -->|管理| WATCHER
+    CHAT -->|调用| ROUTER
+    CHAT -->|调用| LOC
+    CHAT -->|调用| WEATHER
+    CHAT -->|调用| MEM
+    AGENT --> PROMPT
+    AGENT --> CONVMGR
+    AGENT --> TOOLREG
+    AGENT --> LLM
+    AGENT --> MEM
+    TOOLREG --> FILE_T
+    TOOLREG --> SCREEN_T
+    TOOLREG --> TIME_T
+    TOOLREG --> SEARCH_T
+    TOOLREG --> MEM_T
+
+    style CHAT fill:#7c3aed20,stroke:#a78bfa,stroke-width:2px
+    style MEM fill:#f59e0b20,stroke:#fbbf24,stroke-width:2px
+    style AGENT fill:#6366f120,stroke:#818cf8,stroke-width:1px
+  </div>
+    </div>
+    <p class="text-slate-500 text-sm mt-3">
+      <strong>图例：</strong>紫色边框 = 值得关注的热点。黄色 = 中度关注。
+    </p>
+  </div>
+
+  <!-- 候选方案卡片 -->
+
+  <!-- #1: chat.py 上帝模块 -->
+  <div class="card p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <span class="text-sm text-slate-500">候选方案 #1</span>
+        <h2 class="text-2xl font-bold mt-1">拆分 WebSocket 处理器上帝模块</h2>
+      </div>
+      <span class="px-3 py-1 rounded-full text-sm font-semibold badge-strong">强烈推荐</span>
+    </div>
+
+    <div class="flex gap-2 mb-4">
+      <span class="tag tag-backend">backend/api/chat.py</span>
+      <span class="text-slate-500 text-sm">754 行</span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div>
+        <h3 class="font-semibold text-red-400 mb-2">🔴 问题</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          <code>chat.py</code> 是一个<strong>浅层模块</strong>，其庞大的实现背后本质上只有一个入口点
+          （<code>handle_message</code>）。它承载了 <strong>8 个以上不同的关注点</strong>：
+        </p>
+        <ul class="text-slate-400 text-sm mt-2 space-y-1 list-disc list-inside">
+          <li>WebSocket 生命周期（连接/断开/重连）</li>
+          <li>主动陪伴监控器状态管理（5 个回调、刷新循环）</li>
+          <li>每日问候编排（位置 → 天气 → 记忆 → LLM → 持久化）</li>
+          <li>位置更新处理（浏览器定位 → 逆地理编码 → 天气 → 缓存）</li>
+          <li>搜索路由器集成（意图检测 → 缓存 → 增强）</li>
+          <li>POI/美食推荐注入</li>
+          <li>屏幕截图（指纹去重 + 权限审批）</li>
+          <li>工具审批流程（pending future、超时处理）</li>
+        </ul>
+        <p class="text-slate-500 text-sm mt-3">
+          自 <code>0e2165c</code> 提交以来的每个功能都落入了这个文件。<strong>零局部性</strong>——
+          修改屏幕截图的工作方式需要编辑与修改每日问候相同的文件。
+        </p>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-green-400 mb-2">🟢 解决方案</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          将每个关注点提取到独立的<strong>深层模块</strong>中，每个模块在干净的接缝处拥有窄接口。
+          WebSocket 处理器变成一个薄<strong>适配器</strong>，将它们连接在一起。
+        </p>
+        <div class="text-slate-400 text-sm mt-2 space-y-2">
+          <div><strong class="text-indigo-300">GreetingOrchestrator（问候编排器）</strong> — 接收 (character_id, conversation_id, cached_location) → 产出问候 token。接口：单一方法 <code>run(params) → AsyncIterator[event]</code>。</div>
+          <div><strong class="text-indigo-300">ProactiveSession（主动会话）</strong> — 用 WebSocket 专用回调包装 ProactiveWatcher。接收注入的 <code>send_json</code> 函数。</div>
+          <div><strong class="text-indigo-300">ScreenCaptureGate（屏幕捕获门）</strong> — 指纹去重 + 权限审批。接口：<code>try_capture(focus?) → str | None</code>。</div>
+          <div><strong class="text-indigo-300">MessageAugmenter（消息增强器）</strong> — 流水线：路由 → 美食/POI → 屏幕。接口：<code>augment(content) → str</code>。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="before-after mb-4">
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造前 — 浅层上帝模块</p>
+        <div class="mermaid">
+graph TD
+    WS[WebSocket 处理器<br/>chat.py] -->|闭包| APPROVAL[审批流程]
+    WS -->|闭包| WATCHER[监控器状态]
+    WS -->|闭包| GREETING[每日问候]
+    WS -->|闭包| LOC[位置处理]
+    WS -->|闭包| ROUTER[搜索路由]
+    WS -->|闭包| POI[美食推荐]
+    WS -->|闭包| SCREEN[屏幕捕获]
+    style WS fill:#7c3aed20,stroke:#a78bfa,stroke-width:2px
+  </div>
+        <p class="text-xs text-slate-500 mt-2 text-center">
+          一个模块，一个接口：<code>handle_message(data)</code>。<br/>
+          添加任何功能 = 编辑这个文件。
+        </p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造后 — 干净接缝处的深层模块</p>
+        <div class="mermaid">
+graph TD
+    WS2[ws_chat<br/>薄适配器<br/>~120 行]
+    WS2 --> GREET2[GreetingOrchestrator<br/>单一方法: run]
+    WS2 --> PROACT2[ProactiveSession<br/>包装 Watcher]
+    WS2 --> SCREEN2[ScreenCaptureGate<br/>try_capture]
+    WS2 --> AUGMENT[MessageAugmenter<br/>增强流水线]
+    AUGMENT --> ROUTER2[SearchRouter]
+    AUGMENT --> POI2[FoodPOIInjector]
+    AUGMENT --> SCREEN2
+    style WS2 fill:#10b98120,stroke:#34d399,stroke-width:2px
+  </div>
+        <p class="text-xs text-slate-500 mt-2 text-center">
+          每个模块各司其职，各有接口。<br/>
+          改动局限在各自的模块内。
+        </p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🔗 局部性</p>
+        <p class="text-slate-400">修复问候 bug → 只需改 <code>GreetingOrchestrator</code>。修复截图问题 → 只需改 <code>ScreenCaptureGate</code>。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">⚡ 杠杆效应</p>
+        <p class="text-slate-400">每个模块提供一个小接口（<code>run()</code>、<code>try_capture()</code>、<code>augment()</code>），背后隐藏了大量实现。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🧪 可测试性</p>
+        <p class="text-slate-400">每个模块可以通过其接口用假依赖进行测试——不需要真正的 WebSocket。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- #2: agent.py 重复方法 -->
+  <div class="card p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <span class="text-sm text-slate-500">候选方案 #2</span>
+        <h2 class="text-2xl font-bold mt-1">通过参数化统一 Agent.run() 和 run_daily_greeting()</h2>
+      </div>
+      <span class="px-3 py-1 rounded-full text-sm font-semibold badge-strong">强烈推荐</span>
+    </div>
+
+    <div class="flex gap-2 mb-4">
+      <span class="tag tag-backend">backend/core/agent.py</span>
+      <span class="text-slate-500 text-sm">约 200 行重复逻辑</span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div>
+        <h3 class="font-semibold text-red-400 mb-2">🔴 问题</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          <code>run()</code> 和 <code>run_daily_greeting()</code> 几乎是相同的副本：
+          都加载角色、构建系统提示词、从 LLM 流式获取、持久化消息。
+          <code>run_daily_greeting</code> 是通过复制 <code>run</code> 并移除工具执行而创建的。
+        </p>
+        <p class="text-slate-500 text-sm mt-2">
+          添加新的 LLM 事件类型或更改消息持久化流程需要<strong>同时修改两个方法</strong>。
+          在一个方法中添加的每个功能都是另一个方法中的潜在 bug。
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-green-400 mb-2">🟢 解决方案</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          用 <strong>mode</strong> 参数化 <code>run()</code>，控制工具可用性、最大轮次和后处理。
+          <code>run_daily_greeting</code> 变成一个薄调用者：
+        </p>
+        <div class="bg-slate-900 rounded p-3 mt-2 font-mono text-xs text-slate-300">
+          <pre>await agent.run(
+  session=session,
+  user_message=None,
+  conversation_id=cid,
+  character_id=cid,
+  <span class="text-green-400">mode="greeting"</span>,  // 禁用工具，注入问候提示词
+  <span class="text-green-400">extra_context={</span>
+    "location": location_info,
+    "weather": weather_info,
+    "days_since_last": days,
+    "memories": memory_texts,
+  <span class="text-green-400">}</span>,
+)</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="before-after mb-4">
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造前 — 两个方法，共享逻辑</p>
+        <div class="mermaid">
+graph TD
+    RUN[run<br/>agent 循环 + 工具]
+    GREET3[run_daily_greeting<br/>复制粘贴版]
+    LLM3[LLM 流式处理]
+    PERSIST3[消息持久化]
+    CHAR3[角色加载]
+    PROMPT3[提示词构建]
+    RUN --> CHAR3
+    RUN --> PROMPT3
+    RUN --> LLM3
+    RUN --> PERSIST3
+    GREET3 --> CHAR3
+    GREET3 --> PROMPT3
+    GREET3 --> LLM3
+    GREET3 --> PERSIST3
+    style GREET3 fill:#ef444420,stroke:#f87171,stroke-width:1px,stroke-dasharray:5
+  </div>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造后 — 一个方法，两种模式</p>
+        <div class="mermaid">
+graph TD
+    RUN2[run<br/>mode: 'chat' | 'greeting']
+    RUN2 --> CHAR4[角色加载]
+    RUN2 --> PROMPT4[提示词构建<br/>模式感知]
+    RUN2 --> LLM4[LLM 流式处理]
+    RUN2 --> PERSIST4[消息持久化]
+    style RUN2 fill:#10b98120,stroke:#34d399,stroke-width:2px
+  </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🔗 局部性</p>
+        <p class="text-slate-400">LLM 流式处理、持久化和角色加载的变更集中在一处。一次修复，处处生效。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">⚡ 杠杆效应</p>
+        <p class="text-slate-400">调用者通过传入 <code>mode="greeting"</code> 获得问候行为——无需学习单独的入口点。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🧪 可测试性</p>
+        <p class="text-slate-400">通过同一接口测试问候模式和聊天模式。一组 mock 覆盖两条路径。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- #3: chatStore 通信总线 -->
+  <div class="card p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <span class="text-sm text-slate-500">候选方案 #3</span>
+        <h2 class="text-2xl font-bold mt-1">拆分 chatStore：领域状态 vs. 通信管道</h2>
+      </div>
+      <span class="px-3 py-1 rounded-full text-sm font-semibold badge-worth">值得探索</span>
+    </div>
+
+    <div class="flex gap-2 mb-4">
+      <span class="tag tag-frontend">frontend/src/stores/chatStore.ts</span>
+      <span class="text-slate-500 text-sm">168 行，20+ 个字段</span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div>
+        <h3 class="font-semibold text-red-400 mb-2">🔴 问题</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          <code>chatStore</code> 是一个<strong>浅层模块</strong>，其接口几乎与实现一样复杂。
+          它混合了三个不同的关注点：
+        </p>
+        <ul class="text-slate-400 text-sm mt-2 space-y-1 list-disc list-inside">
+          <li><strong>领域状态：</strong>消息、流式内容、对话 ID</li>
+          <li><strong>通信桥接：</strong><code>wsSendMessage</code>、<code>wsSendJson</code>、<code>wsSendApprovalResponse</code>——由 WebSocket hook 注入</li>
+          <li><strong>功能回调：</strong><code>speakMessage</code>、<code>stopSpeaking</code>——由 TTS hook 注入</li>
+        </ul>
+        <p class="text-slate-500 text-sm mt-2">
+          添加新的通信通道（例如「发送在线状态」）意味着需要再添加一个字段和 setter。
+          每个需要与 WebSocket 通信的 hook 都必须轮询 store——这是一种脆弱的隐式依赖。
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-green-400 mb-2">🟢 解决方案</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          创建一个 <strong>WebSocketBus</strong> 模块——一个响应式事件发射器，hook 直接订阅它，
+          而不通过 store。store 缩减为纯粹的领域状态。
+        </p>
+        <div class="bg-slate-900 rounded p-3 mt-2 font-mono text-xs text-slate-300">
+          <div><span class="text-indigo-400">// 新增：WebSocketBus（单一接缝）</span></div>
+          <div>const bus = createWebSocketBus(url)</div>
+          <div>bus.send({ type: 'daily_greeting' })</div>
+          <div>bus.on('token', (data) => { ... })</div>
+          <div class="mt-2 text-slate-500">// chatStore 缩减为：</div>
+          <div>messages, isStreaming, streamingContent,</div>
+          <div>conversationId, pendingApproval</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="before-after mb-4">
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造前 — Store 充当总线</p>
+        <div class="mermaid">
+graph TD
+    WS_HOOK[useWebSocket<br/>注入 wsSendJson]
+    DAILY[useDailyGreeting<br/>轮询 wsSendJson]
+    GEO[useGeolocation<br/>轮询 wsSendJson]
+    TTS_HOOK[useTTS<br/>注入 speakMessage]
+    STORE[(chatStore<br/>领域 + 总线 + 回调)]
+    WS_HOOK --> STORE
+    DAILY -->|轮询| STORE
+    GEO -->|轮询| STORE
+    TTS_HOOK --> STORE
+    style STORE fill:#eab30820,stroke:#facc15,stroke-width:2px
+  </div>
+        <p class="text-xs text-slate-500 mt-2 text-center">每个 hook 都依赖 store 进行通信。脆弱的轮询机制。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造后 — 总线作为接缝</p>
+        <div class="mermaid">
+graph TD
+    BUS[WebSocketBus<br/>事件发射器]
+    WS_HOOK2[useWebSocket<br/>连接总线]
+    DAILY2[useDailyGreeting<br/>bus.send]
+    GEO2[useGeolocation<br/>bus.send]
+    TTS_HOOK2[useTTS<br/>bus.send + bus.on]
+    STORE2[(chatStore<br/>仅领域状态)]
+    BUS -->|token 事件| STORE2
+    style BUS fill:#10b98120,stroke:#34d399,stroke-width:2px
+  </div>
+        <p class="text-xs text-slate-500 mt-2 text-center">Hook 直接与总线通信。Store 仅处理领域状态。</p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🔗 局部性</p>
+        <p class="text-slate-400">WebSocket 协议变更只影响 <code>WebSocketBus</code>。添加新消息类型只需一次 <code>bus.on()</code> 调用。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">⚡ 杠杆效应</p>
+        <p class="text-slate-400">一个总线接口（<code>send</code>/<code>on</code>/<code>off</code>）满足所有通信需求。无需轮询。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🧪 可测试性</p>
+        <p class="text-slate-400">Hook 可以用假总线进行测试。通信测试不再依赖 store。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- #4: MemoryService 混合关注点 -->
+  <div class="card p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <span class="text-sm text-slate-500">候选方案 #4</span>
+        <h2 class="text-2xl font-bold mt-1">拆分 MemoryService：存储适配器 vs. 检索逻辑</h2>
+      </div>
+      <span class="px-3 py-1 rounded-full text-sm font-semibold badge-worth">值得探索</span>
+    </div>
+
+    <div class="flex gap-2 mb-4">
+      <span class="tag tag-backend">backend/services/memory_service.py</span>
+      <span class="text-slate-500 text-sm">510 行，10+ 个公开方法</span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div>
+        <h3 class="font-semibold text-red-400 mb-2">🔴 问题</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          <strong>MemoryService</strong> 在一个模块中混合了三层关注点：
+        </p>
+        <ul class="text-slate-400 text-sm mt-2 space-y-1 list-disc list-inside">
+          <li><strong>存储：</strong>FTS5 虚拟表、触发器、二进制 embedding 打包/解包、CRUD</li>
+          <li><strong>检索：</strong>混合搜索流水线（FTS5 排名 → embedding 余弦相似度 → RRF 合并 → 重要性/时效性加权）</li>
+          <li><strong>编排：</strong>LLM 提取、去重、剪枝、通知队列</li>
+        </ul>
+        <p class="text-slate-500 text-sm mt-2">
+          <strong>接口是浅层的</strong>——调用者必须了解 <code>_ensure_fts5()</code>（模块级函数）、
+          <code>push/pop_memory_notifications</code>（也是模块级函数）以及单例 <code>memory_service</code>。
+          <strong>真正的接缝</strong>（切换存储或排序算法的地方）并不存在。
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-green-400 mb-2">🟢 解决方案</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          拆分为三个模块，每个模块有自己的接缝：
+        </p>
+        <div class="text-slate-400 text-sm mt-2 space-y-2">
+          <div><strong class="text-indigo-300">MemoryStore（存储适配器）</strong> — 接口：<code>add()</code>、<code>delete()</code>、<code>search_fts(query)</code>、<code>get_batch(ids)</code>。目前有一个适配器（SQLite+FTS5），但接缝已为未来的向量数据库做好准备。</div>
+          <div><strong class="text-indigo-300">MemoryRetriever（检索器）</strong> — 接口：<code>search(query, character_id, top_k) → list[Memory]</code>。隐藏 RRF、余弦相似度、重要性/时效性逻辑。</div>
+          <div><strong class="text-indigo-300">MemoryExtractor（提取器）</strong> — 接口：<code>extract(conversation_id, messages) → list[Memory]</code>。LLM 调用 + 去重 + 存储。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="before-after mb-4">
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造前 — 一个模块，多个关注点</p>
+        <div class="mermaid">
+graph TD
+    MEMSVC[MemoryService<br/>510 行]
+    MEMSVC --> FTS[FTS5 触发器]
+    MEMSVC --> EMB[embedding 打包/解包]
+    MEMSVC --> CRUD[CRUD 操作]
+    MEMSVC --> HYBRID[混合 RRF 搜索]
+    MEMSVC --> EXTRACT[LLM 提取]
+    MEMSVC --> DEDUP[去重 + 剪枝]
+    MEMSVC --> NOTIFY[通知队列]
+    style MEMSVC fill:#eab30820,stroke:#facc15,stroke-width:2px
+  </div>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-4">
+        <p class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">改造后 — 三个深层模块</p>
+        <div class="mermaid">
+graph TD
+    EXTRACT2[MemoryExtractor<br/>提取 + 去重<br/>~120 行]
+    RETRIEVE[MemoryRetriever<br/>混合搜索<br/>~150 行]
+    STORE[MemoryStore<br/>CRUD + FTS5<br/>~180 行]
+    EXTRACT2 --> STORE
+    RETRIEVE --> STORE
+    style EXTRACT2 fill:#10b98120,stroke:#34d399,stroke-width:2px
+    style RETRIEVE fill:#10b98120,stroke:#34d399,stroke-width:2px
+    style STORE fill:#10b98120,stroke:#34d399,stroke-width:2px
+  </div>
+        <p class="text-xs text-slate-500 mt-2 text-center">
+          每个模块各有一个接缝。存储层<strong>目前有一个适配器，为未来的替换预留了真正的接缝</strong>。
+        </p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🔗 局部性</p>
+        <p class="text-slate-400">将 SQLite 换成向量数据库 → 只需改 <code>MemoryStore</code>。调整排序算法 → 只需改 <code>MemoryRetriever</code>。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">⚡ 杠杆效应</p>
+        <p class="text-slate-400"><code>MemoryRetriever.search(query, top_k, char_id)</code>——一个方法，背后隐藏了大量检索逻辑。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🧪 可测试性</p>
+        <p class="text-slate-400">用返回已知记忆的假存储来测试排序。用假 LLM 测试提取。测试不需要 FTS5 触发器。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- #5: 全局工具注册表 -->
+  <div class="card p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <span class="text-sm text-slate-500">候选方案 #5</span>
+        <h2 class="text-2xl font-bold mt-1">将 ToolRegistry 改为可注入，而非模块级单例</h2>
+      </div>
+      <span class="px-3 py-1 rounded-full text-sm font-semibold badge-worth">值得探索</span>
+    </div>
+
+    <div class="flex gap-2 mb-4">
+      <span class="tag tag-backend">backend/core/tool_registry.py</span>
+      <span class="tag tag-backend">backend/main.py</span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div>
+        <h3 class="font-semibold text-red-400 mb-2">🔴 问题</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          <code>tool_registry = ToolRegistry()</code> 在模块加载时创建，<code>register_tools()</code>
+          在任何测试运行之前在 <code>main.py</code> 中被调用。这是<strong>可变全局状态</strong>——
+          每个测试共享同一个注册表。<strong>Agent</strong> 直接从模块导入它，
+          因此测试无法注册假工具。
+        </p>
+        <p class="text-slate-500 text-sm mt-2">
+          <strong>删除测试</strong>：如果删除全局 <code>tool_registry</code>，复杂性会
+          <em>集中</em>到 Agent 构造函数中（它将作为依赖项接收）。这是一件好事。
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-green-400 mb-2">🟢 解决方案</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          将 <code>tool_registry</code> 作为构造函数依赖项传递给 <code>Agent</code>。
+          <code>main.py</code> 创建真实的注册表；测试创建假的。
+        </p>
+        <div class="bg-slate-900 rounded p-3 mt-2 font-mono text-xs text-slate-300">
+          <div><span class="text-slate-500">// 改造前：</span></div>
+          <div>class Agent:</div>
+          <div>  def __init__(self):</div>
+          <div>    <span class="text-red-400">from core.tool_registry import tool_registry</span></div>
+          <div>    self.tool_registry = tool_registry</div>
+          <div class="mt-2 text-slate-500">// 改造后：</div>
+          <div>class Agent:</div>
+          <div>  def <span class="text-green-400">__init__(self, tool_registry=None)</span>:</div>
+          <div>    self.tool_registry = tool_registry <span class="text-green-400">or ToolRegistry()</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🔗 局部性</p>
+        <p class="text-slate-400">工具注册的知识保留在 <code>main.py</code> 中。Agent 不关心工具来自哪里。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">⚡ 杠杆效应</p>
+        <p class="text-slate-400">同一个 Agent 可以使用真实工具、假工具或受限工具集运行——用于测试或不同模式（例如问候模式 = 无工具）。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🧪 可测试性</p>
+        <p class="text-slate-400">测试通过 <code>register("fake_tool", handler=mock)</code> 注入注册表。无需重置全局状态。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- #6: llm_service 格式转换 -->
+  <div class="card p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <span class="text-sm text-slate-500">候选方案 #6</span>
+        <h2 class="text-2xl font-bold mt-1">从 LLMService 中提取消息格式转换逻辑</h2>
+      </div>
+      <span class="px-3 py-1 rounded-full text-sm font-semibold badge-spec">探索性</span>
+    </div>
+
+    <div class="flex gap-2 mb-4">
+      <span class="tag tag-backend">backend/services/llm_service.py</span>
+      <span class="text-slate-500 text-sm">215 行</span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div>
+        <h3 class="font-semibold text-red-400 mb-2">🔴 问题</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          内部格式到提供商格式的消息转换在 <code>_stream_openai</code>、
+          <code>_stream_anthropic</code> 和 <code>chat_sync</code> 中重复出现。添加第三个提供商（如 Google Gemini）
+          意味着第三次复制格式逻辑。
+        </p>
+        <p class="text-slate-500 text-sm mt-2">
+          目前，这是一个<strong>单适配器接缝</strong>（一个内部格式 → OpenAI 或 Anthropic）。
+          由于项目已支持两个提供商，这个接缝是真实的，应该有自己独立的模块。
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-green-400 mb-2">🟢 解决方案</h3>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          每个提供商对应一个 <strong>MessageFormatter</strong> 模块。<code>LLMService.stream_chat</code>
+          将格式转换委托给格式化器，然后从提供商流式获取。
+        </p>
+        <div class="bg-slate-900 rounded p-3 mt-2 font-mono text-xs text-slate-300">
+          <div><span class="text-indigo-400">class MessageFormatter:</span></div>
+          <div>  def to_provider(messages) → ProviderMessages</div>
+          <div>  def from_provider_stream(chunk) → Event</div>
+          <div class="mt-2 text-slate-500">// 每个提供商一个适配器：</div>
+          <div>OpenAIFormatter, AnthropicFormatter, ...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🔗 局部性</p>
+        <p class="text-slate-400">添加新提供商 = 一个包含格式逻辑的新文件。LLMService 不再变更。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">⚡ 杠杆效应</p>
+        <p class="text-slate-400"><code>formatter.to_provider(msg)</code>——一个调用点，隐藏了所有格式转换的复杂性。</p>
+      </div>
+      <div class="bg-slate-900 rounded-lg p-3">
+        <p class="font-semibold text-indigo-300 mb-1">🧪 可测试性</p>
+        <p class="text-slate-400">独立测试每个格式化器——给它消息，检查输出格式。不需要真正的 LLM 调用。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 首要推荐 -->
+  <div class="card p-6 mt-10" style="border-color: #6366f1; border-width: 2px;">
+    <div class="flex items-center gap-3 mb-4">
+      <span class="text-3xl">⭐</span>
+      <h2 class="text-2xl font-bold">首要推荐</h2>
+    </div>
+    <p class="text-slate-300 leading-relaxed mb-6">
+      从<strong>候选方案 #1：拆分 WebSocket 处理器</strong>开始。这个文件在每个提交中都有改动，
+      局部性最差，是代码库中最浅层的模块。建议执行顺序如下：
+    </p>
+
+    <div class="space-y-4">
+      <div class="flex gap-4 items-start">
+        <div class="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-bold flex-shrink-0">1</div>
+        <div>
+          <p class="font-semibold">提取 <code>GreetingOrchestrator（问候编排器）</code></p>
+          <p class="text-slate-400 text-sm">从 chat.py 移出约 120 行到新模块。chat.py 缩减 15%。接口：<code>async def run(session, char_id, conv_id, location, weather, days, memories) → AsyncIterator[event]</code>。</p>
+        </div>
+      </div>
+      <div class="flex gap-4 items-start">
+        <div class="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-bold flex-shrink-0">2</div>
+        <div>
+          <p class="font-semibold">提取 <code>MessageAugmenter（消息增强器）</code></p>
+          <p class="text-slate-400 text-sm">将搜索路由器 + POI + 屏幕捕获移入流水线。chat.py 再缩减 15%。接口：<code>async def augment(content: str, character_id: str) → str</code>。</p>
+        </div>
+      </div>
+      <div class="flex gap-4 items-start">
+        <div class="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-bold flex-shrink-0">3</div>
+        <div>
+          <p class="font-semibold">统一 Agent.run() / run_daily_greeting()（候选方案 #2）</p>
+          <p class="text-slate-400 text-sm">随着 GreetingOrchestrator 被提取出来，两个 Agent 方法之间的重复更加明显。消除它。</p>
+        </div>
+      </div>
+      <div class="flex gap-4 items-start">
+        <div class="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-bold flex-shrink-0">4</div>
+        <div>
+          <p class="font-semibold">提取 <code>ProactiveSession（主动会话）</code></p>
+          <p class="text-slate-400 text-sm">将监控器生命周期和状态管理移出 chat.py。chat.py 变成一个薄适配器（约 120 行）。</p>
+        </div>
+      </div>
+      <div class="flex gap-4 items-start">
+        <div class="w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center text-sm font-bold flex-shrink-0">5</div>
+        <div>
+          <p class="font-semibold">然后：拆分 chatStore（候选方案 #3）或拆分 MemoryService（候选方案 #4）</p>
+          <p class="text-slate-400 text-sm">取决于哪个领域接下来有功能开发。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 页脚 -->
+  <div class="mt-10 pt-6 border-t border-slate-800 text-sm text-slate-500">
+    <p>由 <code>/improve-codebase-architecture</code> 技能生成。使用 <strong>/codebase-design</strong> 词汇体系：模块（module）、接口（interface）、深度（depth）、接缝（seam）、适配器（adapter）、杠杆效应（leverage）、局部性（locality）。</p>
+    <p class="mt-1">尚未创建 CONTEXT.md 或 ADR——领域模型会进一步深化这些建议。</p>
+  </div>
+
+</div>
+</body>
+</html>

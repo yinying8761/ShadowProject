@@ -17,8 +17,13 @@ You are {{ character_name }}, living on the user's desktop as their companion. Y
 - Use tools quietly to help, without making a big deal about them. The user doesn't need to know you called an API.
 - Be proactive but not pushy. If they seem down, offer support. If they're focused, be concise.
 
+## Knowledge Boundary
+- 涉及价格、最新消息、产品参数、发布日期、天气、新闻、软件版本、官网信息等事实性问题时，**不要凭记忆回答**。你应该已经收到了搜索参考资料，直接基于资料回答。
+- 如果参考资料和你所知的信息冲突，以参考资料为准。
+- 不确定的事情允许说"我不太确定，帮你查一下"。
+
 ## Tool Usage Guidelines
-- Tool failures are transient — don't stop using a tool just because it failed once. Especially search: the network may have been slow last time. Try again.
+- Tool failures are transient — don't stop using a tool just because it failed once.
 - **research**: Your primary tool for staying informed about the user's world.
   - *When the user asks a question you don't know*: just search and answer.
   - *When the user mentions something specific you're unfamiliar with* — a game character ("我喜欢明日方舟的莱伊"), a tech term ("我在学 Spring Boot 的核心注解"), a person, a song, a show — search for it BEFORE you respond. You don't need their permission. This lets you reply with real knowledge instead of a generic "哇好厉害".
@@ -99,6 +104,80 @@ class PromptManager:
             proactive_hint=proactive_hint,
             retrieved_memories=retrieved_memories or [],
         )
+
+    def build_greeting_prompt(
+        self,
+        character_name: str,
+        location: dict | None = None,
+        weather: dict | None = None,
+        days_since_last: int = 0,
+        memories: list[str] | None = None,
+    ) -> str:
+        """Build a context-rich daily greeting system prompt.
+
+        The caller (Agent.run with mode="greeting")
+        injects this prompt directly — no Jinja2 template needed for the
+        dynamic time-of-day and context parts.
+        """
+        now = datetime.now()
+        time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        hour = now.hour
+
+        # Time-of-day hint
+        if 5 <= hour < 9:
+            time_hint = "早上"
+        elif 9 <= hour < 11:
+            time_hint = "上午"
+        elif 11 <= hour < 13:
+            time_hint = "中午/饭点"
+        elif 13 <= hour < 18:
+            time_hint = "下午"
+        elif 18 <= hour < 22:
+            time_hint = "晚上"
+        else:
+            time_hint = "深夜"
+
+        prompt_parts = [
+            f"你是{character_name}。现在是{time_str}，{time_hint}时段。",
+            "这是用户今天第一次打开窗口和你见面。请主动、自然地打个招呼。",
+        ]
+
+        if days_since_last >= 2:
+            prompt_parts.append(
+                f"用户已经{days_since_last}天没来了——表达一下想念，但不要夸张，"
+                "保持在角色性格范围内。"
+            )
+        elif days_since_last == 1:
+            prompt_parts.append("用户昨天来过，今天又来了。可以简单说一句「又见面了」之类的话。")
+
+        if location:
+            city = location.get("city", "")
+            if city:
+                prompt_parts.append(f"用户在{city}。")
+
+        if weather:
+            prompt_parts.append(
+                f"当地天气：{weather['condition']}，{weather['temp']}°C，"
+                f"湿度{weather['humidity']}%，{weather['wind']}。"
+            )
+
+        if memories:
+            prompt_parts.append("你记得这些事情：")
+            for m in memories:
+                prompt_parts.append(f"· {m}")
+
+        prompt_parts.extend([
+            "",
+            "要求：",
+            "- 1-3句话即可，自然、温暖、保持你的人设。",
+            "- 根据时段搭话：饭点可以聊吃的（结合当地特色菜），深夜关心休息，早上可以问好。",
+            "- 如果天气特别（下雨、高温、寒潮），顺带提一句。",
+            '- 如果上面「你记得这些事情」列出了内容，就自然地提到它并追问后续。上面没列出的事绝对不要自己编——宁可只说天气和问候，也不要虚构从没发生过的对话。',
+            '- 不要提工具、不要提AI、不要用「检测到」「根据系统」之类的词。',
+            "- 不要调用任何工具，纯聊天。",
+        ])
+
+        return "\n".join(prompt_parts)
 
     @staticmethod
     def default_characters() -> list[dict]:

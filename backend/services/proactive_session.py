@@ -185,7 +185,7 @@ class ProactiveSession:
         silent_approval = cfg.proactive_silent_tool_approval if cfg else False
         auto_see_screen = cfg.proactive_auto_see_screen if cfg else True
 
-        context: list[dict] = []
+        info_parts: list[str] = []
 
         # ── Current time ────────────────────────────────────────────
         time_result = await self._run_proactive_tool(
@@ -195,13 +195,7 @@ class ProactiveSession:
             silent_approval=True,
         )
         if time_result:
-            context.extend(
-                build_tool_context_message(
-                    "get_current_time",
-                    time_result,
-                    f"proactive-time-{uuid.uuid4().hex[:8]}",
-                )
-            )
+            info_parts.append(f"当前时间：{time_result}")
 
         # ── Screen capture (with throttle + dedup) ──────────────────
         if auto_see_screen:
@@ -238,16 +232,22 @@ class ProactiveSession:
                         silent_approval=silent_approval,
                     )
                     if screen_result:
-                        context.extend(
-                            build_tool_context_message(
-                                "see_screen",
-                                screen_result,
-                                f"proactive-screen-{uuid.uuid4().hex[:8]}",
-                                {"focus": focus},
-                            )
-                        )
+                        info_parts.append(f"屏幕内容：{screen_result}")
 
-        return context
+        if not info_parts:
+            return []
+
+        # Use a plain user message instead of synthetic tool_call /
+        # tool_result pairs.  The latter requires `tools` to be
+        # present in the API request, which conflicts with the
+        # suppress_tool_calls / proactive_no_tools path.
+        return [{
+            "role": "user",
+            "content": (
+                "[系统通过工具获取了以下信息，请基于这些信息自然地发起对话，"
+                "不要提工具名称]\n" + "\n".join(info_parts)
+            ),
+        }]
 
     # ── Tool runner ─────────────────────────────────────────────────
 
@@ -322,6 +322,8 @@ class ProactiveSession:
                         "或者看到用户在做什么就顺着聊下去。自然就好，不用提工具。"
                     )
 
+                event_count = 0
+                full_text = ""
                 async for event in self._agent.run(
                     session=session,
                     user_message=None,
@@ -332,6 +334,16 @@ class ProactiveSession:
                     force_tool_context=proactive_context,
                     suppress_tool_calls=True,
                 ):
+                    event_count += 1
+                    etype = event.get("type", "?")
+                    if etype == "token":
+                        full_text += event.get("content", "")
+                    if etype == "error":
+                        print(f"[ProactiveSession] ERROR event: {event.get('message', '?')[:300]}",
+                              flush=True)
+                    print(f"[ProactiveSession] event #{event_count} type={etype} "
+                          f"skip={'__SKIP__' in full_text} content_len={len(full_text)}",
+                          flush=True)
                     if event.get("type") == "proactive_skip":
                         print("[ProactiveSession] model returned __SKIP__, not sending", flush=True)
                         return
@@ -339,7 +351,9 @@ class ProactiveSession:
                     await self._send_json(tagged)
                     sent_anything = True
 
-                print(f"[ProactiveSession] complete (sent={sent_anything})", flush=True)
+                print(f"[ProactiveSession] complete (sent={sent_anything}) "
+                      f"events={event_count} text_len={len(full_text)} text={repr(full_text[:200])}",
+                      flush=True)
                 if sent_anything:
                     self.reset_idle()
         except Exception as e:

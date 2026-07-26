@@ -33,14 +33,23 @@ from sqlalchemy import select
 
 # ---- Tool Registration ----
 
-def register_tools():
-    """Register all available tools for the Agent."""
-    from core.tool_registry import tool_registry
+def register_tools(registry=None):
+    """Register all available tools for the Agent.
+
+    Parameters
+    ----------
+    registry:
+        Optional ToolRegistry instance.  When *None* the module-level
+        singleton is used — this is the production path.  Tests may pass
+        an isolated instance to avoid mutating global state.
+    """
+    if registry is None:
+        from core.tool_registry import tool_registry as registry
     from tools.file_tools import read_file, write_file, list_directory, search_files
     from tools.screen_tools import see_screen
     from tools.time_tools import get_current_time
 
-    tool_registry.register(
+    registry.register(
         name="read_file",
         description="Read the contents of a file on the user's computer.",
         parameters={
@@ -55,7 +64,7 @@ def register_tools():
         require_approval=False,
     )
 
-    tool_registry.register(
+    registry.register(
         name="write_file",
         description="Write content to a file. Creates parent directories if needed.",
         parameters={
@@ -71,7 +80,7 @@ def register_tools():
         require_approval=True,
     )
 
-    tool_registry.register(
+    registry.register(
         name="list_directory",
         description="List files and subdirectories in a directory.",
         parameters={
@@ -85,7 +94,7 @@ def register_tools():
         require_approval=False,
     )
 
-    tool_registry.register(
+    registry.register(
         name="search_files",
         description="Search for files by name glob pattern recursively.",
         parameters={
@@ -101,7 +110,7 @@ def register_tools():
         require_approval=False,
     )
 
-    tool_registry.register(
+    registry.register(
         name="get_current_time",
         description="Get the current local date, time, timezone, and weekday.",
         parameters={
@@ -113,7 +122,7 @@ def register_tools():
         require_approval=False,
     )
 
-    tool_registry.register(
+    registry.register(
         name="see_screen",
         description=(
             "Capture the user's screen and get a short text description of what's "
@@ -146,7 +155,7 @@ def register_tools():
     from tools.search_tools import fetch_url, research
     from tools.memory_tools import search_memory, save_memory
 
-    tool_registry.register(
+    registry.register(
         name="fetch_url",
         description=(
             "Fetch and extract text content from a URL. Use this when the user "
@@ -172,7 +181,7 @@ def register_tools():
         require_approval=False,
     )
 
-    tool_registry.register(
+    registry.register(
         name="research",
         description=(
             "Search the web and get a concise AI-summarized answer with source citations. "
@@ -194,7 +203,7 @@ def register_tools():
         require_approval=False,
     )
 
-    tool_registry.register(
+    registry.register(
         name="search_memory",
         description=(
             "Search your long-term memory for facts and information about the user. "
@@ -220,7 +229,7 @@ def register_tools():
         require_approval=False,
     )
 
-    tool_registry.register(
+    registry.register(
         name="save_memory",
         description=(
             "以第一人称日记体记录关于用户的重要信息。当用户明确要求记住某事，"
@@ -252,6 +261,8 @@ def register_tools():
         handler=save_memory,
         require_approval=False,
     )
+
+    return registry
 
 
 register_tools()

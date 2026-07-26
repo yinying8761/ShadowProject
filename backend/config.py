@@ -20,7 +20,7 @@ PROVIDER_PRESETS = {
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
-        "default_model": "deepseek-chat",
+        "default_model": "deepseek-v4-pro",
         "sdk_type": "openai",
         "description": "DeepSeek",
     },

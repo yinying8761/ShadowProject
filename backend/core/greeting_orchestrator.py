@@ -52,14 +52,18 @@ class GreetingOrchestrator:
 
         # ── Generate greeting via agent ────────────────────────────
         had_content = False
-        async for event in agent.run_daily_greeting(
+        async for event in agent.run(
             session=session,
+            user_message=None,
             conversation_id=conv_id,
             character_id=char_id,
-            location=location,
-            weather=weather,
-            days_since_last=days_since_last,
-            memories=memories or [],
+            mode="greeting",
+            extra_context={
+                "location": location,
+                "weather": weather,
+                "days_since_last": days_since_last,
+                "memories": memories or [],
+            },
         ):
             if event.get("type") == "token":
                 had_content = True
