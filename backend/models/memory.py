@@ -4,6 +4,10 @@ from sqlalchemy import String, Text, Integer, DateTime, LargeBinary, ForeignKey,
 from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
 
+# Source constants — where a memory came from
+SOURCE_USER_STATED = "user_stated"    # user explicitly stated or asked to remember
+SOURCE_AI_SUMMARIZED = "ai_summarized"  # AI extracted or decided to save
+
 
 class Memory(Base):
     __tablename__ = "memories"
@@ -20,6 +24,12 @@ class Memory(Base):
     source_conversation_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
     )
+    character_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("character_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    source: Mapped[str] = mapped_column(
+        String(20), default=SOURCE_AI_SUMMARIZED
+    )  # SOURCE_USER_STATED | SOURCE_AI_SUMMARIZED
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

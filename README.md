@@ -128,7 +128,7 @@ scripts/dev.bat
 
 # 方式二：分别启动
 cd backend && python main.py        # 后端 :8722
-cd frontend && npm run electron:dev  # 前端 :5173
+cd frontend && npm run electron:dev  # 前端 :16173
 ```
 
 ## 配置说明

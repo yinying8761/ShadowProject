@@ -74,7 +74,9 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
-  fetchMemories: () =>
-    request<{ memories: MemoryEntry[]; total: number }>('/memories'),
+  fetchMemories: (characterId?: string) =>
+    request<{ memories: MemoryEntry[]; total: number }>(
+      `/memories${characterId ? `?character_id=${encodeURIComponent(characterId)}` : ''}`,
+    ),
   healthCheck: () => request<{ status: string }>('/health'),
 };

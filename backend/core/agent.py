@@ -266,7 +266,7 @@ class Agent:
             })
 
             tool_results = await self._execute_tools_with_approval(
-                tool_use_blocks, approval_callback
+                tool_use_blocks, approval_callback, character_id
             )
             for tr_event, tool_msg in tool_results:
                 yield tr_event
@@ -299,11 +299,18 @@ class Agent:
         self,
         tool_use_blocks: list[dict],
         approval_callback: ApprovalCallback | None,
+        character_id: str | None = None,
     ) -> list[tuple[dict, dict]]:
         """Execute tools, requesting user approval for those that require it."""
         out: list[tuple[dict, dict]] = []
 
         for tb in tool_use_blocks:
+            # Inject character_id for memory-related tools (LLM doesn't know
+            # about it — the agent injects it from the current context).
+            # Copy arguments to avoid mutating the original tool_use_blocks dict.
+            if character_id and tb["name"] in ("save_memory", "search_memory"):
+                tb["arguments"] = {**tb["arguments"], "character_id": character_id}
+
             needs_approval = self.tool_registry.needs_approval(tb["name"])
 
             if needs_approval and approval_callback:

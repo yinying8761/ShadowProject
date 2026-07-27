@@ -11,7 +11,7 @@ from collections import defaultdict
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.memory import Memory
+from models.memory import Memory, SOURCE_AI_SUMMARIZED
 from services.memory_store import MemoryStore
 from services.memory_retriever import MemoryRetriever
 from services.memory_extractor import MemoryExtractor
@@ -83,6 +83,8 @@ class MemoryService:
         importance: int = 5,
         source_conversation_id: str | None = None,
         embedding: list[float] | None = None,
+        character_id: str | None = None,
+        source: str = SOURCE_AI_SUMMARIZED,
     ) -> Memory:
         """Insert a memory with optional embedding."""
         return await self._store.add(
@@ -91,6 +93,8 @@ class MemoryService:
             importance=importance,
             source_conversation_id=source_conversation_id,
             embedding=embedding,
+            character_id=character_id,
+            source=source,
         )
 
     # ---- Extraction ----
@@ -99,10 +103,16 @@ class MemoryService:
         self,
         conversation_id: str,
         llm_service,
+        character_id: str | None = None,
+        since_date: str | None = None,
     ) -> list[Memory]:
-        """Background task: extract memories from recent conversation messages
-        via LLM, deduplicate, and store. Uses its own session."""
-        return await self._extractor.extract_and_store(conversation_id, llm_service)
+        """Extract memories from conversation messages via LLM.
+        If since_date is given, only messages on/after that date."""
+        return await self._extractor.extract_and_store(
+            conversation_id, llm_service,
+            character_id=character_id,
+            since_date=since_date,
+        )
 
     # ---- Pruning ----
 

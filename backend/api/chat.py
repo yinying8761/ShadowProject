@@ -189,9 +189,49 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     city=location_info.get("city", ""),
                 )
 
-            # ── Gather memories ────────────────────────────────────
-            memories = await memory_service.search(session, query="", top_k=3, character_id=char_id)
-            memory_texts = [m.content for m in memories]
+            # ── Extract memories since last greeting (once per day) ──
+            from datetime import date as _date
+            from models.character import CharacterProfile
+
+            today_str = _date.today().isoformat()
+            char = await session.get(CharacterProfile, char_id)
+            last_date = char.last_daily_greeting_date if char else ""
+            if last_date != today_str and last_date:
+                try:
+                    from services.llm_service import LLMService
+                    extract_llm = LLMService()
+                    extracted = await memory_service.extract_and_store(
+                        conversation_id,
+                        extract_llm,
+                        character_id=char_id,
+                        since_date=last_date,
+                    )
+                    print(f"[DAILY] extracted {len(extracted)} memories since {last_date}", flush=True)
+                except Exception as e:
+                    print(f"[DAILY] extraction failed: {e}", flush=True)
+
+            # ── Gather memories (prefer user_stated) ────────────────
+            from sqlalchemy import select as _sel
+            from models.memory import Memory, SOURCE_USER_STATED, SOURCE_AI_SUMMARIZED
+
+            # Prefer user-stated memories; pad with ai_summarized if needed
+            user_memories = await session.execute(
+                _sel(Memory)
+                .where(Memory.character_id == char_id, Memory.source == SOURCE_USER_STATED)
+                .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
+                .limit(3)
+            )
+            user_list = list(user_memories.scalars().all())
+            remaining = 3 - len(user_list)
+            if remaining > 0:
+                ai_memories = await session.execute(
+                    _sel(Memory)
+                    .where(Memory.character_id == char_id, Memory.source == SOURCE_AI_SUMMARIZED)
+                    .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
+                    .limit(remaining)
+                )
+                user_list.extend(ai_memories.scalars().all())
+            memory_texts = [m.content for m in user_list]
 
             # ── Days since last message ────────────────────────────
             from sqlalchemy import select, desc

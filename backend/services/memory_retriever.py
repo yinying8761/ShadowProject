@@ -55,11 +55,19 @@ class MemoryRetriever:
 
         if not query or not query.strip():
             # No query: return important recent memories
-            result = await session.execute(
-                _select(Memory)
-                .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
-                .limit(top_k)
-            )
+            if character_id:
+                result = await session.execute(
+                    _select(Memory)
+                    .where(Memory.character_id == character_id)
+                    .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
+                    .limit(top_k)
+                )
+            else:
+                result = await session.execute(
+                    _select(Memory)
+                    .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
+                    .limit(top_k)
+                )
             return list(result.scalars().all())
 
         # 1. FTS5 search (sanitize query to avoid FTS5 syntax errors)
@@ -175,29 +183,9 @@ class MemoryRetriever:
         scored.sort(key=lambda x: x[1], reverse=True)
         results = [mem for mem, _ in scored[:top_k]]
 
-        # Filter by character_id if provided
+        # Filter by character_id if provided (direct column, not via conversation)
         if character_id:
-            from models.conversation import Conversation
-
-            conv_ids = {
-                m.source_conversation_id
-                for m in results
-                if m.source_conversation_id
-            }
-            if conv_ids:
-                conv_result = await session.execute(
-                    _select(Conversation).where(Conversation.id.in_(conv_ids))
-                )
-                conv_char_map = {
-                    c.id: c.character_id
-                    for c in conv_result.scalars().all()
-                }
-                results = [
-                    m
-                    for m in results
-                    if conv_char_map.get(m.source_conversation_id)
-                    == character_id
-                ]
+            results = [m for m in results if m.character_id == character_id]
 
         # Update access metadata
         for mem in results:

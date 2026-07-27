@@ -58,7 +58,7 @@ function createWindow() {
   mainWindow.setAlwaysOnTop(true, 'floating');
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://localhost:16173');
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }

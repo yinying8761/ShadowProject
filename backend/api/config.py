@@ -131,14 +131,18 @@ async def list_tools():
 
 
 @router.get("/memories")
-async def list_memories(session: AsyncSession = Depends(get_session)):
-    """Return all memories as JSON for the memory viewer."""
+async def list_memories(
+    character_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return memories as JSON for the memory viewer. Filter by character_id if given."""
     from models.memory import Memory
     from sqlalchemy import select as _select
 
-    result = await session.execute(
-        _select(Memory).order_by(Memory.created_at.desc())
-    )
+    stmt = _select(Memory).order_by(Memory.created_at.desc()).limit(200)
+    if character_id:
+        stmt = stmt.where(Memory.character_id == character_id)
+    result = await session.execute(stmt)
     memories = result.scalars().all()
     return {
         "memories": [
@@ -152,6 +156,8 @@ async def list_memories(session: AsyncSession = Depends(get_session)):
                 "updated_at": m.updated_at.isoformat() if m.updated_at else None,
                 "last_accessed_at": m.last_accessed_at.isoformat() if m.last_accessed_at else None,
                 "source_conversation_id": m.source_conversation_id,
+                "character_id": m.character_id,
+                "source": m.source,
             }
             for m in memories
         ],

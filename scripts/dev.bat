@@ -17,7 +17,7 @@ start "AI-Companion-Frontend" cmd /k "cd /d "%ROOT%\frontend" && npm run electro
 
 echo.
 echo Backend:  http://localhost:8722
-echo Frontend: http://localhost:5173  (dev server)
+echo Frontend: http://localhost:16173  (dev server)
 echo Desktop window will appear after Vite is ready.
 echo.
 echo To stop: close both windows.

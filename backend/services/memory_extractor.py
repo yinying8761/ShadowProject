@@ -12,7 +12,7 @@ from sqlalchemy import select as _select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session
-from models.memory import Memory
+from models.memory import Memory, SOURCE_AI_SUMMARIZED
 from services.memory_store import MemoryStore
 
 
@@ -28,10 +28,17 @@ class MemoryExtractor:
         self,
         conversation_id: str,
         llm_service,
+        character_id: str | None = None,
+        since_date: str | None = None,
     ) -> list[Memory]:
         """
-        Background task: extract memories from recent conversation messages
-        via LLM, deduplicate, and store. Uses its own session.
+        Extract memories from conversation messages via LLM, deduplicate,
+        and store. Uses its own session.
+
+        If *since_date* is provided (ISO date string like "2026-07-27"),
+        only messages created on or after that date are considered.  This
+        replaces the fixed EXTRACTION_MESSAGE_COUNT window with a natural
+        time boundary — ideal for once-per-day extraction before greeting.
         """
         from services.memory_service import (
             EXTRACTION_MIN_MESSAGES,
@@ -42,13 +49,25 @@ class MemoryExtractor:
         async with async_session() as session:
             # 1. Load recent messages for this conversation
             from models.message import Message
+            from datetime import date as _date
 
-            result = await session.execute(
-                _select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .order_by(Message.created_at.desc())
-                .limit(EXTRACTION_MESSAGE_COUNT)
-            )
+            if since_date:
+                boundary = _date.fromisoformat(since_date)
+                result = await session.execute(
+                    _select(Message)
+                    .where(
+                        Message.conversation_id == conversation_id,
+                        Message.created_at >= boundary,
+                    )
+                    .order_by(Message.created_at.desc())
+                )
+            else:
+                result = await session.execute(
+                    _select(Message)
+                    .where(Message.conversation_id == conversation_id)
+                    .order_by(Message.created_at.desc())
+                    .limit(EXTRACTION_MESSAGE_COUNT)
+                )
             messages = list(result.scalars().all())
 
             if len(messages) < EXTRACTION_MIN_MESSAGES:
@@ -150,6 +169,8 @@ class MemoryExtractor:
                     importance=item.get("importance", 5),
                     source_conversation_id=conversation_id,
                     embedding=emb,
+                    character_id=character_id,
+                    source=SOURCE_AI_SUMMARIZED,
                 )
                 stored.append(mem)
 

@@ -203,3 +203,62 @@ class TestMemoryExtractor:
         assert results_2[0].importance == 9
         assert results_2[0].id == results_1[0].id  # same memory, not a new one
         await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_since_date_filters_messages(self, monkeypatch):
+        """Only messages on or after since_date are extracted."""
+        from datetime import date, datetime, timezone
+
+        engine, factory = await _setup_db()
+        async with factory() as session:
+            from models.message import Message
+
+            # Messages on two different dates
+            old_date = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
+            new_date = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+            session.add(Message(
+                id="msg-old", conversation_id="conv-6", role="user",
+                content="old stuff", created_at=old_date,
+            ))
+            session.add(Message(
+                id="msg-new", conversation_id="conv-6", role="user",
+                content="new stuff user likes tea", created_at=new_date,
+            ))
+            session.add(Message(
+                id="msg-new2", conversation_id="conv-6", role="assistant",
+                content="assistant reply", created_at=new_date,
+            ))
+            await session.commit()
+
+            # Pad to reach EXTRACTION_MIN_MESSAGES (needs 10)
+            for i in range(8):
+                session.add(Message(
+                    id=f"msg-pad-{i}", conversation_id="conv-6", role="user",
+                    content=f"extra message {i}", created_at=new_date,
+                ))
+            await session.commit()
+
+        # Patch async_session so extract_and_store uses the test DB
+        import services.memory_extractor as me_mod
+        monkeypatch.setattr(me_mod, "async_session", factory)
+
+        extractor = MemoryExtractor(MemoryStore())
+
+        class FakeLLM:
+            async def chat_sync(self, messages, max_tokens=1024, temperature=0.3):
+                return json.dumps([{
+                    "content": "user likes tea",
+                    "memory_type": "user_preference",
+                    "importance": 7,
+                }])
+
+        results = await extractor.extract_and_store(
+            "conv-6", FakeLLM(),
+            since_date="2026-07-27", character_id="char-x",
+        )
+        assert len(results) == 1
+        mem = results[0]
+        assert "tea" in mem.content.lower()
+        assert mem.character_id == "char-x"
+        assert mem.source == "ai_summarized"
+        await engine.dispose()

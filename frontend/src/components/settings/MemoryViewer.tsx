@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useChatStore } from '../../stores/chatStore';
+import { useAppStore } from '../../stores/appStore';
 import { useTranslation } from '../../i18n/useTranslation';
 import { api } from '../../services/api';
 import type { MemoryEntry } from '../../types';
@@ -33,6 +34,7 @@ function downloadFile(content: string, filename: string, mime: string) {
 export function MemoryViewer() {
   const showMemoryViewer = useChatStore((s) => s.showMemoryViewer);
   const setShowMemoryViewer = useChatStore((s) => s.setShowMemoryViewer);
+  const activeCharacter = useAppStore((s) => s.activeCharacter);
   const { t } = useTranslation();
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -42,12 +44,12 @@ export function MemoryViewer() {
     if (showMemoryViewer) {
       setLoading(true);
       api
-        .fetchMemories()
+        .fetchMemories(activeCharacter?.id)
         .then((data) => setMemories(data.memories))
         .catch(() => setMemories([]))
         .finally(() => setLoading(false));
     }
-  }, [showMemoryViewer]);
+  }, [showMemoryViewer, activeCharacter?.id]);
 
   if (!showMemoryViewer) return null;
 

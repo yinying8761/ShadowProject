@@ -52,6 +52,8 @@ ADDITIVE_MIGRATIONS = [
     ("character_profiles", "tts_prompt_text", "TEXT"),
     ("character_profiles", "last_daily_greeting_date", "VARCHAR(20) DEFAULT ''"),
     ("conversations", "summary", "TEXT"),
+    ("memories", "character_id", "VARCHAR(36) REFERENCES character_profiles(id)"),
+    ("memories", "source", "VARCHAR(20) DEFAULT 'ai_summarized'"),
 ]
 
 

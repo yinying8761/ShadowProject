@@ -12,7 +12,7 @@ from sqlalchemy import text, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session, engine
-from models.memory import Memory
+from models.memory import Memory, SOURCE_AI_SUMMARIZED
 
 # FTS5 is created once per process lifetime
 _fts5_ready = False
@@ -70,6 +70,8 @@ class MemoryStore:
         importance: int = 5,
         source_conversation_id: str | None = None,
         embedding: list[float] | None = None,
+        character_id: str | None = None,
+        source: str = SOURCE_AI_SUMMARIZED,
     ) -> Memory:
         """Insert a memory with optional embedding."""
         from services.memory_service import push_memory_notification
@@ -80,6 +82,8 @@ class MemoryStore:
             importance=importance,
             source_conversation_id=source_conversation_id,
             embedding=self.pack_embedding(embedding) if embedding else None,
+            character_id=character_id,
+            source=source,
         )
         session.add(mem)
         await session.commit()

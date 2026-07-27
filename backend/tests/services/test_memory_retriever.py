@@ -55,6 +55,8 @@ async def _seed_memory(session, content: str, **kwargs):
         memory_type=kwargs.get("memory_type", "user_fact"),
         importance=kwargs.get("importance", 5),
         source_conversation_id=kwargs.get("source_conversation_id"),
+        character_id=kwargs.get("character_id"),
+        source=kwargs.get("source", "ai_summarized"),
     )
     session.add(mem)
     await session.commit()
@@ -100,11 +102,10 @@ class TestMemoryRetriever:
 
     @pytest.mark.asyncio
     async def test_character_filter(self):
-        """Memories are filtered by character_id via source conversation."""
+        """Memories are filtered by character_id directly on the Memory row."""
         engine, factory = await _setup_db()
         async with factory() as session:
             from models.character import CharacterProfile
-            from models.conversation import Conversation
 
             char_a = CharacterProfile(
                 id="char-a", name="角色A", personality="A",
@@ -114,21 +115,25 @@ class TestMemoryRetriever:
                 id="char-b", name="角色B", personality="B",
                 role="companion", archetype="friend",
             )
-            conv_a = Conversation(id="conv-a", character_id="char-a")
-            conv_b = Conversation(id="conv-b", character_id="char-b")
-            session.add_all([char_a, char_b, conv_a, conv_b])
+            session.add_all([char_a, char_b])
             await session.commit()
 
-            await _seed_memory(session, "memory from char A", source_conversation_id="conv-a")
-            await _seed_memory(session, "memory from char B", source_conversation_id="conv-b")
+            await _seed_memory(session, "memory from char A", character_id="char-a")
+            await _seed_memory(session, "memory from char B", character_id="char-b")
+            await _seed_memory(session, "shared memory", character_id=None)
 
             retriever = MemoryRetriever(MemoryStore())
+            # Filtered: only char A
             results = await retriever.search(
                 session, "memory", top_k=5, character_id="char-a"
             )
 
             assert len(results) == 1
             assert "char A" in results[0].content
+
+            # Unfiltered: all three
+            results_all = await retriever.search(session, "memory", top_k=10)
+            assert len(results_all) == 3
         await engine.dispose()
 
     @pytest.mark.asyncio
@@ -154,4 +159,56 @@ class TestMemoryRetriever:
 
             # Fallback returns recent important memories without crashing
             assert isinstance(results, list)
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_empty_query_respects_character_id(self):
+        """Empty query path also filters by character_id."""
+        engine, factory = await _setup_db()
+        async with factory() as session:
+            from models.character import CharacterProfile
+
+            char_a = CharacterProfile(
+                id="char-a", name="角色A", personality="A",
+                role="companion", archetype="friend",
+            )
+            session.add(char_a)
+            await session.commit()
+
+            await _seed_memory(session, "char A memory", character_id="char-a", importance=10)
+            await _seed_memory(session, "unowned memory", character_id=None, importance=9)
+
+            retriever = MemoryRetriever(MemoryStore())
+            results = await retriever.search(session, "", top_k=5, character_id="char-a")
+
+            assert len(results) == 1
+            assert "char A" in results[0].content
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_source_filtering(self):
+        """Direct DB queries can filter by source (user_stated vs ai_summarized)."""
+        engine, factory = await _setup_db()
+        async with factory() as session:
+            from models.memory import Memory
+
+            await _seed_memory(session, "user said this", character_id="char-a", source="user_stated", importance=5)
+            await _seed_memory(session, "AI summarized this", character_id="char-a", source="ai_summarized", importance=10)
+
+            # Query user_stated only
+            from sqlalchemy import select as _sel
+            result = await session.execute(
+                _sel(Memory).where(Memory.source == "user_stated")
+            )
+            user_mems = result.scalars().all()
+            assert len(user_mems) == 1
+            assert "user said" in user_mems[0].content
+
+            # Query ai_summarized only
+            result = await session.execute(
+                _sel(Memory).where(Memory.source == "ai_summarized")
+            )
+            ai_mems = result.scalars().all()
+            assert len(ai_mems) == 1
+            assert "AI summarized" in ai_mems[0].content
         await engine.dispose()
