@@ -287,7 +287,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[Startup] memory prune failed: {e}", flush=True)
     await seed_default_data()
+
+    # ── MCP Tool Servers ──
+    from core.tool_registry import tool_registry
+    from services.mcp_manager import McpManager
+    mcp_manager = McpManager(tool_registry)
+    mcp_config = settings.mcp_config_path or str(data_dir / "mcp_servers.json")
+    try:
+        mcp_result = await mcp_manager.connect_all(mcp_config)
+        print(
+            f"[Startup] MCP: {mcp_result['connected']} connected, "
+            f"{mcp_result['failed']} failed, {mcp_result['tools']} tools",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[Startup] MCP init failed: {e}", flush=True)
+
     yield
+
+    await mcp_manager.disconnect_all()
     from services.tts_service import stop_api
     stop_api()
 

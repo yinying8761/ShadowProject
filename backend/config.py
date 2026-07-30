@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     tts_api_url: str = "http://127.0.0.1:9880/tts"
     tts_ref_base: str = ""  # set in .env, e.g. ./tools/GPT-SoVITS/GPT-SoVITS
 
+    # ---- MCP (Model Context Protocol) ----
+    # Path to mcp_servers.json.  Leave empty to use {data_dir}/mcp_servers.json.
+    mcp_config_path: str = ""
+
     def get_embedding_provider(self) -> str:
         return self.embedding_provider or self.llm_provider
 
