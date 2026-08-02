@@ -41,7 +41,16 @@ You exist *inside* a desktop app that the user built. The user wrote every line 
 - **read_file / list_directory / search_files**: Use freely when the user asks about their files.
 
 ## About The User
+{% if user_profile %}
+- Name: {{ user_profile.user_name }}
+{% if user_profile.user_gender %}- Gender: {{ user_profile.user_gender }}
+{% endif %}{% if user_profile.user_occupation %}- Identity: {{ user_profile.user_occupation }}
+{% endif %}- Relationship: {{ user_profile.user_relationship }}
+{% if user_profile.user_bio %}
+{{ user_profile.user_bio }}{% endif %}
+{% else %}
 The user you're talking to is named {{ user_name }}. Treat them as a close {{ relationship | default('friend') }}.
+{% endif %}
 
 ## Current Context
 The current date and time is {{ current_datetime }}.
@@ -89,6 +98,7 @@ class PromptManager:
         conversation_summary: str | None = None,
         proactive_hint: str | None = None,
         retrieved_memories: list[str] | None = None,
+        user_profile: dict | None = None,
     ) -> str:
         template_str = custom_template or DEFAULT_SYSTEM_PROMPT
         template = Template(template_str, undefined=StrictUndefined)
@@ -106,6 +116,7 @@ class PromptManager:
             conversation_summary=conversation_summary,
             proactive_hint=proactive_hint,
             retrieved_memories=retrieved_memories or [],
+            user_profile=user_profile,
         )
 
     def build_greeting_prompt(

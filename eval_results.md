@@ -4,6 +4,10 @@
 **Date**: 2026-07-30 12:16:23 UTC  
 **Cases**: 15  
 
+**运行方式**
+
+cd backend && python -m eval.runner
+
 ---
 
 ## Summary

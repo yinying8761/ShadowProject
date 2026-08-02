@@ -1,4 +1,4 @@
-import type { CharacterProfile, Conversation, Message, AppConfig, ApiMessage, MemoryEntry } from '../types';
+import type { CharacterProfile, Conversation, Message, AppConfig, ApiMessage, MemoryEntry, UserProfile } from '../types';
 
 const BASE = '/api';
 
@@ -79,4 +79,13 @@ export const api = {
       `/memories${characterId ? `?character_id=${encodeURIComponent(characterId)}` : ''}`,
     ),
   healthCheck: () => request<{ status: string }>('/health'),
+  _profileUrl: (characterId?: string) =>
+    `/user-profile${characterId ? `?character_id=${encodeURIComponent(characterId)}` : ''}`,
+  fetchUserProfile: (characterId?: string) =>
+    request<UserProfile>(api._profileUrl(characterId)),
+  updateUserProfile: (characterId: string | null, data: Partial<UserProfile>) =>
+    request<UserProfile>(api._profileUrl(characterId ?? undefined), {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
 };

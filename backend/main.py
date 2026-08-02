@@ -311,8 +311,9 @@ async def lifespan(app: FastAPI):
 
 
 async def seed_default_data():
-    """Create default character and config on first launch."""
+    """Create default character, config, and user profile on first launch."""
     from core.prompt_manager import PromptManager
+    from models.user_profile import UserProfile
 
     async with async_session() as session:
         config = await session.get(UserConfig, 1)
@@ -333,6 +334,19 @@ async def seed_default_data():
                     voice_style=char_data.get("voice_style"),
                 )
                 session.add(char)
+
+        # Seed default user profile (character_id=NULL = fallback)
+        from sqlalchemy import select as _sel
+        result = await session.execute(
+            _sel(UserProfile).where(UserProfile.character_id.is_(None)).limit(1)
+        )
+        if result.scalar_one_or_none() is None:
+            default_profile = UserProfile(
+                character_id=None,
+                user_name="User",
+                user_relationship="friend",
+            )
+            session.add(default_profile)
 
         await session.commit()
 
@@ -362,12 +376,14 @@ from api.character import router as character_router
 from api.conversation import router as conversation_router
 from api.config import router as config_router
 from api.tts import router as tts_router
+from api.user_profile import router as user_profile_router
 
 app.include_router(chat_router)
 app.include_router(character_router)
 app.include_router(conversation_router)
 app.include_router(config_router)
 app.include_router(tts_router)
+app.include_router(user_profile_router)
 
 
 if __name__ == "__main__":

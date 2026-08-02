@@ -149,6 +149,20 @@ const zh: TranslationDict = {
   'Last Accessed': '最后访问',
   'Created': '创建时间',
 
+  // User Profile
+  'Your Profile': '用户画像',
+  'Your name': '你的名字',
+  Identity: '身份',
+  'e.g. 大学生, 打工人, 自由职业...': '例如：大学生、打工人、自由职业...',
+  Relationship: '关系',
+  'e.g. 朋友, 助手和用户, 伙伴...': '例如：朋友、助手和用户、伙伴...',
+  'Self-introduction': '自述',
+  'Tell the AI about yourself — interests, hobbies, what you do...':
+    '告诉 AI 关于你的事——兴趣、爱好、在做什么...',
+  Other: '其他',
+  'Each character can have a different profile. Switch characters to edit theirs.':
+    '每个角色可以拥有不同的画像。切换到对应角色即可编辑。',
+
   // General
   'AI Companion': 'AI 伴侣',
 };

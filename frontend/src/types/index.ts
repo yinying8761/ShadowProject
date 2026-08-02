@@ -74,6 +74,18 @@ export interface ApprovalRequest {
   arguments: Record<string, unknown>;
 }
 
+export interface UserProfile {
+  id: string;
+  character_id: string | null;
+  user_name: string;
+  user_gender: string | null;
+  user_occupation: string | null;
+  user_bio: string | null;
+  user_relationship: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface MemoryEntry {
   id: string;
   content: string;
