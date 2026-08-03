@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from jinja2 import Template, StrictUndefined
 
 DEFAULT_SYSTEM_PROMPT = """You are {{ character_name }}, a {{ archetype }}{% if gender %} {{ gender }}{% endif %} who serves as a {{ role }}.
@@ -83,6 +83,42 @@ The following is relevant context recalled from past conversations. Use this nat
 
 class PromptManager:
     """Manages system prompt rendering from character profile templates."""
+
+    @staticmethod
+    def format_relative_date(dt: datetime) -> str:
+        """Convert a datetime to a Chinese relative date string.
+
+        Rules:
+        - Today → ``今天``
+        - Yesterday → ``昨天``
+        - 2-7 days → ``3天前``
+        - 8-30 days → ``1周前`` ~ ``4周前``
+        - 1-5 months → ``1个月前`` ~ ``5个月前``
+        - ≥ 6 months → ``2026年3月`` (absolute year-month)
+        """
+        now = datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            from datetime import timezone as _tz
+            dt = dt.replace(tzinfo=_tz.utc)
+
+        delta = now - dt
+        days = delta.days
+
+        if days < 0:
+            return "今天"
+        if days == 0:
+            return "今天"
+        if days == 1:
+            return "昨天"
+        if days <= 7:
+            return f"{days}天前"
+        if days <= 30:
+            weeks = days // 7
+            return f"{weeks}周前"
+        if days < 180:
+            months = days // 30
+            return f"{months}个月前"
+        return f"{dt.year}年{dt.month}月"
 
     def build_system_prompt(
         self,

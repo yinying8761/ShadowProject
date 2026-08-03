@@ -117,7 +117,10 @@ class Agent:
 
         # Load conversation summary from DB
         conv = await session.get(Conversation, conversation_id)
-        conversation_summary = conv.summary if conv else None
+        conversation_summary = None
+        if conv and conv.summary:
+            date_label = PromptManager.format_relative_date(conv.updated_at)
+            conversation_summary = f"(截至{date_label}) {conv.summary}"
 
         # Trigger summarization in background when conversation grows long
         msg_count = await self.conversation_manager.count_messages(
@@ -135,7 +138,10 @@ class Agent:
             top_k=3,
             character_id=character_id,
         )
-        memory_texts = [m.content for m in retrieved_memories]
+        memory_texts = [
+            f"({PromptManager.format_relative_date(m.created_at)}) {m.content}"
+            for m in retrieved_memories
+        ]
 
         # Load location context from cached UserConfig
         location_context = ""
