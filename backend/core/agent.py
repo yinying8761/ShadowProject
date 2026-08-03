@@ -151,6 +151,37 @@ class Agent:
         except Exception:
             pass
 
+        # Load user profile for this character (fallback to default)
+        user_profile = None
+        try:
+            from models.user_profile import UserProfile
+            from sqlalchemy import select, desc
+            result = await session.execute(
+                select(UserProfile)
+                .where(UserProfile.character_id == character_id)
+                .order_by(desc(UserProfile.updated_at))
+                .limit(1)
+            )
+            profile = result.scalar_one_or_none()
+            if not profile:
+                result = await session.execute(
+                    select(UserProfile)
+                    .where(UserProfile.character_id.is_(None))
+                    .order_by(desc(UserProfile.updated_at))
+                    .limit(1)
+                )
+                profile = result.scalar_one_or_none()
+            if profile:
+                user_profile = {
+                    "user_name": profile.user_name,
+                    "user_gender": profile.user_gender,
+                    "user_occupation": profile.user_occupation,
+                    "user_relationship": profile.user_relationship,
+                    "user_bio": profile.user_bio,
+                }
+        except Exception:
+            pass
+
         system_prompt = self.prompt_manager.build_system_prompt(
             character_name=character.name,
             personality=character.personality,
@@ -161,6 +192,7 @@ class Agent:
             proactive_hint=proactive_hint,
             conversation_summary=conversation_summary,
             retrieved_memories=memory_texts,
+            user_profile=user_profile,
         )
 
         if user_message:

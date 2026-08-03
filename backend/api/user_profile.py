@@ -95,4 +95,70 @@ async def update_user_profile(
 
     await session.commit()
     await session.refresh(profile)
+
+    # Upsert a user_stated memory so the profile is findable via search_memory.
+    # Only create a memory when user_bio or user_occupation is filled —
+    # a bare name alone is not worth a memory entry.
+    if profile.user_bio or profile.user_occupation:
+        await _upsert_profile_memory(session, profile)
+
     return _profile_to_dict(profile)
+
+
+async def _upsert_profile_memory(
+    session: AsyncSession, profile: UserProfile
+) -> None:
+    """Create or update a source=user_stated memory from the profile data."""
+    parts = [f"用户告诉我他叫{profile.user_name}"]
+    if profile.user_occupation:
+        parts.append(f"是一名{profile.user_occupation}")
+    if profile.user_bio:
+        parts.append(f"他这样描述自己：{profile.user_bio}")
+    memory_content = "，".join(parts) + "。"
+
+    try:
+        from models.memory import Memory, SOURCE_USER_STATED
+
+        # Find existing profile memory for this character
+        result = await session.execute(
+            select(Memory)
+            .where(
+                Memory.source == SOURCE_USER_STATED,
+                Memory.memory_type == "user_fact",
+                Memory.character_id == profile.character_id,
+            )
+            .order_by(desc(Memory.updated_at))
+            .limit(1)
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            old_content = existing.content
+            existing.content = memory_content
+            existing.importance = 8
+            from services.memory_store import MemoryStore
+            await MemoryStore.sync_fts5_update(
+                existing.id, old_content, memory_content, "user_fact"
+            )
+        else:
+            embedding = None
+            try:
+                from services.embedding_service import embed_single
+                embedding = await embed_single(memory_content)
+            except Exception:
+                pass
+            import uuid
+            mem = Memory(
+                id=str(uuid.uuid4()),
+                content=memory_content,
+                memory_type="user_fact",
+                source=SOURCE_USER_STATED,
+                importance=8,
+                character_id=profile.character_id,
+                embedding=embedding,
+            )
+            session.add(mem)
+
+        await session.commit()
+    except Exception as e:
+        print(f"[UserProfile] memory upsert failed: {e}", flush=True)

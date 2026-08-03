@@ -160,3 +160,82 @@ class TestPutProfile:
         # Verify with GET
         r2 = await client.get("/api/user-profile")
         assert r2.json()["user_name"] == "NewDefault"
+
+
+class TestProfileMemoryUpsert:
+    """Seam 4 — PUT user-profile creates/updates a source=user_stated memory."""
+
+    async def _query_memory(self, session_factory, character_id: str | None):
+        """Query the in-memory DB for user_stated memories."""
+        from models.memory import Memory, SOURCE_USER_STATED
+        from sqlalchemy import select, func
+
+        async with session_factory() as s:
+            count_result = await s.execute(
+                select(func.count(Memory.id)).where(
+                    Memory.source == SOURCE_USER_STATED,
+                    Memory.character_id == character_id,
+                )
+            )
+            count = count_result.scalar()
+            mem_result = await s.execute(
+                select(Memory)
+                .where(
+                    Memory.source == SOURCE_USER_STATED,
+                    Memory.character_id == character_id,
+                )
+                .order_by(Memory.updated_at.desc())
+                .limit(1)
+            )
+            mem = mem_result.scalar_one_or_none()
+            return count, mem
+
+    async def test_put_creates_user_stated_memory(
+        self, client, session_factory, seed_char, seed_default_profile
+    ):
+        """PUT with user_bio creates a source=user_stated memory entry."""
+        r = await client.put(
+            f"/api/user-profile?character_id={seed_char}",
+            json={
+                "user_name": "小明",
+                "user_gender": "男",
+                "user_occupation": "大学生",
+                "user_bio": "喜欢 Rust 和数学",
+                "user_relationship": "朋友",
+            },
+        )
+        assert r.status_code == 200
+
+        count, mem = await self._query_memory(session_factory, seed_char)
+        assert count >= 1
+        assert mem is not None
+        assert "小明" in mem.content
+        assert "大学生" in mem.content
+        assert "喜欢 Rust 和数学" in mem.content
+        assert mem.importance == 8
+
+    async def test_put_updates_existing_memory_instead_of_duplicating(
+        self, client, session_factory, seed_char, seed_default_profile
+    ):
+        """PUT twice produces ONE user_stated memory (updated, not duplicated)."""
+        # First PUT
+        await client.put(
+            f"/api/user-profile?character_id={seed_char}",
+            json={"user_name": "小明", "user_bio": "喜欢 Rust", "user_relationship": "朋友"},
+        )
+        # Second PUT — updates same profile
+        await client.put(
+            f"/api/user-profile?character_id={seed_char}",
+            json={
+                "user_name": "大明",
+                "user_gender": "男",
+                "user_occupation": "打工人",
+                "user_bio": "现在喜欢 Go 了",
+                "user_relationship": "助手和用户",
+            },
+        )
+
+        count, mem = await self._query_memory(session_factory, seed_char)
+        assert count == 1, f"Expected 1 memory, got {count}"
+        assert "大明" in mem.content
+        assert "现在喜欢 Go 了" in mem.content
