@@ -35,5 +35,10 @@ tools/GPT-SoVITS/
 Thumbs.db
 .DS_Store
 
+# Personal (resume, analysis)
+我的简历-*.pdf
+木及简历.md
+docs/analysis/resume-analysis.md
+
 # Logs
 *.log
