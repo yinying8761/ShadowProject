@@ -121,6 +121,12 @@ const zh: TranslationDict = {
   'Chat with {name}': '与 {name} 的对话',
   'New Conversation': '新对话',
   'No messages yet': '还没有对话记录',
+  'Clear All': '清除全部',
+  'Clearing...': '清除中...',
+  messages: '条消息',
+  'Confirm?': '确认删除？',
+  'Delete failed. Please check your network.': '删除失败，请检查网络',
+  'Clear failed. Please check your network.': '清除失败，请检查网络',
 
   // CharacterDisplay
   'Please select or create a character': '请选择或创建一个角色',

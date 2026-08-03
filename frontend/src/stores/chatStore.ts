@@ -27,6 +27,7 @@ interface ChatState {
   wsSendJson: ((data: Record<string, unknown>) => boolean) | null;
 
   addMessage: (msg: Message) => void;
+  removeMessage: (msgId: string) => void;
   setMessages: (msgs: Message[]) => void;
   appendStreamingToken: (token: string, isProactive?: boolean) => void;
   finalizeStreamingMessage: (msgId: string, isProactive?: boolean) => void;
@@ -67,6 +68,11 @@ export const useChatStore = create<ChatState>((set) => ({
 
   addMessage: (msg) =>
     set((state) => ({ messages: [...state.messages, msg] })),
+
+  removeMessage: (msgId) =>
+    set((state) => ({
+      messages: state.messages.filter((m) => m.id !== msgId),
+    })),
 
   setMessages: (msgs) => set({ messages: msgs }),
 

@@ -17,8 +17,15 @@ export function HistoryOverlay() {
   const { newConversation } = useChat();
   const { t } = useTranslation();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const removeMessage = useChatStore((s) => s.removeMessage);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  };
 
   useEffect(() => {
     if (showHistory) {
@@ -29,14 +36,24 @@ export function HistoryOverlay() {
   const handleDeleteMsg = async (msgId: string) => {
     if (!currentConversationId) return;
     if (confirmingDelete === msgId) {
+      const removedMsg = useChatStore.getState().messages.find((m) => m.id === msgId);
+      // Optimistic remove — if the API fails, we restore below
+      removeMessage(msgId);
       try {
         await fetch(`/api/conversations/${currentConversationId}/messages/${msgId}`, { method: 'DELETE' });
-        // Remove from local store
-        useChatStore.setState((s) => ({
-          messages: s.messages.filter((m) => m.id !== msgId),
-        }));
         setConfirmingDelete(null);
-      } catch { /* ignore */ }
+      } catch {
+        // Restore UI — the message is still in the database
+        if (removedMsg) {
+          useChatStore.setState((s) => ({
+            messages: [...s.messages, removedMsg].sort(
+              (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            ),
+          }));
+        }
+        setConfirmingDelete(null);
+        showToast(t('Delete failed. Please check your network.'));
+      }
     } else {
       setConfirmingDelete(msgId);
     }
@@ -44,13 +61,18 @@ export function HistoryOverlay() {
 
   const handleClearContext = async () => {
     if (!currentConversationId || clearing) return;
+    const savedMessages = useChatStore.getState().messages;
     setClearing(true);
     try {
       const resp = await fetch(`/api/conversations/${currentConversationId}/messages`, { method: 'DELETE' });
       const data = await resp.json();
       console.log('[Context] cleared:', data.messages_deleted, 'msgs,', data.memories_deleted, 'memories');
       useChatStore.setState({ messages: [] });
-    } catch { /* ignore */ }
+    } catch {
+      // Restore messages if the API call failed
+      useChatStore.setState({ messages: savedMessages });
+      showToast(t('Clear failed. Please check your network.'));
+    }
     setClearing(false);
   };
 
@@ -157,6 +179,15 @@ export function HistoryOverlay() {
           <div ref={bottomRef} />
         </div>
       </div>
+
+      {/* Error toast */}
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
+          <div className="rounded-lg border border-red-400/30 bg-red-900/80 px-4 py-2 text-sm text-red-200 shadow-lg backdrop-blur">
+            {toast}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
