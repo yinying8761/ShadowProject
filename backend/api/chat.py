@@ -207,6 +207,22 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                         since_date=last_date,
                     )
                     print(f"[DAILY] extracted {len(extracted)} memories since {last_date}", flush=True)
+
+                    # ── Compact: trim old messages after extraction ──
+                    try:
+                        compact_result = await conv_manager.summarize_and_trim(
+                            session, conversation_id,
+                            keep_count=12,
+                            llm_service=extract_llm,
+                        )
+                        print(
+                            f"[DAILY] compact: deleted {compact_result['deleted']} messages, "
+                            f"summary_len={len(compact_result['summary'])}",
+                            flush=True,
+                        )
+                    except Exception as e:
+                        print(f"[DAILY] compact failed: {e}", flush=True)
+
                 except Exception as e:
                     print(f"[DAILY] extraction failed: {e}", flush=True)
 

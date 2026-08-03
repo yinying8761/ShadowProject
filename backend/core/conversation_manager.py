@@ -117,7 +117,7 @@ class ConversationManager:
         self,
         session: AsyncSession,
         conversation_id: str,
-        keep_count: int = 20,
+        keep_count: int = 12,
         llm_service=None,
     ):
         """
@@ -126,7 +126,7 @@ class ConversationManager:
         """
         total = await self.count_messages(session, conversation_id)
         if total <= keep_count:
-            return
+            return {"deleted": 0, "summary": ""}
 
         # Get old messages (oldest first, beyond keep_count)
         subquery = (
@@ -139,7 +139,7 @@ class ConversationManager:
         old_messages = result.scalars().all()
 
         if not old_messages:
-            return
+            return {"deleted": 0, "summary": ""}
 
         # Build transcript
         lines = []
@@ -188,3 +188,4 @@ class ConversationManager:
             f"summary_len={len(new_summary)}",
             flush=True,
         )
+        return {"deleted": len(old_ids), "summary": new_summary}

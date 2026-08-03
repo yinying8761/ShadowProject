@@ -141,3 +141,32 @@ async def delete_conversation(
     await session.delete(conv)
     await session.commit()
     return {"status": "deleted"}
+
+
+@router.post("/{conversation_id}/compact")
+async def compact_conversation(
+    conversation_id: str,
+    keep_count: int = 12,
+    session: AsyncSession = Depends(get_session),
+):
+    """Summarize and trim old messages, keeping the most recent keep_count.
+    Returns the number of deleted messages and the new summary."""
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    from core.conversation_manager import ConversationManager
+    from services.llm_service import LLMService
+
+    manager = ConversationManager()
+    llm = LLMService()
+    result = await manager.summarize_and_trim(
+        session, conversation_id,
+        keep_count=keep_count,
+        llm_service=llm,
+    )
+    return {
+        "conversation_id": conversation_id,
+        "deleted": result["deleted"],
+        "summary": result["summary"],
+    }
