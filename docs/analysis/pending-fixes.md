@@ -44,3 +44,17 @@
 **影响**: LLM 调用浪费；可能产生重复记忆。
 
 **修复方向**: 同 #1，修复 greeting 的 in-flight guard 即可一起解决。
+
+---
+
+## 4. 删除刚发送的消息返回 404
+
+**现象**: 用户发送消息后立即删除，后端返回 `404 Not Found`，日志显示请求的 ID 前缀为 `local-`（如 `local-1785937506679`）。
+
+**根因**: 前端 `useChat.send()` 用 `local-${Date.now()}` 生成临时 ID 写入本地 store，但从未在服务端确认后将临时 ID 替换为数据库真实 UUID。删除时前端用临时 ID 发 DELETE 请求，后端数据库里只有真实 UUID，找不到 `local-*` → 404。
+
+**影响**: 当前会话中刚发的消息无法通过点击垃圾桶删除（历史消息不受影响）。
+
+**修复方向**:
+- WebSocket / HTTP 响应中回传 `backend_message_id`，前端在收到确认后将本地临时 ID 替换为真实 UUID
+- 或：后端 DELETE 端点也接受按 `(conversation_id, created_at)` 匹配删除，而不限于主键查找
