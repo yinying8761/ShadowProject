@@ -1,13 +1,3 @@
 {
-  "servers": [
-    {
-      "name": "vision",
-      "transport": "stdio",
-      "command": "python",
-      "args": ["-m", "deepseek_vision_mcp"],
-      "env": {
-        "ZHIPU_API_KEY": "your-zhipu-api-key-here"
-      }
-    }
-  ]
+  "_note": "This is a quick-reference. The actual config template lives at data/mcp_servers.example.json — copy it to data/mcp_servers.json and fill in your keys."
 }
