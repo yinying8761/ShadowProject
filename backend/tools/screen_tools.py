@@ -145,11 +145,73 @@ class ScreenFingerprintStore:
         return len(self._hashes)
 
 
+# --- MCP vision dispatch (set by main.py) ---
+
+_mcp_dispatch = None
+"""Module-level reference to ToolRuntime.dispatch, set by main.py
+after ToolRuntime and MCP servers are initialised."""
+
+
+def set_mcp_dispatch(dispatch) -> None:
+    """Wire the MCP tool dispatcher so :func:`see_screen` can route
+    vision calls through MCP when available."""
+    global _mcp_dispatch
+    _mcp_dispatch = dispatch
+
+
 # --- Public tool ---
+
+VISION_MCP_TOOL = "mcp__vision__analyze_image"
+
+
+async def _try_mcp_vision(image_bytes: bytes, focus: str | None) -> str | None:
+    """Try to describe *image_bytes* via MCP vision tool.
+
+    Returns the description text, or *None* if the MCP tool is not
+    available or the call failed.
+    """
+    if _mcp_dispatch is None:
+        return None
+
+    import base64 as _b64
+
+    try:
+        b64 = _b64.b64encode(image_bytes).decode("ascii")
+        result_str = await _mcp_dispatch(
+            VISION_MCP_TOOL,
+            {
+                "image_data": b64,
+                "prompt": focus or "",
+            },
+        )
+        # MCP handler returns JSON — try to extract the description
+        try:
+            data = json.loads(result_str)
+            if isinstance(data, dict):
+                text = data.get("description") or data.get("result") or data.get("text")
+                if text:
+                    return str(text)
+                if "error" in data:
+                    print(f"[SCREEN] MCP vision error: {data['error']}", flush=True)
+                    return None
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Non-JSON result — use as-is if it looks like a description
+        if result_str and len(result_str) > 10:
+            return result_str
+    except Exception as e:
+        print(f"[SCREEN] MCP vision call failed: {e}", flush=True)
+
+    return None
+
 
 async def see_screen(focus: Optional[str] = None, monitor: int = 0) -> str:
     """
     Capture the screen and have the vision agent describe it.
+
+    Tries MCP vision first (e.g. ``mcp__vision__analyze_image``),
+    falling back to the legacy ``VisionService`` when MCP is not
+    configured or unavailable.
 
     Args:
         focus: Optional question/aspect for the vision agent to focus on,
@@ -167,6 +229,17 @@ async def see_screen(focus: Optional[str] = None, monitor: int = 0) -> str:
         print(f"[SCREEN] capture failed: {type(e).__name__}: {e}\n{tb}", flush=True)
         return json.dumps({"error": f"Screen capture failed: {type(e).__name__}: {e}"})
 
+    # ── Try MCP vision ────────────────────────────────────────────
+    description = await _try_mcp_vision(image_bytes, focus)
+    if description is not None:
+        return json.dumps({
+            "description": description,
+            "image_size": f"{width}x{height}",
+            "bytes": len(image_bytes),
+            "vision_backend": "mcp",
+        }, ensure_ascii=False)
+
+    # ── Fallback to legacy vision_service ─────────────────────────
     description = await vision_service.describe_image(
         image_bytes,
         mime_type="image/jpeg",
@@ -177,4 +250,5 @@ async def see_screen(focus: Optional[str] = None, monitor: int = 0) -> str:
         "description": description,
         "image_size": f"{width}x{height}",
         "bytes": len(image_bytes),
+        "vision_backend": "legacy",
     }, ensure_ascii=False)

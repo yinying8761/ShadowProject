@@ -33,6 +33,7 @@ async def session_factory(engine):
 async def client(engine, session_factory):
     """FastAPI TestClient that uses the in-memory DB."""
     from main import app
+    import database as _db
 
     async def override_get_session():
         async with session_factory() as session:
@@ -40,11 +41,17 @@ async def client(engine, session_factory):
 
     app.dependency_overrides[get_session] = override_get_session
 
+    # Also redirect the module-level async_session so that
+    # _upsert_profile_memory uses the in-memory DB.
+    _original_async_session = _db.async_session
+    _db.async_session = session_factory
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
     app.dependency_overrides.clear()
+    _db.async_session = _original_async_session
 
 
 @pytest.fixture

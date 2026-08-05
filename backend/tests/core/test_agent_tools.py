@@ -8,7 +8,15 @@ and default fallback to the module-level singleton.
 import pytest
 
 from core.tool_registry import ToolRegistry
+from core.tool_runtime import ToolRuntime
 from core.agent import Agent
+
+
+# ── Helper ────────────────────────────────────────────────────────────────
+
+def _wrap(registry: ToolRegistry) -> ToolRuntime:
+    """Wrap a ToolRegistry in ToolRuntime with tracing/sandbox disabled for tests."""
+    return ToolRuntime(registry=registry, enable_tracing=False, enable_sandbox=False)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -54,8 +62,8 @@ def fake_registry():
 
 @pytest.fixture
 def agent(fake_registry):
-    """Agent with an injected fake tool registry."""
-    return Agent(tool_registry=fake_registry)
+    """Agent with an injected fake tool registry, wrapped in ToolRuntime."""
+    return Agent(tool_registry=_wrap(fake_registry))
 
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────
@@ -186,12 +194,12 @@ class TestRegistryInjection:
 
     def test_empty_registry_returns_empty_tool_definitions(self):
         """An Agent with an empty registry sees no tools."""
-        agent = Agent(tool_registry=ToolRegistry())
+        agent = Agent(tool_registry=_wrap(ToolRegistry()))
         assert agent.tool_registry.get_tool_definitions() == []
 
     def test_injected_registry_is_used(self, fake_registry):
         """Agent uses the injected registry, not the module-level singleton."""
-        agent = Agent(tool_registry=fake_registry)
+        agent = Agent(tool_registry=_wrap(fake_registry))
         tools = agent.tool_registry.get_tool_definitions()
         tool_names = {t["name"] for t in tools}
         assert tool_names == {"fake_echo", "fake_approval_tool", "fake_failing"}
@@ -199,26 +207,26 @@ class TestRegistryInjection:
     def test_default_fallback_uses_module_singleton(self):
         """When no registry is injected, Agent falls back to the module-level singleton."""
         agent = Agent()
-        # The module-level singleton exists and is a ToolRegistry instance
+        # The module-level default is now a ToolRuntime instance
         assert agent.tool_registry is not None
-        assert isinstance(agent.tool_registry, ToolRegistry)
+        assert isinstance(agent.tool_registry, ToolRuntime)
         # get_tool_definitions() works (may be empty if register_tools hasn't run)
         assert isinstance(agent.tool_registry.get_tool_definitions(), list)
 
     def test_injected_and_default_are_different_instances(self, fake_registry):
         """Injected Agent uses its own registry, default Agent uses the singleton."""
-        injected_agent = Agent(tool_registry=fake_registry)
+        injected_agent = Agent(tool_registry=_wrap(fake_registry))
         default_agent = Agent()
 
         # They are different objects
         assert injected_agent.tool_registry is not default_agent.tool_registry
-        # The injected one matches what we passed
-        assert injected_agent.tool_registry is fake_registry
+        # The injected ToolRuntime wraps the fake_registry
+        assert injected_agent.tool_registry._registry is fake_registry
 
     @pytest.mark.asyncio
     async def test_injected_registry_isolated_from_default(self, fake_registry):
         """Modifying the injected registry does not affect the default singleton."""
-        injected_agent = Agent(tool_registry=fake_registry)
+        injected_agent = Agent(tool_registry=_wrap(fake_registry))
         default_agent = Agent()
 
         # Dispatch via injected
@@ -369,7 +377,7 @@ class TestAgentRunWithInjectedRegistry:
             async def _echo(**kw): return f"echo: {kw}"
             reg.register("fake_echo", "echo", {"type": "object", "properties": {}, "required": []}, _echo, False)
 
-            agent = Agent(llm_service=fake_llm, tool_registry=reg)
+            agent = Agent(llm_service=fake_llm, tool_registry=_wrap(reg))
 
             events = []
             async for event in agent.run(
@@ -425,7 +433,7 @@ class TestAgentRunWithInjectedRegistry:
 
             agent = Agent(
                 llm_service=fake_llm,
-                tool_registry=ToolRegistry(),  # empty — no tools
+                tool_registry=_wrap(ToolRegistry()),  # empty — no tools
             )
 
             events = []

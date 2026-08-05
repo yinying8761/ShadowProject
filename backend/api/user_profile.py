@@ -96,19 +96,36 @@ async def update_user_profile(
     await session.commit()
     await session.refresh(profile)
 
-    # Upsert a user_stated memory so the profile is findable via search_memory.
-    # Only create a memory when user_bio or user_occupation is filled —
-    # a bare name alone is not worth a memory entry.
+    # Upsert a user_stated memory in a new, independent session.
+    # This way any FTS5 / lock failure cannot break the PUT response.
     if profile.user_bio or profile.user_occupation:
-        await _upsert_profile_memory(session, profile)
+        await _upsert_profile_memory(profile)
 
     return _profile_to_dict(profile)
 
 
 async def _upsert_profile_memory(
-    session: AsyncSession, profile: UserProfile
+    profile: UserProfile,
+    *,
+    _session_factory=None,
 ) -> None:
-    """Create or update a source=user_stated memory from the profile data."""
+    """Create or update a source=user_stated memory from the profile data.
+
+    Opens its own session — completely isolated from the caller's
+    transaction so FTS5 or lock issues never affect the PUT endpoint.
+
+    Parameters
+    ----------
+    _session_factory:
+        Session factory to use.  When *None* (the default) resolves from
+        ``database.async_session`` at call time so test overrides work.
+    """
+    if _session_factory is None:
+        from database import async_session as _sf
+        _session_factory = _sf
+
+    from models.memory import Memory, SOURCE_USER_STATED
+
     parts = [f"用户告诉我他叫{profile.user_name}"]
     if profile.user_occupation:
         parts.append(f"是一名{profile.user_occupation}")
@@ -117,48 +134,51 @@ async def _upsert_profile_memory(
     memory_content = "，".join(parts) + "。"
 
     try:
-        from models.memory import Memory, SOURCE_USER_STATED
-
-        # Find existing profile memory for this character
-        result = await session.execute(
-            select(Memory)
-            .where(
-                Memory.source == SOURCE_USER_STATED,
-                Memory.memory_type == "user_fact",
-                Memory.character_id == profile.character_id,
+        async with _session_factory() as s:
+            result = await s.execute(
+                select(Memory)
+                .where(
+                    Memory.source == SOURCE_USER_STATED,
+                    Memory.memory_type == "user_fact",
+                    Memory.character_id == profile.character_id,
+                )
+                .order_by(desc(Memory.updated_at))
+                .limit(1)
             )
-            .order_by(desc(Memory.updated_at))
-            .limit(1)
-        )
-        existing = result.scalar_one_or_none()
+            existing = result.scalar_one_or_none()
 
-        if existing:
-            old_content = existing.content
-            existing.content = memory_content
-            existing.importance = 8
-            from services.memory_store import MemoryStore
-            await MemoryStore.sync_fts5_update(
-                existing.id, old_content, memory_content, "user_fact"
-            )
-        else:
-            embedding = None
-            try:
-                from services.embedding_service import embed_single
-                embedding = await embed_single(memory_content)
-            except Exception:
-                pass
-            import uuid
-            mem = Memory(
-                id=str(uuid.uuid4()),
-                content=memory_content,
-                memory_type="user_fact",
-                source=SOURCE_USER_STATED,
-                importance=8,
-                character_id=profile.character_id,
-                embedding=embedding,
-            )
-            session.add(mem)
+            if existing:
+                old_content = existing.content
+                existing.content = memory_content
+                existing.importance = 8
+                await s.commit()
 
-        await session.commit()
+                # FTS5 sync is non-fatal; the raw table is already correct.
+                try:
+                    from services.memory_store import MemoryStore
+                    await MemoryStore.sync_fts5_update(
+                        existing.id, old_content, memory_content, "user_fact"
+                    )
+                except Exception as e:
+                    print(f"[UserProfile] FTS5 sync failed (non-fatal): {e}", flush=True)
+            else:
+                embedding = None
+                try:
+                    from services.embedding_service import embed_single
+                    embedding = await embed_single(memory_content)
+                except Exception:
+                    pass
+                import uuid
+                mem = Memory(
+                    id=str(uuid.uuid4()),
+                    content=memory_content,
+                    memory_type="user_fact",
+                    source=SOURCE_USER_STATED,
+                    importance=8,
+                    character_id=profile.character_id,
+                    embedding=embedding,
+                )
+                s.add(mem)
+                await s.commit()
     except Exception as e:
         print(f"[UserProfile] memory upsert failed: {e}", flush=True)

@@ -5,14 +5,18 @@
 ## 特性
 
 - **角色扮演**：自定义 AI 角色的名字、性别、性格、说话风格、声线
+- **用户画像**：AI 自动学习并持久化用户的个人信息（姓名、关系、偏好等），跨会话保留
 - **流式聊天**：WebSocket 实时流式对话，支持工具调用（搜索、文件读写、屏幕查看）
 - **主动陪伴**：AI 会在空闲时主动发起话题，支持定时问候和空闲检测
-- **记忆系统**：SQLite FTS5 全文索引 + 向量嵌入混合检索，按角色隔离
+- **记忆系统**：SQLite FTS5 全文索引 + 向量嵌入混合检索，按角色隔离；自动记忆提取与裁剪
 - **语音合成**：支持 GPT-SoVITS 零样本声线克隆，每个角色独立语音
 - **每日问候**：首次打开时根据时间、天气、位置自动发起问候
 - **位置感知**：浏览器 Geolocation + 高德逆地理编码，周边推荐
 - **内容保护**：截屏时窗口自动排除自身（Windows WDA_EXCLUDEDFROMCAPTURE）
 - **浮动图标**：最小化后显示 64x64 圆形头像，有未读消息时呼吸灯提示
+- **工具运行时**：带追踪、超时沙箱的工具执行层，支持工具调用日志查询
+- **多智能体**：SearchAgent 独立搜索引擎子智能体；MCP Vision 免费视觉感知（智谱 GLM-4V Flash）
+- **相对日期**：对话摘要和记忆中的日期自动格式化为人类可读的相对时间
 
 ## 技术栈
 
@@ -27,14 +31,15 @@
 
 ```
 ├── backend/
-│   ├── main.py              # FastAPI 入口
+│   ├── main.py              # FastAPI 入口、工具注册、MCP 初始化
 │   ├── config.py            # pydantic-settings 配置
 │   ├── database.py          # SQLite 异步引擎 + 迁移
-│   ├── api/                 # REST + WebSocket 路由
-│   ├── core/                # Agent 引擎、Prompt 管理、工具注册
-│   ├── services/            # LLM、Vision、Memory、TTS、Location、Weather
-│   ├── tools/               # 文件操作、搜索、记忆、屏幕捕捉
-│   └── models/              # SQLAlchemy ORM
+│   ├── api/                 # REST + WebSocket 路由（含 tool_logs）
+│   ├── core/                # Agent 引擎、SubAgent、ToolRuntime、Prompt 管理
+│   ├── services/            # LLM、Vision、Memory、TTS、Location、Weather、MCP
+│   ├── tools/               # 文件操作、搜索、记忆、屏幕捕捉（MCP/旧版）
+│   ├── models/              # SQLAlchemy ORM（含 UserProfile、ToolRun）
+│   └── eval/                # 手工标注测试集 + 自动跑分
 ├── frontend/
 │   ├── electron/            # Electron 主进程、preload、浮动窗口
 │   └── src/
@@ -44,6 +49,7 @@
 │       ├── services/        # API 封装、TTS
 │       └── i18n/            # 中英文翻译
 ├── scripts/                 # dev.bat 一键启动
+├── mcp_servers.example.json # MCP 视觉服务器配置模板
 ├── .env.example             # 环境变量模板
 └── README.md
 ```
@@ -138,11 +144,33 @@ cd frontend && npm run electron:dev  # 前端 :16173
 | 配置 | 说明 |
 |---|---|
 | `LLM_*` | 对话 LLM 的 provider、model、base_url、api_key |
-| `VISION_*` | 屏幕感知视觉模型（可选） |
+| `VISION_*` | 屏幕感知视觉模型（可选，推荐使用 MCP 免费方案替代） |
 | `SEARCH_BACKEND` | 搜索引擎：duckduckgo / bing_web |
 | `AMAP_API_KEY` | 高德地图 Key（位置 + 天气，免费） |
 | `TTS_REF_BASE` | GPT-SoVITS 安装路径（语音功能） |
 | `MAX_CONTEXT_TOKENS` | 对话上下文窗口大小（默认 16000） |
+
+### MCP 视觉（推荐免费方案）
+
+复制 `mcp_servers.example.json` 为 `data/mcp_servers.json`，填入智谱 API Key：
+
+```json
+{
+  "servers": [
+    {
+      "name": "vision",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "deepseek_vision_mcp"],
+      "env": {
+        "ZHIPU_API_KEY": "your-zhipu-api-key-here"
+      }
+    }
+  ]
+}
+```
+
+使用智谱 GLM-4V Flash 免费模型，`see_screen` 会优先走 MCP，不可用时自动降级到旧版 VisionService。
 
 ## License
 

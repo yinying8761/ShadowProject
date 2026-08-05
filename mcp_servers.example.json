@@ -1,0 +1,13 @@
+{
+  "servers": [
+    {
+      "name": "vision",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "deepseek_vision_mcp"],
+      "env": {
+        "ZHIPU_API_KEY": "your-zhipu-api-key-here"
+      }
+    }
+  ]
+}

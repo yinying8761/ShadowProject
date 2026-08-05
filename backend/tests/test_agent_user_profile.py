@@ -64,6 +64,7 @@ class TestAgentLoadsUserProfile:
         from models.user_profile import UserProfile
         from core.agent import Agent
         from core.tool_registry import ToolRegistry
+        from core.tool_runtime import ToolRuntime
 
         engine = create_async_engine("sqlite+aiosqlite://", echo=False)
         async with engine.begin() as conn:
@@ -83,7 +84,7 @@ class TestAgentLoadsUserProfile:
             monkeypatch.setattr(memory_svc, "search", _fake_memory_search)
 
             llm = CapturingLLM("你好小明！")
-            agent = Agent(llm_service=llm, tool_registry=ToolRegistry())
+            agent = Agent(llm_service=llm, tool_registry=ToolRuntime(registry=ToolRegistry(), enable_tracing=False, enable_sandbox=False))
 
             async for _ in agent.run(
                 session=session,
@@ -111,6 +112,7 @@ class TestAgentLoadsUserProfile:
         from models.user_profile import UserProfile
         from core.agent import Agent
         from core.tool_registry import ToolRegistry
+        from core.tool_runtime import ToolRuntime
 
         engine = create_async_engine("sqlite+aiosqlite://", echo=False)
         async with engine.begin() as conn:
@@ -128,7 +130,7 @@ class TestAgentLoadsUserProfile:
             monkeypatch.setattr(memory_svc, "search", _fake_memory_search)
 
             llm = CapturingLLM("你好！")
-            agent = Agent(llm_service=llm, tool_registry=ToolRegistry())
+            agent = Agent(llm_service=llm, tool_registry=ToolRuntime(registry=ToolRegistry(), enable_tracing=False, enable_sandbox=False))
 
             async for _ in agent.run(
                 session=session,
@@ -149,6 +151,7 @@ class TestAgentLoadsUserProfile:
         """When no UserProfile exists at all, the old flat format is used."""
         from core.agent import Agent
         from core.tool_registry import ToolRegistry
+        from core.tool_runtime import ToolRuntime
 
         engine = create_async_engine("sqlite+aiosqlite://", echo=False)
         async with engine.begin() as conn:
@@ -160,7 +163,7 @@ class TestAgentLoadsUserProfile:
             monkeypatch.setattr(memory_svc, "search", _fake_memory_search)
 
             llm = CapturingLLM("你好！")
-            agent = Agent(llm_service=llm, tool_registry=ToolRegistry())
+            agent = Agent(llm_service=llm, tool_registry=ToolRuntime(registry=ToolRegistry(), enable_tracing=False, enable_sandbox=False))
 
             async for _ in agent.run(
                 session=session,

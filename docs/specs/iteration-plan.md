@@ -289,68 +289,117 @@ class ToolRuntime:
 
 ---
 
-## Workflow C：Multi-Agent（Router + Search/Screen Sub-Agent）
+## Workflow C：Multi-Agent（SearchAgent + MCP Vision + 预留 Router）
 
 **现状**：单 Agent 架构。`research` 和 `see_screen` 是直接函数调用。没有子 Agent 或编排器。
 
-### 架构：Router 拦截工具调用（方案 B）
+### 架构概览
 
 ```
 用户消息 → MainAgent (角色人格 + LLM)
-              │  LLM 说"需要搜索+看屏幕"
-              │  调用 research → 被 Router 拦截
-              ▼
-           Router (LLM, 独立系统 prompt)
-              │  分析任务，拆分并行/串行子任务
-              ├─→ SearchAgent (独立 LLM, 有 fetch_url + duckduckgo 工具)
-              │     │ 最多 2 轮工具调用
-              │     ▼ 返回结构化结果
-              └─→ ScreenAgent (独立 LLM + Vision)
-                    │ 看到屏幕内容 → 自然语言描述
-                    ▼ 返回描述
               │
-              ▼ Router 汇总子 Agent 结果
+              │  LLM 说"需要搜索"
+              │  调用 research → SearchAgent 处理
               │
-              ▼ 返回给 MainAgent（作为 tool_result）
+              │  LLM 说"看看屏幕"
+              │  调用 mcp__vision__analyze_image → MCP 视觉服务处理
               │
-              ▼ MainAgent 用人格整合 → 回复用户
+              │  Router（预留，暂不实现）
+              │    未来拦截 research / see_screen，统一分派子 Agent
+              │
+              ▼ 回复用户
 ```
 
-### 各组件职责
+**核心变化**：
 
-**Router Agent**：
-- 系统 prompt：`"你是任务调度员。接收主 Agent 的搜索/屏幕请求，决定是否需要并行执行，分派给子 Agent，汇总结果。返回简洁、结构化的中文总结。"`
-- 输入：MainAgent 想调用 research 或 see_screen 时的 query
-- 输出：汇总后的结果文本
-- 独立 LLM（可用更便宜的小模型）
+| 原方案 | 新方案 | 原因 |
+|--------|--------|------|
+| ScreenAgent (独立小模型 + Vision API) | MCP Vision Server (DeepSeek_vision_mcp, GLM-4V Flash 免费) | 省一个视觉模型配置，.env 更干净；MCP 通用视觉工具（9 个）随时可用 |
+| Router 立即实现 | Router 架构预留，暂不实现 | 只有一个子 Agent（SearchAgent），Router 是过度设计。等 ≥2 个子 Agent 时再加中间层 |
+| 文件工具不动 | 不变 | 读/写/列目录/搜索文件是确定性操作，不需要 LLM 子 Agent 绕一层 |
 
-**SearchAgent**：
-- 工具集：`fetch_url`, `duckduckgo`（或复用现有 `_do_search`）
-- 系统 prompt：`"你是搜索助手。根据查询搜集信息，返回准确、有来源的总结。"`
-- 最多 2 轮工具调用
-- 独立 LLM
+### C1：SearchAgent — 搜索子 Agent
 
-**ScreenAgent**：
-- 工具集：`see_screen`（调用 vision_service）
-- 系统 prompt：`"你是屏幕观察员。描述屏幕上的内容，关注用户正在做的事情。"`
-- 单次调用，无工具循环
-- 独立 LLM（可选 Visual 模型）
+**职责**：替代现在的 `research` 直接函数调用，改为独立 LLM + 工具循环的子 Agent。
 
-**MainAgent**：
-- 保持现状——角色的完整人格 + 对话历史 + 工具（research/see_screen → 由 Router 代理）
-- 对 Router 的存在的感知透明——它以为自己只是调用了 research 工具
+```
+MainAgent 调用 research(query)
+    → SearchAgent.run(query)
+       │  独立 LLM（可用更便宜的小模型）
+       │  工具: fetch_url + duckduckgo
+       │  最多 2 轮工具调用
+       └→ 返回结构化搜索结果
+```
+
+**与现状 `research` 的区别**：
+- 现状：`research` = DuckDuckGo 搜索 → 取前几条 → LLM 总结。只用主 LLM（贵），没有多步检索。
+- 新方案：`SearchAgent` 有独立 LLM（便宜小模型），可以先搜索 → 发现需要点开某条结果 → `fetch_url` → 再判断是否需要补充搜索。比直接搜更准，成本更低。
+
+**接口**：
+
+```python
+class SearchAgent:
+    """独立搜索子 Agent，有自己的 LLM + 工具循环。"""
+    
+    async def run(self, query: str) -> str:
+        """执行搜索，返回结构化结果文本。"""
+```
+
+**注册**（ToolRuntime）：
+```python
+runtime.register("research", handler=SearchAgent(...).run, ...)
+# 外部看起来就是个普通工具，内部是一个子 Agent
+```
+
+### C2：see_screen → MCP Vision Server
+
+**接入 DeepSeek_vision_mcp**（Python, stdio 传输, GLM-4V Flash 免费模型）。
+
+配置（`mcp_servers.json`）：
+```json
+{
+  "servers": [{
+    "name": "vision",
+    "transport": "stdio",
+    "command": "python",
+    "args": ["-m", "deepseek_vision_mcp"],
+    "env": {
+      "ZHIPU_API_KEY": "xxx"
+    }
+  }]
+}
+```
+
+MCP 连接后自动注册 9 个工具到 ToolRuntime：
+`mcp__vision__analyze_image`, `mcp__vision__ocr_image`, `mcp__vision__table_from_image`, `mcp__vision__analyze_ui`, `mcp__vision__analyze_document_slide`, `mcp__vision__describe_chart`, `mcp__vision__compare_images`, `mcp__vision__tile_image`, `mcp__vision__image_info`
+
+截图逻辑不变（Electron/Python 本地截图），视觉识别走 MCP。`.env` 中不再需要 `VISION_API_KEY` 等配置。
+
+### C3：Router 架构预留
+
+Router 类接口预留，不实现分派逻辑：
+
+```python
+class RouterAgent:
+    """任务路由——接收 MainAgent 的请求，决定是否需要并行分派给子 Agent。
+    
+    预留实现。当子 Agent ≥2 个时才启用。
+    """
+    pass
+```
+
+**预留点**：`Agent._execute_tools_with_approval()` 中增加一个钩子（如 `_resolve_handler(tool_name)`），现在直接调 ToolRuntime.dispatch，以后可以接入 Router。
 
 ### 改动清单
 
 | 文件 | 改动 |
 |------|------|
 | `backend/core/sub_agent.py` | **新建** — `SubAgent` 基类（独立 LLM + 工具循环） |
-| `backend/core/router_agent.py` | **新建** — `RouterAgent`（LLM Router） |
 | `backend/core/search_agent.py` | **新建** — `SearchAgent` |
-| `backend/core/screen_agent.py` | **新建** — `ScreenAgent` |
-| `backend/core/agent.py` | `_execute_tools_with_approval()` 中：`research` / `see_screen` 走 Router |
-| `backend/main.py` | 实例化 Router + 子 Agent，注入 |
-| `backend/core/tool_runtime.py` | Router 注册为 research 和 see_screen 的 handler |
+| `backend/core/router_agent.py` | **新建** — `RouterAgent`（接口占位，不实现分派） |
+| `backend/core/agent.py` | 新增 `_resolve_handler()` 钩子（预留 Router 接入点）；SearchAgent 注入 |
+| `backend/main.py` | 实例化 SearchAgent，注册到 ToolRuntime；`research` handler 指向 SearchAgent.run |
+| `data/mcp_servers.json` | 新增 vision server 配置模板 |
 
 ---
 
@@ -369,9 +418,8 @@ backend/
 ├── core/
 │   ├── tool_runtime.py          # D: ToolRuntime 类
 │   ├── sub_agent.py             # C: SubAgent 基类
-│   ├── router_agent.py          # C: RouterAgent
 │   ├── search_agent.py          # C: SearchAgent
-│   └── screen_agent.py          # C: ScreenAgent
+│   └── router_agent.py          # C: RouterAgent（接口占位）
 └── services/
     └── tool_trace_store.py      # D: 追踪存储
 ```

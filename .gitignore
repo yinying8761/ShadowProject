@@ -25,6 +25,9 @@ tools/GPT-SoVITS/
 # Claude Code
 .claude/
 
+# Temporary working files
+.scratch/
+
 # IDE
 .idea/
 .vscode/

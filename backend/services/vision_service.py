@@ -61,8 +61,9 @@ class VisionService:
         """
         if not settings.vision_enabled():
             return (
-                "(视觉功能未启用：请在 .env 配置 VISION_API_KEY "
-                "和 VISION_PROVIDER，例如 qwen + qwen-vl-max)"
+                "(视觉功能未启用：可通过 MCP 接入免费视觉服务，"
+                "复制 mcp_servers.example.json 为 data/mcp_servers.json 并配置智谱 API Key；"
+                "或在 .env 配置 VISION_API_KEY + VISION_PROVIDER 使用传统方式)"
             )
 
         prompt = DEFAULT_PROMPT

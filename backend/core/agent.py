@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.prompt_manager import PromptManager
 from core.conversation_manager import ConversationManager
-from core.tool_registry import ToolRegistry, tool_registry as _default_tool_registry
+from core.tool_runtime import ToolRuntime
 from services.llm_service import LLMService
 from services.memory_service import memory_service, pop_memory_notifications
 from models.character import CharacterProfile
@@ -21,12 +21,12 @@ class Agent:
     def __init__(
         self,
         llm_service: LLMService | None = None,
-        tool_registry: ToolRegistry | None = None,
+        tool_registry: ToolRuntime | None = None,
     ):
         self.prompt_manager = PromptManager()
         self.conversation_manager = ConversationManager()
         self.llm_service = llm_service or LLMService()
-        self.tool_registry = tool_registry or _default_tool_registry
+        self.tool_registry = tool_registry or ToolRuntime()
 
     async def run(
         self,
@@ -333,6 +333,15 @@ class Agent:
         except Exception as e:
             print(f"[Agent] background summarization failed: {e}", flush=True)
 
+    def _resolve_handler(self, tool_name: str):
+        """Return the callable that handles *tool_name*.
+
+        Currently returns ``self.tool_registry.dispatch`` directly.
+        When RouterAgent is enabled (≥2 sub-agents), it can intercept
+        here and route to the appropriate sub-agent.
+        """
+        return self.tool_registry.dispatch
+
     async def _execute_tools_with_approval(
         self,
         tool_use_blocks: list[dict],
@@ -371,7 +380,8 @@ class Agent:
                     continue
 
             try:
-                result = await self.tool_registry.dispatch(tb["name"], tb["arguments"])
+                handler = self._resolve_handler(tb["name"])
+                result = await handler(tb["name"], tb["arguments"])
                 content = str(result)
                 is_error = False
                 # dispatch() returns JSON error strings for tool failures

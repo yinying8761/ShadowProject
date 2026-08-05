@@ -39,12 +39,13 @@ def register_tools(registry=None):
     Parameters
     ----------
     registry:
-        Optional ToolRegistry instance.  When *None* the module-level
-        singleton is used — this is the production path.  Tests may pass
-        an isolated instance to avoid mutating global state.
+        Optional ToolRuntime (or duck-type compatible) instance.  When
+        *None* the module-level singleton is used — this is the
+        production path.  Tests may pass an isolated instance to avoid
+        mutating global state.
     """
     if registry is None:
-        from core.tool_registry import tool_registry as registry
+        from core.tool_runtime import tool_runtime as registry
     from tools.file_tools import read_file, write_file, list_directory, search_files
     from tools.screen_tools import see_screen
     from tools.time_tools import get_current_time
@@ -152,8 +153,11 @@ def register_tools(registry=None):
         require_approval=True,
     )
 
-    from tools.search_tools import fetch_url, research
+    from tools.search_tools import fetch_url
     from tools.memory_tools import search_memory, save_memory
+    from core.search_agent import SearchAgent
+
+    search_agent = SearchAgent()
 
     registry.register(
         name="fetch_url",
@@ -199,7 +203,7 @@ def register_tools(registry=None):
             },
             "required": ["query"],
         },
-        handler=research,
+        handler=search_agent.run,
         require_approval=False,
     )
 
@@ -265,7 +269,17 @@ def register_tools(registry=None):
     return registry
 
 
-register_tools()
+# Module-level ToolRuntime singleton (wraps ToolRegistry).
+# Created by register_tools() on import so tools are ready before the
+# FastAPI lifespan starts, but the ToolRuntime instance is also
+# available for direct injection into Agent / McpManager.
+from core.tool_runtime import ToolRuntime
+tool_runtime: ToolRuntime = register_tools(ToolRuntime())
+
+# Wire MCP dispatch into the screen tool so see_screen() can route
+# vision calls through MCP when a vision server is connected.
+from tools.screen_tools import set_mcp_dispatch
+set_mcp_dispatch(tool_runtime.dispatch)
 
 
 # ---- Lifespan & Seed ----
@@ -289,9 +303,8 @@ async def lifespan(app: FastAPI):
     await seed_default_data()
 
     # ── MCP Tool Servers ──
-    from core.tool_registry import tool_registry
     from services.mcp_manager import McpManager
-    mcp_manager = McpManager(tool_registry)
+    mcp_manager = McpManager(tool_runtime)
     mcp_config = settings.mcp_config_path or str(data_dir / "mcp_servers.json")
     try:
         mcp_result = await mcp_manager.connect_all(mcp_config)
@@ -377,6 +390,7 @@ from api.conversation import router as conversation_router
 from api.config import router as config_router
 from api.tts import router as tts_router
 from api.user_profile import router as user_profile_router
+from api.tool_logs import router as tool_logs_router
 
 app.include_router(chat_router)
 app.include_router(character_router)
@@ -384,6 +398,7 @@ app.include_router(conversation_router)
 app.include_router(config_router)
 app.include_router(tts_router)
 app.include_router(user_profile_router)
+app.include_router(tool_logs_router)
 
 
 if __name__ == "__main__":

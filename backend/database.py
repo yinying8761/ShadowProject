@@ -68,7 +68,7 @@ async def _apply_additive_migrations(conn) -> None:
 
 async def init_db():
     """Create all tables. Call on startup."""
-    from models import character, conversation, message, user_config, memory, user_profile  # noqa: F401
+    from models import character, conversation, message, user_config, memory, user_profile, tool_run  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _apply_additive_migrations(conn)

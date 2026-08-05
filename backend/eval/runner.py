@@ -56,6 +56,7 @@ from models.user_config import UserConfig  # noqa: E402
 from models.memory import Memory  # noqa: E402  # noqa: F401
 
 from core.agent import Agent  # noqa: E402
+from core.tool_runtime import ToolRuntime  # noqa: E402
 from core.tool_registry import ToolRegistry  # noqa: E402
 from services.memory_service import memory_service  # noqa: E402
 
@@ -258,10 +259,15 @@ async def run_eval() -> list[CaseResult]:
     session_factory = await _setup_eval_db(engine)
     _install_memory_stub()
 
-    # ── Isolated tool registry ──────────────────────────────────────
-    tool_registry = ToolRegistry()
+    # ── Isolated tool registry (wrapped in ToolRuntime, tracing disabled) ─
+    inner_registry = ToolRegistry()
+    tool_runtime = ToolRuntime(
+        registry=inner_registry,
+        enable_tracing=False,
+        enable_sandbox=False,
+    )
     from main import register_tools
-    register_tools(tool_registry)
+    register_tools(tool_runtime)
 
     results: list[CaseResult] = []
 
@@ -284,7 +290,7 @@ async def run_eval() -> list[CaseResult]:
                 await session.refresh(conv)
 
                 # ── Agent ───────────────────────────────────────────
-                agent = Agent(tool_registry=tool_registry)
+                agent = Agent(tool_registry=tool_runtime)
 
                 tool_use_events: list[dict] = []
                 final_text = ""

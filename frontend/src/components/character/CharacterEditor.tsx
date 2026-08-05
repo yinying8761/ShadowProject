@@ -94,7 +94,13 @@ export function CharacterEditor({ character, onClose }: Props) {
 
         <div>
           <label className={labelClass}>{t('Voice Style')}</label>
-          <input className={fieldClass} value={form.voice_style} onChange={(e) => setForm({ ...form, voice_style: e.target.value })} placeholder={t('e.g. warm and friendly')} />
+          <textarea
+            className={fieldClass}
+            rows={3}
+            value={form.voice_style}
+            onChange={(e) => setForm({ ...form, voice_style: e.target.value })}
+            placeholder={t('e.g. warm and friendly')}
+          />
         </div>
 
         <div>
