@@ -148,24 +148,17 @@ async def _upsert_profile_memory(
             existing = result.scalar_one_or_none()
 
             if existing:
-                old_content = existing.content
                 existing.content = memory_content
                 existing.importance = 8
                 await s.commit()
-
-                # FTS5 sync is non-fatal; the raw table is already correct.
-                try:
-                    from services.memory_store import MemoryStore
-                    await MemoryStore.sync_fts5_update(
-                        existing.id, old_content, memory_content, "user_fact"
-                    )
-                except Exception as e:
-                    print(f"[UserProfile] FTS5 sync failed (non-fatal): {e}", flush=True)
             else:
                 embedding = None
                 try:
                     from services.embedding_service import embed_single
-                    embedding = await embed_single(memory_content)
+                    vec = await embed_single(memory_content)
+                    if vec:
+                        from services.memory_store import MemoryStore
+                        embedding = MemoryStore.pack_embedding(vec)
                 except Exception:
                     pass
                 import uuid

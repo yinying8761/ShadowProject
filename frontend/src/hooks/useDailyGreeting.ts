@@ -64,6 +64,7 @@ export function useDailyGreeting() {
 
     const handler = (value: { visible: boolean }) => {
       if (!value.visible) return;
+
       // Don't start a concurrent poll — the conversation-change effect
       // or a prior visibility fire may already be running.
       if (pollingRef.current) {

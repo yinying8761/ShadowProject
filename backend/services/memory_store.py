@@ -18,6 +18,57 @@ from models.memory import Memory, SOURCE_AI_SUMMARIZED
 _fts5_ready = False
 
 
+async def _migrate_fts5_triggers(conn):
+    """Replace old delete-marker triggers with DELETE FROM … WHERE rowid=… syntax.
+
+    SQLite ≥3.50 rejects the FTS5 ``'delete'`` marker on tables created
+    with ``content_rowid``.  This migration drops the old triggers and
+    recreates them, and also strips the now-unnecessary ``content_rowid``
+    option from the FTS5 table DDL if present.
+    """
+    for trig in ("memory_fts_delete", "memory_fts_update"):
+        try:
+            await conn.execute(text(f"DROP TRIGGER IF EXISTS {trig}"))
+        except Exception:
+            pass
+
+    try:
+        await conn.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS memory_fts_delete "
+            "AFTER DELETE ON memories BEGIN "
+            "DELETE FROM memory_fts WHERE rowid = old.rowid; END"
+        ))
+    except Exception:
+        pass
+
+    try:
+        await conn.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS memory_fts_update "
+            "AFTER UPDATE ON memories BEGIN "
+            "DELETE FROM memory_fts WHERE rowid = old.rowid; "
+            "INSERT INTO memory_fts(rowid, content, memory_type) "
+            "VALUES (new.rowid, new.content, new.memory_type); END"
+        ))
+    except Exception:
+        pass
+
+    try:
+        await conn.execute(text("DROP TRIGGER IF EXISTS memory_fts_insert"))
+    except Exception:
+        pass
+    try:
+        await conn.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS memory_fts_insert "
+            "AFTER INSERT ON memories BEGIN "
+            "INSERT INTO memory_fts(rowid, content, memory_type) "
+            "VALUES (new.rowid, new.content, new.memory_type); END"
+        ))
+    except Exception:
+        pass
+
+    print("[MemoryStore] FTS5 triggers migrated to DELETE FROM syntax", flush=True)
+
+
 class MemoryStore:
     """Storage adapter for Memory CRUD, FTS5, and embedding."""
 
@@ -25,29 +76,48 @@ class MemoryStore:
 
     @staticmethod
     async def ensure_fts5():
-        """Create the FTS5 virtual table and triggers if they don't exist."""
+        """Create the FTS5 virtual table and triggers if they don't exist.
+
+        Uses ``DELETE FROM memory_fts WHERE rowid=old.rowid`` instead of
+        the FTS5 ``'delete'`` marker because SQLite ≥3.50 rejects the
+        marker syntax when ``content_rowid`` was used in the table DDL.
+        """
         global _fts5_ready
         if _fts5_ready:
             return
         async with engine.begin() as conn:
+            # 1. FTS5 virtual table (no content_rowid — not an external content table)
             await conn.execute(text(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
-                "content, memory_type, content_rowid='rowid',"
+                "content, memory_type,"
                 "tokenize='unicode61 remove_diacritics 1'"
                 ")"
             ))
+            # 2. Insert trigger
             await conn.execute(text(
                 "CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memories BEGIN "
                 "INSERT INTO memory_fts(rowid, content, memory_type) "
                 "VALUES (new.rowid, new.content, new.memory_type); END"
             ))
+            # 3. Delete trigger — use plain DELETE, not the FTS5 'delete' marker
             await conn.execute(text(
                 "CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memories BEGIN "
-                "INSERT INTO memory_fts(memory_fts, rowid, content, memory_type) "
-                "VALUES ('delete', old.rowid, old.content, old.memory_type); END"
+                "DELETE FROM memory_fts WHERE rowid = old.rowid; END"
             ))
+            # 4. Update trigger — delete old + insert new
+            await conn.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories BEGIN "
+                "DELETE FROM memory_fts WHERE rowid = old.rowid; "
+                "INSERT INTO memory_fts(rowid, content, memory_type) "
+                "VALUES (new.rowid, new.content, new.memory_type); END"
+            ))
+
+            # 5. Migrate triggers that used the old delete-marker syntax
+            await _migrate_fts5_triggers(conn)
+
         _fts5_ready = True
         print("[MemoryStore] FTS5 virtual table ready", flush=True)
+
 
     # ---- Embedding helpers --------------------------------------------
 
@@ -73,8 +143,25 @@ class MemoryStore:
         character_id: str | None = None,
         source: str = SOURCE_AI_SUMMARIZED,
     ) -> Memory:
-        """Insert a memory with optional embedding."""
+        """Insert a memory, deduplicating against existing similar content."""
         from services.memory_service import push_memory_notification
+
+        # Check for near-duplicate before inserting
+        existing = await self.find_similar(session, content)
+        if existing:
+            old_content = existing.content
+            existing.importance = max(existing.importance, importance)
+            existing.content = content  # use newer wording
+            if source_conversation_id:
+                existing.source_conversation_id = source_conversation_id
+            await session.commit()
+            await session.refresh(existing)
+            await self.sync_fts5_update(
+                existing.id, old_content, content, existing.memory_type,
+            )
+            if source_conversation_id:
+                push_memory_notification(source_conversation_id, 1)
+            return existing
 
         mem = Memory(
             content=content,
@@ -101,7 +188,13 @@ class MemoryStore:
         new_content: str,
         memory_type: str,
     ):
-        """Manually sync FTS5 after a content update (no UPDATE trigger)."""
+        """Manually sync FTS5 after a content-only update.
+
+        Needed when content is changed via ORM attribute mutation +
+        commit (which fires the UPDATE trigger and handles FTS5 sync
+        automatically for most cases).  This is a fallback for edge
+        cases where the trigger might not cover the update path.
+        """
         async with async_session() as s:
             try:
                 result = await s.execute(
@@ -112,28 +205,17 @@ class MemoryStore:
                 if not row:
                     return
                 rowid = row[0]
-                # Delete old entry (may fail if never indexed, ignore)
-                try:
-                    await s.execute(
-                        text(
-                            "INSERT INTO memory_fts(memory_fts, rowid, content, memory_type) "
-                            "VALUES ('delete', :rowid, :old_content, :mem_type)"
-                        ),
-                        {"rowid": rowid, "old_content": old_content, "mem_type": memory_type},
-                    )
-                except Exception:
-                    pass
-                # Insert updated entry
-                try:
-                    await s.execute(
-                        text(
-                            "INSERT INTO memory_fts(rowid, content, memory_type) "
-                            "VALUES (:rowid, :new_content, :mem_type)"
-                        ),
-                        {"rowid": rowid, "new_content": new_content, "mem_type": memory_type},
-                    )
-                except Exception:
-                    pass
+                await s.execute(
+                    text("DELETE FROM memory_fts WHERE rowid = :rowid"),
+                    {"rowid": rowid},
+                )
+                await s.execute(
+                    text(
+                        "INSERT INTO memory_fts(rowid, content, memory_type) "
+                        "VALUES (:rowid, :new_content, :mem_type)"
+                    ),
+                    {"rowid": rowid, "new_content": new_content, "mem_type": memory_type},
+                )
                 await s.commit()
             except Exception as e:
                 print(f"[MemoryStore] sync_fts5_update failed: {e}", flush=True)
