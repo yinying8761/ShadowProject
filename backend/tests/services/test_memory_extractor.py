@@ -26,7 +26,7 @@ async def _setup_db():
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text(
             "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
-            "content, memory_type, content_rowid='rowid',"
+            "content, memory_type,"
             "tokenize='unicode61 remove_diacritics 1'"
             ")"
         ))
@@ -39,8 +39,14 @@ async def _setup_db():
         await conn.execute(text(
             "CREATE TRIGGER IF NOT EXISTS memory_fts_delete "
             "AFTER DELETE ON memories BEGIN "
-            "INSERT INTO memory_fts(memory_fts, rowid, content, memory_type) "
-            "VALUES ('delete', old.rowid, old.content, old.memory_type); END"
+            "DELETE FROM memory_fts WHERE rowid = old.rowid; END"
+        ))
+        await conn.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS memory_fts_update "
+            "AFTER UPDATE ON memories BEGIN "
+            "DELETE FROM memory_fts WHERE rowid = old.rowid; "
+            "INSERT INTO memory_fts(rowid, content, memory_type) "
+            "VALUES (new.rowid, new.content, new.memory_type); END"
         ))
     factory = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
@@ -261,4 +267,120 @@ class TestMemoryExtractor:
         assert "tea" in mem.content.lower()
         assert mem.character_id == "char-x"
         assert mem.source == "ai_summarized"
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_before_filters_messages(self, monkeypatch):
+        """Messages created at or after `before` are excluded from extraction."""
+        from datetime import datetime, timezone
+
+        engine, factory = await _setup_db()
+        async with factory() as session:
+            from models.message import Message
+
+            # Messages on the same date but at different times
+            t1 = datetime(2026, 8, 10, 8, 0, 0, tzinfo=timezone.utc)
+            t2 = datetime(2026, 8, 10, 8, 0, 5, tzinfo=timezone.utc)  # snapshot
+            t3 = datetime(2026, 8, 10, 8, 0, 10, tzinfo=timezone.utc)  # greeting msg
+
+            # Messages before snapshot — should be extracted
+            session.add(Message(
+                id="msg-before-1", conversation_id="conv-before", role="user",
+                content="user says they like pizza", created_at=t1,
+            ))
+            session.add(Message(
+                id="msg-before-2", conversation_id="conv-before", role="assistant",
+                content="assistant reply about pizza", created_at=t2,
+            ))
+            # Message after snapshot — should NOT be extracted (greeting)
+            session.add(Message(
+                id="msg-after", conversation_id="conv-before", role="assistant",
+                content="Good morning! Today is sunny.", created_at=t3,
+            ))
+
+            # Pad to reach EXTRACTION_MIN_MESSAGES (needs 10)
+            for i in range(9):
+                session.add(Message(
+                    id=f"msg-pad-{i}", conversation_id="conv-before", role="user",
+                    content=f"extra message {i}", created_at=t1,
+                ))
+            await session.commit()
+
+        import services.memory_extractor as me_mod
+        monkeypatch.setattr(me_mod, "async_session", factory)
+
+        extractor = MemoryExtractor(MemoryStore())
+
+        # Use since_date + before to form a [2026-08-10, t2) window
+        class FakeLLM:
+            async def chat_sync(self, messages, max_tokens=1024, temperature=0.3):
+                return json.dumps([{
+                    "content": "user likes pizza",
+                    "memory_type": "user_preference",
+                    "importance": 7,
+                }])
+
+        results = await extractor.extract_and_store(
+            "conv-before", FakeLLM(),
+            since_date="2026-08-10", before=t2,
+        )
+        assert len(results) == 1
+        assert "pizza" in results[0].content
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_before_without_since_date(self, monkeypatch):
+        """`before` also works without `since_date`, using the count-based branch."""
+        from datetime import datetime, timezone
+
+        engine, factory = await _setup_db()
+        async with factory() as session:
+            from models.message import Message
+
+            t1 = datetime(2026, 8, 10, 8, 0, 0, tzinfo=timezone.utc)
+            snapshot = datetime(2026, 8, 10, 8, 0, 5, tzinfo=timezone.utc)
+
+            # 10 messages before snapshot
+            for i in range(10):
+                session.add(Message(
+                    id=f"msg-early-{i}", conversation_id="conv-before2", role="user",
+                    content=f"early message {i}", created_at=t1,
+                ))
+            # 5 messages after snapshot — should be excluded
+            for i in range(5):
+                session.add(Message(
+                    id=f"msg-late-{i}", conversation_id="conv-before2", role="user",
+                    content=f"late message {i}", created_at=snapshot,
+                ))
+            await session.commit()
+
+        import services.memory_extractor as me_mod
+        monkeypatch.setattr(me_mod, "async_session", factory)
+
+        extractor = MemoryExtractor(MemoryStore())
+        llm_called = False
+
+        class FakeLLM:
+            async def chat_sync(self, messages, max_tokens=1024, temperature=0.3):
+                nonlocal llm_called
+                llm_called = True
+                # Verify the transcript does NOT contain late messages
+                user_msg = [m for m in messages if m["role"] == "user"]
+                prompt = user_msg[-1]["content"] if user_msg else ""
+                # The extraction prompt should not mention "late message"
+                assert "late message" not in prompt, (
+                    f"Messages after snapshot should be excluded, but found: {prompt}"
+                )
+                return json.dumps([{
+                    "content": "extracted from early messages only",
+                    "memory_type": "user_fact",
+                    "importance": 5,
+                }])
+
+        results = await extractor.extract_and_store(
+            "conv-before2", FakeLLM(), before=snapshot,
+        )
+        assert llm_called
+        assert len(results) == 1
+        assert "early" in results[0].content
         await engine.dispose()

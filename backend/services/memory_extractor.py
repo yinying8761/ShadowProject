@@ -30,6 +30,7 @@ class MemoryExtractor:
         llm_service,
         character_id: str | None = None,
         since_date: str | None = None,
+        before: datetime | None = None,
     ) -> list[Memory]:
         """
         Extract memories from conversation messages via LLM, deduplicate,
@@ -39,6 +40,11 @@ class MemoryExtractor:
         only messages created on or after that date are considered.  This
         replaces the fixed EXTRACTION_MESSAGE_COUNT window with a natural
         time boundary — ideal for once-per-day extraction before greeting.
+
+        If *before* is provided (timezone-aware datetime), only messages
+        created before that timestamp are considered.  Used together with
+        *since_date* to form a [since_date, before) window that excludes
+        messages generated during the current greeting.
         """
         from services.memory_service import (
             EXTRACTION_MIN_MESSAGES,
@@ -49,11 +55,11 @@ class MemoryExtractor:
         async with async_session() as session:
             # 1. Load recent messages for this conversation
             from models.message import Message
-            from datetime import date as _date
+            from datetime import date as _date, datetime
 
             if since_date:
                 boundary = _date.fromisoformat(since_date)
-                result = await session.execute(
+                stmt = (
                     _select(Message)
                     .where(
                         Message.conversation_id == conversation_id,
@@ -61,13 +67,19 @@ class MemoryExtractor:
                     )
                     .order_by(Message.created_at.desc())
                 )
+                if before is not None:
+                    stmt = stmt.where(Message.created_at < before)
+                result = await session.execute(stmt)
             else:
-                result = await session.execute(
+                stmt = (
                     _select(Message)
                     .where(Message.conversation_id == conversation_id)
                     .order_by(Message.created_at.desc())
                     .limit(EXTRACTION_MESSAGE_COUNT)
                 )
+                if before is not None:
+                    stmt = stmt.where(Message.created_at < before)
+                result = await session.execute(stmt)
             messages = list(result.scalars().all())
 
             if len(messages) < EXTRACTION_MIN_MESSAGES:
@@ -79,6 +91,39 @@ class MemoryExtractor:
                 role_label = "用户" if msg.role == "user" else "角色"
                 lines.append(f"[{role_label}]: {msg.content or '(tool)'}")
             transcript = "\n".join(lines)
+
+            # 1.5 Load user profile for personalised memory content
+            user_name_hint = ""
+            if character_id:
+                try:
+                    from models.user_profile import UserProfile as _UP
+                    from sqlalchemy import select as _sel_up, desc as _desc_up
+                    result = await session.execute(
+                        _sel_up(_UP)
+                        .where(_UP.character_id == character_id)
+                        .order_by(_desc_up(_UP.updated_at))
+                        .limit(1)
+                    )
+                    profile = result.scalar_one_or_none()
+                    if not profile:
+                        result = await session.execute(
+                            _sel_up(_UP)
+                            .where(_UP.character_id.is_(None))
+                            .order_by(_desc_up(_UP.updated_at))
+                            .limit(1)
+                        )
+                        profile = result.scalar_one_or_none()
+                    if profile and profile.user_name:
+                        user_name_hint = (
+                            f'用户的名字是「{profile.user_name}」。'
+                            f'在日记中请用「{profile.user_name}」称呼他，不要用「用户」这个泛称。\n'
+                        )
+                except Exception:
+                    print(
+                        "[MemoryExtractor] failed to load UserProfile for name hint, "
+                        "continuing without it",
+                        flush=True,
+                    )
 
             # 2. Call LLM for extraction (diary-style first-person narrative)
             extraction_prompt = (
@@ -96,6 +141,7 @@ class MemoryExtractor:
                 "- 重点记录你了解到的关于用户的事情、发生了什么、用户的情绪状态。\n"
                 "- 不要记录琐碎的问候和闲聊。\n"
                 "- 如果没有值得记录的内容，输出空数组 []。\n\n"
+                f"{user_name_hint}"
                 "对话内容：\n"
                 f"{transcript}"
             )

@@ -8,6 +8,7 @@ constructor injection so they share the same storage backend.
 
 import time
 from collections import defaultdict
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -105,13 +106,16 @@ class MemoryService:
         llm_service,
         character_id: str | None = None,
         since_date: str | None = None,
+        before: datetime | None = None,
     ) -> list[Memory]:
         """Extract memories from conversation messages via LLM.
-        If since_date is given, only messages on/after that date."""
+        If since_date is given, only messages on/after that date.
+        If before is given, only messages before that timestamp."""
         return await self._extractor.extract_and_store(
             conversation_id, llm_service,
             character_id=character_id,
             since_date=since_date,
+            before=before,
         )
 
     # ---- Pruning ----

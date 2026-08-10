@@ -67,6 +67,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
     print(f"[WS] connected conversation={conversation_id}", flush=True)
 
     pending_approvals: dict[str, asyncio.Future] = {}
+    _daily_greeting_tasks: dict[str, asyncio.Task] = {}
     last_known_character_id: str | None = None
     screen_fingerprints = ScreenFingerprintStore(maxlen=5)
 
@@ -149,7 +150,14 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
     await proactive_session.start()
 
     async def handle_daily_greeting():
-        """Gather context then delegate to GreetingOrchestrator."""
+        """Gather context then delegate to GreetingOrchestrator.
+
+        Memory extraction + compact run in a background asyncio task so the
+        greeting is not blocked by slow LLM calls.  A *snapshot* timestamp
+        taken before greeting generation is passed to the extractor as an
+        upper bound (``before``), preventing the greeting message itself
+        from being ingested as a memory.
+        """
         print("[DAILY] handler invoked", flush=True)
         char_id = last_known_character_id
         if not char_id:
@@ -157,7 +165,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             await websocket.send_json({"type": "daily_greeting_skip", "reason": "no_character"})
             return
 
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, date as _date
         from config import settings as app_settings
         from database import async_session
         from services.memory_service import memory_service
@@ -189,83 +197,6 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     city=location_info.get("city", ""),
                 )
 
-            # ── Extract memories since last greeting (once per day) ──
-            from datetime import date as _date
-            from models.character import CharacterProfile
-
-            today_str = _date.today().isoformat()
-            char = await session.get(CharacterProfile, char_id)
-            last_date = char.last_daily_greeting_date if char else ""
-            if last_date != today_str and last_date:
-                try:
-                    from services.llm_service import LLMService
-                    extract_llm = LLMService()
-                    extracted = await memory_service.extract_and_store(
-                        conversation_id,
-                        extract_llm,
-                        character_id=char_id,
-                        since_date=last_date,
-                    )
-                    print(f"[DAILY] extracted {len(extracted)} memories since {last_date}", flush=True)
-
-                    # ── Compact: trim old messages after extraction ──
-                    try:
-                        compact_result = await conv_manager.summarize_and_trim(
-                            session, conversation_id,
-                            keep_count=12,
-                            llm_service=extract_llm,
-                        )
-                        print(
-                            f"[DAILY] compact: deleted {compact_result['deleted']} messages, "
-                            f"summary_len={len(compact_result['summary'])}",
-                            flush=True,
-                        )
-                    except Exception as e:
-                        print(f"[DAILY] compact failed: {e}", flush=True)
-
-                except Exception as e:
-                    print(f"[DAILY] extraction failed: {e}", flush=True)
-
-            # ── Gather memories (prefer user_stated) ────────────────
-            from sqlalchemy import select as _sel
-            from models.memory import Memory, SOURCE_USER_STATED, SOURCE_AI_SUMMARIZED
-
-            # Prefer user-stated memories; pad with ai_summarized if needed
-            user_memories = await session.execute(
-                _sel(Memory)
-                .where(Memory.character_id == char_id, Memory.source == SOURCE_USER_STATED)
-                .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
-                .limit(3)
-            )
-            user_list = list(user_memories.scalars().all())
-            remaining = 3 - len(user_list)
-            if remaining > 0:
-                ai_memories = await session.execute(
-                    _sel(Memory)
-                    .where(Memory.character_id == char_id, Memory.source == SOURCE_AI_SUMMARIZED)
-                    .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
-                    .limit(remaining)
-                )
-                user_list.extend(ai_memories.scalars().all())
-            memory_texts = [m.content for m in user_list]
-
-            # ── Days since last message ────────────────────────────
-            from sqlalchemy import select, desc
-            from models.message import Message
-
-            result = await session.execute(
-                select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .order_by(desc(Message.created_at))
-                .limit(1)
-            )
-            last_msg = result.scalar_one_or_none()
-            days_since_last = 0
-            if last_msg:
-                delta = datetime.now(timezone.utc) - last_msg.created_at.replace(tzinfo=timezone.utc)
-                days_since_last = delta.days
-            print(f"[DAILY] days_since_last={days_since_last}", flush=True)
-
             # ── Persist location cache ─────────────────────────────
             if cfg is None:
                 print("[DAILY] no UserConfig found, skipping", flush=True)
@@ -274,6 +205,91 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             if location_info:
                 cfg.location_city = location_info.get("city", "")
                 cfg.location_country = location_info.get("country", "")
+
+            # ── Snapshot before greeting (anti-leak guard) ─────────
+            snapshot = datetime.now(timezone.utc)
+
+            # ── Background task: extract + compact ─────────────────
+            from models.character import CharacterProfile
+
+            today_str = _date.today().isoformat()
+            char = await session.get(CharacterProfile, char_id)
+            last_date = char.last_daily_greeting_date if char else ""
+
+            if last_date != today_str and last_date:
+                async def _background_extract_and_compact():
+                    """Extract memories + compact in an independent session.
+                    Runs concurrently with greeting generation; failures are
+                    logged but never propagated to the user."""
+                    try:
+                        async with async_session() as bg_session:
+                            from services.llm_service import LLMService
+                            extract_llm = LLMService()
+                            extracted = await memory_service.extract_and_store(
+                                conversation_id,
+                                extract_llm,
+                                character_id=char_id,
+                                since_date=last_date,
+                                before=snapshot,
+                            )
+                            print(f"[DAILY] extracted {len(extracted)} memories since {last_date}", flush=True)
+
+                            try:
+                                compact_result = await conv_manager.summarize_and_trim(
+                                    bg_session, conversation_id,
+                                    keep_count=12,
+                                    llm_service=extract_llm,
+                                )
+                                print(
+                                    f"[DAILY] compact: deleted {compact_result['deleted']} messages, "
+                                    f"summary_len={len(compact_result['summary'])}",
+                                    flush=True,
+                                )
+                            except Exception as e:
+                                print(f"[DAILY] compact failed: {e}", flush=True)
+
+                    except Exception as e:
+                        print(f"[DAILY] background extraction failed: {e}", flush=True)
+
+                asyncio.create_task(_background_extract_and_compact())
+
+            # ── Gather memories (user_stated only) ─────────────────
+            # ai_summarized memories are NOT used because extraction
+            # runs concurrently and may not have finished yet.  Recent
+            # messages provide conversational context instead.
+            from sqlalchemy import select as _sel
+            from models.memory import Memory, SOURCE_USER_STATED
+
+            user_memories = await session.execute(
+                _sel(Memory)
+                .where(Memory.character_id == char_id, Memory.source == SOURCE_USER_STATED)
+                .order_by(Memory.importance.desc(), Memory.last_accessed_at.desc())
+                .limit(3)
+            )
+            memory_texts = [m.content for m in user_memories.scalars().all()]
+
+            # ── Recent messages as conversational context ──────────
+            from sqlalchemy import select, desc
+            from models.message import Message
+
+            result = await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(desc(Message.created_at))
+                .limit(5)
+            )
+            recent_msgs = list(result.scalars().all())
+            for msg in reversed(recent_msgs):  # chronological order
+                role_label = "用户" if msg.role == "user" else "角色"
+                memory_texts.append(f"[{role_label}]: {msg.content or '(tool)'}")
+
+            # ── Days since last message ────────────────────────────
+            last_msg = recent_msgs[0] if recent_msgs else None
+            days_since_last = 0
+            if last_msg:
+                delta = datetime.now(timezone.utc) - last_msg.created_at.replace(tzinfo=timezone.utc)
+                days_since_last = delta.days
+            print(f"[DAILY] days_since_last={days_since_last}", flush=True)
 
             # ── Delegate to orchestrator ───────────────────────────
             orch = GreetingOrchestrator()
@@ -348,8 +364,15 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             return
 
         if msg_type == "daily_greeting":
+            existing = _daily_greeting_tasks.get(conversation_id)
+            if existing and not existing.done():
+                print("[WS] daily_greeting already in flight, skipping", flush=True)
+                await websocket.send_json({"type": "daily_greeting_skip", "reason": "in_flight"})
+                return
             print("[WS] dispatching to handle_daily_greeting", flush=True)
-            asyncio.create_task(handle_daily_greeting())
+            task = asyncio.create_task(handle_daily_greeting())
+            _daily_greeting_tasks[conversation_id] = task
+            task.add_done_callback(lambda _t: _daily_greeting_tasks.pop(conversation_id, None))
             return
 
         if msg_type == "update_location":
