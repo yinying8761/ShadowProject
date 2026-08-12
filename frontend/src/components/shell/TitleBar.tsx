@@ -7,6 +7,8 @@ export function TitleBar() {
   const setShowHistory = useAppStore((s) => s.setShowHistory);
   const config = useAppStore((s) => s.config);
   const setConfig = useAppStore((s) => s.setConfig);
+  const layoutMode = useAppStore((s) => s.layoutMode);
+  const setLayoutMode = useAppStore((s) => s.setLayoutMode);
   const { t } = useTranslation();
 
   const togglePin = () => {
@@ -17,11 +19,33 @@ export function TitleBar() {
 
   return (
     <div className="drag-region flex items-center justify-between px-3 h-9 flex-shrink-0">
-      <div className="flex items-center gap-2 text-[11px] text-white/60">
-        <div className="w-2 h-2 rounded-full bg-emerald-400/80 shadow-[0_0_6px_rgba(52,211,153,0.6)]" />
+      <div className="flex items-center gap-2 text-[11px] text-white/90 drop-shadow-[0_1px_3px_rgba(0,0,0,0.7)]">
+        <div className="w-2 h-2 rounded-full bg-companion-accent/80 shadow-[0_0_6px_rgba(0,198,255,0.6)] drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)]" />
         <span className="truncate max-w-[140px]">{activeCharacter?.name || t('AI Companion')}</span>
       </div>
       <div className="no-drag flex items-center gap-1">
+        <IconBtn
+          title={layoutMode === 'compact' ? t('Expand') : t('Collapse')}
+          onClick={() => setLayoutMode(layoutMode === 'compact' ? 'full' : 'compact')}
+        >
+          {layoutMode === 'compact' ? (
+            /* expand arrows icon */
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 3 21 3 21 9" />
+              <polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14" y2="10" />
+              <line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+          ) : (
+            /* collapse arrows icon */
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 8 4 3 9 3" />
+              <polyline points="20 16 20 21 15 21" />
+              <line x1="4" y1="3" x2="11" y2="10" />
+              <line x1="20" y1="21" x2="13" y2="14" />
+            </svg>
+          )}
+        </IconBtn>
         <IconBtn title={t('History')} onClick={() => setShowHistory(true)}>
           {/* clock-rewind icon (svg) */}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -71,12 +95,12 @@ function IconBtn({ children, onClick, title, active, danger }: IconBtnProps) {
     <button
       onClick={onClick}
       title={title}
-      className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
+      className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)] ${
         active
           ? 'bg-companion-accent/30 text-companion-accent'
           : danger
-          ? 'text-white/60 hover:text-red-400 hover:bg-red-500/15'
-          : 'text-white/60 hover:text-white hover:bg-white/10'
+          ? 'text-white/80 hover:text-red-400 hover:bg-red-500/15'
+          : 'text-white/80 hover:text-white hover:bg-white/15'
       }`}
     >
       {children}

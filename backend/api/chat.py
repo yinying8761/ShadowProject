@@ -216,37 +216,71 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             char = await session.get(CharacterProfile, char_id)
             last_date = char.last_daily_greeting_date if char else ""
 
+            print(
+                f"[DAILY] last_date={last_date} today_str={today_str} "
+                f"should_extract={last_date != today_str and bool(last_date)}",
+                flush=True,
+            )
             if last_date != today_str and last_date:
                 async def _background_extract_and_compact():
-                    """Extract memories + compact in an independent session.
+                    """Extract memories + compact across ALL conversations for this character.
                     Runs concurrently with greeting generation; failures are
                     logged but never propagated to the user."""
+                    print("[DAILY] background task STARTED", flush=True)
                     try:
                         async with async_session() as bg_session:
+                            from sqlalchemy import select
                             from services.llm_service import LLMService
-                            extract_llm = LLMService()
-                            extracted = await memory_service.extract_and_store(
-                                conversation_id,
-                                extract_llm,
-                                character_id=char_id,
-                                since_date=last_date,
-                                before=snapshot,
-                            )
-                            print(f"[DAILY] extracted {len(extracted)} memories since {last_date}", flush=True)
+                            from models.conversation import Conversation
 
-                            try:
-                                compact_result = await conv_manager.summarize_and_trim(
-                                    bg_session, conversation_id,
-                                    keep_count=12,
-                                    llm_service=extract_llm,
-                                )
-                                print(
-                                    f"[DAILY] compact: deleted {compact_result['deleted']} messages, "
-                                    f"summary_len={len(compact_result['summary'])}",
-                                    flush=True,
-                                )
-                            except Exception as e:
-                                print(f"[DAILY] compact failed: {e}", flush=True)
+                            # ── Query all conversations for this character ──
+                            result = await bg_session.execute(
+                                select(Conversation)
+                                .where(Conversation.character_id == char_id)
+                                .order_by(Conversation.updated_at.desc())
+                            )
+                            all_convs = result.scalars().all()
+
+                            if not all_convs:
+                                print(f"[DAILY] no conversations for char {char_id}", flush=True)
+                                return
+
+                            extract_llm = LLMService()
+
+                            for conv in all_convs:
+                                cid = conv.id
+                                print(f"[DAILY] processing conversation {cid}", flush=True)
+
+                                # ── Extract memories ──
+                                try:
+                                    extracted = await memory_service.extract_and_store(
+                                        cid,
+                                        extract_llm,
+                                        character_id=char_id,
+                                        since_date=last_date,
+                                        before=snapshot,
+                                    )
+                                    print(
+                                        f"[DAILY] extracted {len(extracted)} memories from {cid} since {last_date}",
+                                        flush=True,
+                                    )
+                                except Exception as e:
+                                    print(f"[DAILY] extract failed for {cid}: {e}", flush=True)
+
+                                # ── Compact ──
+                                try:
+                                    compact_result = await conv_manager.summarize_and_trim(
+                                        bg_session, cid,
+                                        keep_count=12,
+                                        llm_service=extract_llm,
+                                    )
+                                    print(
+                                        f"[DAILY] compact {cid}: deleted {compact_result['deleted']} messages, "
+                                        f"summary_len={len(compact_result['summary'])}",
+                                        flush=True,
+                                    )
+                                except Exception as e:
+                                    print(f"[DAILY] compact failed for {cid}: {e}", flush=True)
 
                     except Exception as e:
                         print(f"[DAILY] background extraction failed: {e}", flush=True)

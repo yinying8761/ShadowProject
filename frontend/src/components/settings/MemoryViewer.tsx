@@ -96,6 +96,8 @@ export function MemoryViewer() {
       <div
         className="max-h-[85vh] w-[520px] flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-companion-overlay-strong shadow-2xl"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label={t('Memories')}
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">

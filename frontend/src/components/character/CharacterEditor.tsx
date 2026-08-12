@@ -62,6 +62,8 @@ export function CharacterEditor({ character, onClose }: Props) {
       <div
         className="bg-companion-sidebar border border-companion-border rounded-2xl w-[420px] max-h-[80vh] overflow-y-auto p-6 space-y-4"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label={character ? t('Edit Character') : t('Create Character')}
       >
         <h2 className="text-lg font-semibold text-companion-text">
           {character ? t('Edit Character') : t('Create Character')}
@@ -75,7 +77,7 @@ export function CharacterEditor({ character, onClose }: Props) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className={labelClass}>{t('Gender')}</label>
-            <select className={fieldClass} value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })}>
+            <select className={fieldClass + ' appearance-none cursor-pointer'} style={{ colorScheme: 'dark' }} value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })}>
               <option value="">{t('Not set')}</option>
               <option value="female">{t('Female')}</option>
               <option value="male">{t('Male')}</option>

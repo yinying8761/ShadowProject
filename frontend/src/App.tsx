@@ -1,12 +1,11 @@
 import { useEffect } from 'react';
 import { TitleBar } from './components/shell/TitleBar';
-import { CharacterDisplay } from './components/character/CharacterDisplay';
+import { LayoutProvider } from './components/shell/LayoutProvider';
+import { CompactView } from './components/shell/CompactView';
+import { FullView } from './components/shell/FullView';
 import { CharacterEditor } from './components/character/CharacterEditor';
-import { DialogueBox } from './components/chat/DialogueBox';
-import { InputBar } from './components/chat/InputBar';
 import { HistoryOverlay } from './components/chat/HistoryOverlay';
 import { ApprovalDialog } from './components/chat/ApprovalDialog';
-import { ToolStatusStrip } from './components/chat/ToolStatusStrip';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { MemoryViewer } from './components/settings/MemoryViewer';
 import { useCharacters } from './hooks/useCharacters';
@@ -16,6 +15,7 @@ import { useWebSocketBridge } from './hooks/useWebSocket';
 import { useDailyGreeting } from './hooks/useDailyGreeting';
 import { useGeolocation } from './hooks/useGeolocation';
 import { useTTS } from './hooks/useTTS';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { api } from './services/api';
 
 export default function App() {
@@ -25,12 +25,14 @@ export default function App() {
   const editingCharacter = useAppStore((s) => s.editingCharacter);
   const closeCharacterEditor = useAppStore((s) => s.closeCharacterEditor);
   const currentConversationId = useChatStore((s) => s.currentConversationId);
+  const layoutMode = useAppStore((s) => s.layoutMode);
 
   // Single global WebSocket connection — must live at the App root only.
   useWebSocketBridge(currentConversationId);
   useDailyGreeting();
   useGeolocation();
   useTTS();
+  useKeyboardShortcuts();
 
   useEffect(() => {
     api.fetchConfig()
@@ -42,30 +44,25 @@ export default function App() {
   }, [setConfig]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-transparent overflow-hidden">
-      <TitleBar />
+    <LayoutProvider>
+      <div className="flex flex-col h-screen w-screen bg-transparent overflow-hidden layout-transition">
+        <TitleBar />
 
-      {/* Portrait fills remaining vertical space */}
-      <CharacterDisplay />
+        {/* Mode-switched main content */}
+        {layoutMode === 'compact' ? <CompactView /> : <FullView />}
 
-      {/* Bottom dialogue + input stack */}
-      <div className="flex-shrink-0 pb-1">
-        <DialogueBox />
-        <ToolStatusStrip />
-        <InputBar />
+        {/* Overlays — shared across modes */}
+        <ApprovalDialog />
+        <HistoryOverlay />
+        <SettingsPanel />
+        <MemoryViewer />
+        {showCharacterEditor && (
+          <CharacterEditor
+            character={editingCharacter || undefined}
+            onClose={closeCharacterEditor}
+          />
+        )}
       </div>
-
-      {/* Overlays */}
-      <ApprovalDialog />
-      <HistoryOverlay />
-      <SettingsPanel />
-      <MemoryViewer />
-      {showCharacterEditor && (
-        <CharacterEditor
-          character={editingCharacter || undefined}
-          onClose={closeCharacterEditor}
-        />
-      )}
-    </div>
+    </LayoutProvider>
   );
 }

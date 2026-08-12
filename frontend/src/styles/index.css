@@ -2,65 +2,135 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== 冰蓝全息设计 Token ===== */
+:root {
+  /* 基底 */
+  --holo-bg:        #080c14;
+  --holo-bg-card:   #141a28;
+  --holo-bg-input:  rgba(15, 20, 32, 0.85);
+  --holo-border:    rgba(255, 255, 255, 0.06);
+
+  /* 主色 */
+  --holo-accent:       #00c6ff;
+  --holo-accent-hover: #00b0e6;
+  --holo-accent-muted: rgba(0, 198, 255, 0.12);
+  --holo-accent-glow:  rgba(0, 198, 255, 0.25);
+
+  /* 功能色 */
+  --holo-nametag:    #ff7eb3;
+  --holo-nametag-bg: rgba(255, 126, 179, 0.15);
+  --holo-success:    #00e5bf;
+  --holo-warning:    #f59e0b;
+  --holo-error:      #ef4444;
+
+  /* 文字 */
+  --holo-text:       #e8ecf4;
+  --holo-text-dim:   #7a8498;
+  --holo-text-muted: #5a6478;
+
+  /* 阴影 & 光晕 */
+  --holo-glow-sm:    0 0 8px rgba(0, 198, 255, 0.15);
+  --holo-glow-md:    0 0 16px rgba(0, 198, 255, 0.25);
+  --holo-glow-focus: 0 0 0 2px rgba(0, 198, 255, 0.45);
+
+  /* 圆角 */
+  --radius-sm:  6px;
+  --radius-md:  10px;
+  --radius-lg:  14px;
+  --radius-xl:  20px;
+
+  /* 过渡 */
+  --ease-fast:   150ms ease;
+  --ease-normal: 250ms ease;
+  --ease-slow:   400ms cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-layout: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 @layer base {
   html, body, #root {
     background: transparent !important;
-    color: #e0e0ec;
+    color: var(--holo-text);
   }
   body {
     overflow: hidden;
   }
-  * { scrollbar-width: thin; scrollbar-color: rgba(120, 120, 160, 0.4) transparent; }
+  * { scrollbar-width: thin; scrollbar-color: rgba(120, 120, 160, 0.3) transparent; }
 
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(120, 120, 160, 0.4); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(150, 150, 200, 0.6); }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 198, 255, 0.15);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 198, 255, 0.3);
+  }
 }
 
 @layer components {
+  /* ===== 拖拽区域 ===== */
   .drag-region {
     -webkit-app-region: drag;
   }
   .no-drag {
     -webkit-app-region: no-drag;
   }
-  .dialogue-box {
-    background: rgba(10, 10, 16, 0.82);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 14px;
+
+  /* ===== 全息卡片 ===== */
+  .holo-card {
+    background: rgba(20, 26, 40, 0.82);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--holo-border);
+    border-radius: var(--radius-lg);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    transition: border-color var(--ease-normal), box-shadow var(--ease-normal);
   }
-  .input-bar {
-    background: rgba(15, 15, 22, 0.85);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+  .holo-card:focus-within {
+    border-color: rgba(0, 198, 255, 0.2);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), var(--holo-glow-sm);
+  }
+
+  /* ===== 输入区域 ===== */
+  .holo-input-area {
+    background: var(--holo-bg-input);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
   }
-  .input-glow:focus {
-    box-shadow: 0 0 0 2px rgba(124, 111, 240, 0.35);
+  .holo-input-glow:focus {
+    box-shadow: var(--holo-glow-focus);
   }
-  .name-tag {
-    background: rgba(236, 90, 146, 0.18);
-    color: #ec5a92;
-    border: 1px solid rgba(236, 90, 146, 0.35);
+
+  /* ===== 名称标签 ===== */
+  .holo-nametag {
+    background: var(--holo-nametag-bg);
+    color: var(--holo-nametag);
+    border: 1px solid rgba(255, 126, 179, 0.3);
     padding: 2px 10px;
     border-radius: 10px;
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.04em;
   }
+
+  /* ===== 消息气泡 ===== */
   .msg-user {
-    @apply bg-companion-accent/15 border border-companion-accent/20 rounded-2xl rounded-br-md px-4 py-2.5 ml-auto;
+    @apply bg-companion-accent/12 border border-companion-accent/20 rounded-2xl rounded-br-md px-4 py-2.5 ml-auto;
   }
   .msg-assistant {
     @apply bg-companion-card/60 border border-companion-border/30 rounded-2xl rounded-bl-md px-4 py-2.5 mr-auto;
   }
+
+  /* ===== 立绘渐变遮罩 ===== */
   .portrait-fade {
     -webkit-mask-image: linear-gradient(to bottom, black 88%, transparent 100%);
     mask-image: linear-gradient(to bottom, black 88%, transparent 100%);
+  }
+
+  /* ===== 全息模式切换过渡 ===== */
+  .layout-transition {
+    transition: width var(--ease-layout), height var(--ease-layout);
   }
 }

@@ -208,6 +208,17 @@ class MemoryExtractor:
                 except Exception:
                     pass
 
+                # If since_date was provided, use it as created_at so
+                # the memory date reflects the conversation window rather
+                # than the extraction timestamp.
+                from datetime import timezone as _tz
+                mem_created_at: datetime | None = None
+                if since_date:
+                    mem_created_at = datetime.combine(
+                        _date.fromisoformat(since_date),
+                        datetime.min.time(),
+                    ).replace(tzinfo=_tz.utc)
+
                 mem = await self._store.add(
                     session,
                     content=content,
@@ -217,6 +228,7 @@ class MemoryExtractor:
                     embedding=emb,
                     character_id=character_id,
                     source=SOURCE_AI_SUMMARIZED,
+                    created_at=mem_created_at,
                 )
                 stored.append(mem)
 

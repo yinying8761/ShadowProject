@@ -375,6 +375,26 @@ ipcMain.handle('set-content-protection', (_, enable) => {
   }
   return false;
 });
+ipcMain.handle('resize-window', (_, width, height) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.setBounds({ width, height }, false);  // instant, no animation to avoid WS disconnect
+      console.log('[MainWindow] resize to', width, 'x', height);
+      return true;
+    } catch (e) {
+      console.warn('[MainWindow] resize failed:', e);
+      return false;
+    }
+  }
+  return false;
+});
+ipcMain.handle('get-window-bounds', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const bounds = mainWindow.getBounds();
+    return { width: bounds.width, height: bounds.height };
+  }
+  return { width: 440, height: 720 };
+});
 ipcMain.handle('set-floating-enabled', (_, flag) => {
   floatingEnabled = Boolean(flag);
   if (!floatingEnabled) {

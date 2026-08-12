@@ -10,6 +10,7 @@ interface AppState {
   showHistory: boolean;
   showCharacterEditor: boolean;
   editingCharacter: CharacterProfile | null;
+  layoutMode: 'compact' | 'full';
 
   setActiveCharacter: (char: CharacterProfile) => void;
   setCharacters: (chars: CharacterProfile[]) => void;
@@ -19,6 +20,7 @@ interface AppState {
   setShowHistory: (show: boolean) => void;
   openCharacterEditor: (char?: CharacterProfile | null) => void;
   closeCharacterEditor: () => void;
+  setLayoutMode: (mode: 'compact' | 'full') => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -49,6 +51,7 @@ export const useAppStore = create<AppState>((set) => ({
   showHistory: false,
   showCharacterEditor: false,
   editingCharacter: null,
+  layoutMode: 'compact',
 
   setActiveCharacter: (char) => {
     set({ activeCharacter: char });
@@ -77,4 +80,5 @@ export const useAppStore = create<AppState>((set) => ({
     set({ showCharacterEditor: true, editingCharacter: char || null }),
   closeCharacterEditor: () =>
     set({ showCharacterEditor: false, editingCharacter: null }),
+  setLayoutMode: (mode) => set({ layoutMode: mode }),
 }));

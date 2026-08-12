@@ -256,7 +256,8 @@ export function VoiceClonePanel() {
                 <select
                   value={targetCharId}
                   onChange={(e) => setTargetCharId(e.target.value)}
-                  className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+                  className="flex-1 bg-companion-bg border border-white/10 rounded-lg px-3 py-2 text-sm text-companion-text outline-none appearance-none cursor-pointer"
+                  style={{ colorScheme: 'dark' }}
                 >
                   <option value="">选择角色...</option>
                   {characters.map((c) => (

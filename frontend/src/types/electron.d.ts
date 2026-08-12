@@ -26,6 +26,8 @@ declare global {
         enabled?: boolean;
       }) => Promise<boolean>;
       setContentProtection: (enable: boolean) => Promise<boolean>;
+      resizeWindow: (width: number, height: number) => Promise<void>;
+      getWindowBounds: () => Promise<{ width: number; height: number }>;
       onWindowVisibilityChanged: (cb: (value: { visible: boolean }) => void) => void;
       selectFolder: () => Promise<string | null>;
     };

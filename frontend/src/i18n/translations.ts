@@ -4,6 +4,7 @@ export type TranslationDict = Record<string, string>;
 const zh: TranslationDict = {
   // Settings
   Settings: '设置',
+  General: '通用',
   'Check connection': '检测连接',
   Connected: '已连接',
   Offline: '离线',
@@ -136,6 +137,8 @@ const zh: TranslationDict = {
   'Unpin': '取消置顶',
   'Pin': '始终置顶',
   'Minimize to tray': '最小化到托盘',
+  'Expand': '展开完整模式',
+  'Collapse': '收起为紧凑模式',
 
   // Memory viewer
   'View Memories': '查看记忆',
@@ -171,6 +174,10 @@ const zh: TranslationDict = {
 
   // General
   'AI Companion': 'AI 伴侣',
+  'No conversations': '暂无对话',
+  Conversations: '对话列表',
+  'New': '新建',
+  'Chat': '对话',
 };
 
 const en: TranslationDict = {};

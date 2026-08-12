@@ -8,19 +8,26 @@ export default {
     extend: {
       colors: {
         companion: {
-          bg: '#0f0f14',
-          sidebar: '#16161e',
-          card: '#1c1c28',
-          border: '#2a2a3a',
-          accent: '#7c6ff0',
-          'accent-hover': '#6b5edb',
-          text: '#e0e0ec',
-          'text-muted': '#8888a0',
-          // Floating widget tokens
-          overlay: 'rgba(15, 15, 20, 0.78)',
-          'overlay-strong': 'rgba(10, 10, 16, 0.92)',
-          nametag: '#ec5a92',
-          'nametag-bg': 'rgba(236, 90, 146, 0.18)',
+          // Ice-blue holographic palette
+          bg: '#080c14',
+          sidebar: '#0f1420',
+          card: '#141a28',
+          border: 'rgba(255, 255, 255, 0.06)',
+          accent: '#00c6ff',
+          'accent-hover': '#00b0e6',
+          'accent-muted': 'rgba(0, 198, 255, 0.12)',
+          'accent-glow': 'rgba(0, 198, 255, 0.25)',
+          text: '#e8ecf4',
+          'text-muted': '#7a8498',
+          // Functional
+          nametag: '#ff7eb3',
+          'nametag-bg': 'rgba(255, 126, 179, 0.15)',
+          success: '#00e5bf',
+          warning: '#f59e0b',
+          error: '#ef4444',
+          // Overlays
+          overlay: 'rgba(8, 12, 20, 0.78)',
+          'overlay-strong': 'rgba(8, 12, 20, 0.94)',
         },
       },
       animation: {
@@ -29,6 +36,7 @@ export default {
         'slide-up': 'slide-up 0.3s ease-out',
         'cursor-blink': 'cursor-blink 1s step-end infinite',
         'breathe': 'breathe 4s ease-in-out infinite',
+        'glow': 'glow 3s ease-in-out infinite',
       },
       keyframes: {
         'pulse-soft': {
@@ -50,6 +58,10 @@ export default {
         'breathe': {
           '0%, 100%': { transform: 'translateY(0)' },
           '50%': { transform: 'translateY(-4px)' },
+        },
+        'glow': {
+          '0%, 100%': { boxShadow: '0 0 8px rgba(0, 198, 255, 0.15)' },
+          '50%': { boxShadow: '0 0 20px rgba(0, 198, 255, 0.35)' },
         },
       },
     },

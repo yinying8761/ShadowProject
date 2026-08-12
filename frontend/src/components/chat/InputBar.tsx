@@ -50,7 +50,7 @@ export function InputBar() {
     : t('Select a character first');
 
   return (
-    <div className="no-drag mx-3 mb-3 mt-2 input-bar px-3 py-2">
+    <div className="no-drag mx-3 mb-3 mt-2 holo-input-area px-3 py-2">
       <div className="flex items-end gap-2">
         <button
           onClick={handleSeeScreen}
@@ -70,7 +70,7 @@ export function InputBar() {
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           rows={1}
-          className="flex-1 bg-transparent text-white placeholder-white/35 resize-none outline-none input-glow rounded-md px-1 py-1.5 leading-relaxed"
+          className="flex-1 bg-transparent text-white placeholder-white/35 resize-none outline-none holo-input-glow rounded-md px-1 py-1.5 leading-relaxed"
           style={{ fontSize: config.fontSize, maxHeight: 100 }}
           disabled={isStreaming || !activeCharacter}
         />

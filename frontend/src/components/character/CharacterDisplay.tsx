@@ -7,7 +7,7 @@ export function CharacterDisplay() {
 
   if (!activeCharacter) {
     return (
-      <div className="flex-1 flex items-center justify-center text-white/30 text-sm">
+      <div className="flex-1 flex items-center justify-center text-white/70 text-sm drop-shadow-[0_1px_3px_rgba(0,0,0,0.6)]">
         <p>{t('Please select or create a character')}</p>
       </div>
     );

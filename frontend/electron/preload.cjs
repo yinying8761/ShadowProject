@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refreshFloatingAvatar: () => ipcRenderer.invoke('refresh-floating-avatar'),
   notifyProactiveReply: (payload) => ipcRenderer.invoke('notify-proactive-reply', payload),
   setContentProtection: (enable) => ipcRenderer.invoke('set-content-protection', enable),
+  resizeWindow: (width, height) => ipcRenderer.invoke('resize-window', width, height),
+  getWindowBounds: () => ipcRenderer.invoke('get-window-bounds'),
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   onWindowVisibilityChanged: (cb) => {
     ipcRenderer.on('window:visibility-changed', (_event, value) => cb(value));

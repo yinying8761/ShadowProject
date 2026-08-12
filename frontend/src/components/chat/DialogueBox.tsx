@@ -78,9 +78,9 @@ export function DialogueBox() {
         </div>
       )}
 
-      <div className="no-drag dialogue-box mx-3 px-4 py-3 animate-fade-in">
+      <div className="no-drag holo-card mx-3 px-4 py-3 animate-fade-in">
       <div className="flex items-center gap-2 mb-2">
-        <span className="name-tag">{characterName}</span>
+        <span className="holo-nametag">{characterName}</span>
         {lastAssistant && !isStreaming && (
           <button
             onClick={() => useChatStore.getState().speakMessage?.(lastAssistant.content)}

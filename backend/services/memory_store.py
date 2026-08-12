@@ -142,8 +142,15 @@ class MemoryStore:
         embedding: list[float] | None = None,
         character_id: str | None = None,
         source: str = SOURCE_AI_SUMMARIZED,
+        created_at: datetime | None = None,
     ) -> Memory:
-        """Insert a memory, deduplicating against existing similar content."""
+        """Insert a memory, deduplicating against existing similar content.
+
+        If *created_at* is provided it is used as the record timestamp;
+        otherwise the server default (now) applies.  Daily extraction
+        passes the window start date so memories reflect the conversation
+        date rather than the extraction date.
+        """
         from services.memory_service import push_memory_notification
 
         # Check for near-duplicate before inserting
@@ -163,15 +170,18 @@ class MemoryStore:
                 push_memory_notification(source_conversation_id, 1)
             return existing
 
-        mem = Memory(
-            content=content,
-            memory_type=memory_type,
-            importance=importance,
-            source_conversation_id=source_conversation_id,
-            embedding=self.pack_embedding(embedding) if embedding else None,
-            character_id=character_id,
-            source=source,
-        )
+        mem_kwargs: dict = {
+            "content": content,
+            "memory_type": memory_type,
+            "importance": importance,
+            "source_conversation_id": source_conversation_id,
+            "embedding": self.pack_embedding(embedding) if embedding else None,
+            "character_id": character_id,
+            "source": source,
+        }
+        if created_at is not None:
+            mem_kwargs["created_at"] = created_at
+        mem = Memory(**mem_kwargs)
         session.add(mem)
         await session.commit()
         await session.refresh(mem)

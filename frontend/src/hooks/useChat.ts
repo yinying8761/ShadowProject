@@ -4,6 +4,12 @@ import { useAppStore } from '../stores/appStore';
 import { api } from '../services/api';
 import type { ApiMessage } from '../types';
 
+// Module-level guard: prevents re-initialization when useChat is called
+// from multiple mount points (e.g. InputBar inside CompactView + FullView).
+// Without this, mode-switching kills the WebSocket because a new useChat
+// instance resets currentConversationId to ''.
+const _lastInitCharId = { current: null as string | null };
+
 export function useChat() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
@@ -22,6 +28,9 @@ export function useChat() {
 
   useEffect(() => {
     if (!activeCharacter) return;
+    // Guard: skip if already initialized for this character (mode switch)
+    if (activeCharacter.id === _lastInitCharId.current) return;
+    _lastInitCharId.current = activeCharacter.id;
 
     const gen = ++epoch.current; // bump generation to discard stale results
     clearMessages();             // immediately clear old character's messages
@@ -111,6 +120,29 @@ export function useChat() {
     }
   }, [activeCharacter, clearMessages, setConversationId]);
 
+  const switchConversation = useCallback(
+    async (convId: string) => {
+      if (!convId || convId === currentConversationId) return;
+      clearMessages();
+      try {
+        const msgs = await api.fetchMessages(convId);
+        setConversationId(convId);
+        setMessages(
+          msgs.map((m: ApiMessage) => ({
+            id: m.id,
+            conversationId: convId,
+            role: m.role,
+            content: m.content,
+            createdAt: m.created_at,
+          }))
+        );
+      } catch (e) {
+        console.error('Failed to switch conversation:', e);
+      }
+    },
+    [currentConversationId, clearMessages, setConversationId, setMessages]
+  );
+
   const sendApprovalResponse = useCallback(
     (requestId: string, approved: boolean) => {
       wsSendApprovalResponse?.(requestId, approved);
@@ -126,6 +158,7 @@ export function useChat() {
     pendingApproval,
     send,
     newConversation,
+    switchConversation,
     sendApprovalResponse,
   };
 }

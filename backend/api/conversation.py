@@ -135,6 +135,7 @@ async def clear_messages(
 async def delete_conversation(
     conversation_id: str, session: AsyncSession = Depends(get_session)
 ):
+    """Delete a conversation and its messages (memories persist per character)."""
     conv = await session.get(Conversation, conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")

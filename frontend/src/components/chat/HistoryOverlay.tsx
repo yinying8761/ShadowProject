@@ -90,6 +90,8 @@ export function HistoryOverlay() {
       <div
         className="bg-companion-overlay-strong border border-white/10 rounded-xl w-[90%] h-[85%] flex flex-col overflow-hidden shadow-2xl"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label={t('Chat with {name}', { name: activeCharacter?.name || 'AI' })}
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/10 flex-shrink-0">
           <div className="flex items-center gap-3">

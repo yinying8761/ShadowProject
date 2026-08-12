@@ -26,7 +26,7 @@ export function ApprovalDialog() {
 
   return (
     <div className="no-drag fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm animate-fade-in">
-      <div className="flex max-h-[70vh] w-[400px] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[rgba(15,15,22,0.95)] shadow-2xl">
+      <div className="flex max-h-[70vh] w-[400px] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[rgba(15,15,22,0.95)] shadow-2xl" role="dialog" aria-label={t('Approval Required')}>      
         <div className="flex items-center gap-3 border-b border-white/10 px-5 py-3">
           <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-amber-500/20">
             <svg

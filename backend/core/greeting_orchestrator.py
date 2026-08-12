@@ -47,11 +47,16 @@ class GreetingOrchestrator:
                 f"[GreetingOrchestrator] char {char.name} already greeted today, skip",
                 flush=True,
             )
-            await send_json({"type": "daily_greeting_skip", "reason": "already_greeted"})
+            try:
+                await send_json({"type": "daily_greeting_skip", "reason": "already_greeted"})
+            except RuntimeError:
+                # WebSocket already closed (user switched tabs / reconnected)
+                pass
             return
 
         # ── Generate greeting via agent ────────────────────────────
         had_content = False
+        delivered = True  # stays True only if every event reaches the client
         async for event in agent.run(
             session=session,
             user_message=None,
@@ -67,10 +72,16 @@ class GreetingOrchestrator:
         ):
             if event.get("type") == "token":
                 had_content = True
-            await send_json(event)
+            try:
+                await send_json(event)
+            except RuntimeError:
+                # WebSocket closed mid-greeting — do NOT mark as greeted
+                # so the next connection can retry.
+                delivered = False
+                break
 
-        # ── Mark character as greeted today (only if content) ──────
-        if had_content:
+        # ── Mark character as greeted today (only if fully delivered) ──
+        if had_content and delivered:
             char_prof = await session.get(CharacterProfile, char_id)
             if char_prof:
                 char_prof.last_daily_greeting_date = today

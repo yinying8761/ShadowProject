@@ -16,7 +16,8 @@
 - **浮动图标**：最小化后显示 64x64 圆形头像，有未读消息时呼吸灯提示
 - **工具运行时**：带追踪、超时沙箱的工具执行层，支持工具调用日志查询
 - **多智能体**：SearchAgent 独立搜索引擎子智能体；MCP Vision 免费视觉感知（智谱 GLM-4V Flash）
-- **相对日期**：对话摘要和记忆中的日期自动格式化为人类可读的相对时间
+- **双模式布局**：Compact（桌面伴侣）和 Full（聊天面板+侧边栏）一键切换，窗口尺寸按模式独立记忆
+- **相对日期**：记忆面板中的日期自动显示为「今天/昨天/N天前」等中文相对描述
 
 ## 技术栈
 
@@ -44,6 +45,10 @@
 │   ├── electron/            # Electron 主进程、preload、浮动窗口
 │   └── src/
 │       ├── components/      # React 组件
+│       │   ├── character/   # 角色展示、编辑、头像
+│       │   ├── chat/        # 对话、消息、侧边栏、审批
+│       │   ├── settings/    # 设置面板（导航+7个独立Tab）
+│       │   └── shell/       # 布局（CompactView/FullView/LayoutProvider/TitleBar）
 │       ├── hooks/           # 自定义 Hooks
 │       ├── stores/          # Zustand 状态管理
 │       ├── services/        # API 封装、TTS
