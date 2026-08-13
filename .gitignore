@@ -28,6 +28,9 @@ tools/GPT-SoVITS/
 # Temporary working files
 .scratch/
 
+# Hermes desktop tool local artifacts
+.hermes/
+
 # IDE
 .idea/
 .vscode/

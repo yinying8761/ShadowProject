@@ -2,7 +2,10 @@
 Search tools: fetch_url (read a user-specified URL) and research (web search + LLM summary).
 
 Search backends — tried in order, first success wins:
-  - duckduckgo: free, zero-setup, uses ddgs package (needs proxy in China)
+  - duckduckgo: ddgs>=9 metasearch. Engine list is pinned to China-accessible
+                engines (bing/yandex/wikipedia/mojeek) — see _DDGS_ENGINES.
+                The full "auto" list (google/brave/duckduckgo/yahoo/...) is
+                unusable from China without a proxy: blocked or RST'd.
   - bing_web:   free, scrapes Bing.com HTML (works in China without proxy)
   - searxng:    self-hosted, configurable via SEARXNG_URL
   - bing:       Microsoft Azure, configurable via BING_API_KEY
@@ -48,19 +51,26 @@ def _extract_title(html: str) -> str:
 
 # ── Search backends ─────────────────────────────────────────────────────────
 
+# ddgs>=9 "auto" fans out to ~11 engines, but from China without a proxy most
+# are blocked (google/brave/duckduckgo) or actively reset bot requests (yahoo,
+# os error 10054). Pin to engines reachable from China; add duckduckgo back
+# when a proxy is configured.
+_DDGS_ENGINES = "duckduckgo,bing,yandex,wikipedia,mojeek" if _proxy else "bing,yandex,wikipedia,mojeek"
+_DDGS_TIMEOUT = 6  # per-engine timeout (seconds)
+
 def _search_duckduckgo_sync(query: str, limit: int) -> list[dict]:
     from ddgs import DDGS
     results = []
     try:
-        with DDGS(proxy=_proxy) as ddgs:
-            for r in ddgs.text(query, max_results=limit):
+        with DDGS(proxy=_proxy, timeout=_DDGS_TIMEOUT) as ddgs:
+            for r in ddgs.text(query, max_results=limit, backend=_DDGS_ENGINES):
                 results.append({
                     "title": r.get("title", ""),
                     "url": r.get("href", ""),
                     "snippet": r.get("body", ""),
                 })
     except Exception as e:
-        print(f"[Search] duckduckgo failed: {e}", flush=True)
+        print(f"[Search] duckduckgo failed ({_DDGS_ENGINES}): {e}", flush=True)
     return results
 
 
