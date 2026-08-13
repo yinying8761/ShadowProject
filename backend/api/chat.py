@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     character_id: str
     model: str | None = None
+    client_message_id: str | None = None
 
 
 @router.post("/api/chat/send")
@@ -36,21 +37,31 @@ async def send_chat(req: ChatRequest, session: AsyncSession = Depends(get_sessio
         conv_id = conv.id
 
     full_response = ""
+    user_message_id = ""
     try:
         async for event in agent.run(
             session=session,
             user_message=req.message,
             conversation_id=conv_id,
             character_id=req.character_id,
+            client_message_id=req.client_message_id,
         ):
             if event["type"] == "token":
                 full_response += event["content"]
+            elif event["type"] == "message_ack":
+                # Real UUID of the persisted user message (issue #10 / ticket #11)
+                user_message_id = event["message_id"]
             elif event["type"] == "done":
-                return {
+                resp = {
                     "conversation_id": conv_id,
                     "message_id": event["message_id"],
                     "content": full_response,
                 }
+                # Only added when the client opted in with client_message_id,
+                # keeping the response shape unchanged otherwise.
+                if req.client_message_id:
+                    resp["user_message_id"] = user_message_id
+                return resp
             elif event["type"] == "error":
                 raise HTTPException(status_code=500, detail=event["message"])
     except HTTPException:
@@ -419,6 +430,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         content = data.get("content", "")
         character_id = data.get("character_id", "")
         force_vision = bool(data.get("force_vision"))
+        client_message_id = data.get("client_message_id")
 
         if not content or not character_id:
             await websocket.send_json(
@@ -465,6 +477,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     conversation_id=conversation_id,
                     character_id=character_id,
                     approval_callback=approval_callback,
+                    client_message_id=client_message_id,
                 ):
                     await websocket.send_json(event)
             proactive_session.reset_idle()

@@ -40,6 +40,7 @@ class Agent:
         suppress_tool_calls: bool = False,
         mode: str = "chat",
         extra_context: dict | None = None,
+        client_message_id: str | None = None,
     ) -> AsyncIterator[dict]:
         """
         Execute the agent loop, yielding events.
@@ -57,6 +58,10 @@ class Agent:
         extra_context:
             Used when *mode* is ``"greeting"``.  Expected keys:
             ``location``, ``weather``, ``days_since_last``, ``memories``.
+        client_message_id:
+            Optional client-side temporary id for the user message.  When
+            a user message is persisted, a ``message_ack`` event echoes it
+            back together with the real message UUID.
         """
         character = await session.get(CharacterProfile, character_id)
         if not character:
@@ -202,9 +207,19 @@ class Agent:
         )
 
         if user_message:
-            await self.conversation_manager.add_message(
+            user_msg = await self.conversation_manager.add_message(
                 session, conversation_id, "user", user_message
             )
+            # Ack the persisted user message's real UUID so the client can
+            # replace its temporary local id (issue #10 / ticket #11).
+            # Emitted before the first token so deletion works mid-stream.
+            # Only emitted when the client opted in with a client_message_id.
+            if client_message_id:
+                yield {
+                    "type": "message_ack",
+                    "client_message_id": client_message_id,
+                    "message_id": user_msg.id,
+                }
 
         history = await self.conversation_manager.get_context_messages(
             session, conversation_id
