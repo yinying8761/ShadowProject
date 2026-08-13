@@ -21,7 +21,9 @@ from services.memory_extractor import MemoryExtractor
 RRF_K = 60
 
 # Minimum messages before triggering background extraction (used by MemoryExtractor)
-EXTRACTION_MIN_MESSAGES = 10
+# 5 keeps short-chat days extractable; 10 meant days with fewer messages were
+# permanently skipped since the daily window never revisits them.
+EXTRACTION_MIN_MESSAGES = 5
 # Number of recent messages to feed into the extraction prompt
 EXTRACTION_MESSAGE_COUNT = 20
 
