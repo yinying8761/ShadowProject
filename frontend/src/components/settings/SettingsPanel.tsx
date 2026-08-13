@@ -67,11 +67,11 @@ export function SettingsPanel() {
 
   return (
     <div
-      className="no-drag fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="no-drag fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-fade-in"
       onClick={() => setShowSettings(false)}
     >
       <div
-        className="max-h-[88vh] w-[520px] flex overflow-hidden rounded-2xl border border-white/10 bg-companion-overlay-strong shadow-2xl"
+        className="max-h-[88vh] w-[520px] flex overflow-hidden rounded-2xl border border-white/10 bg-companion-overlay-strong shadow-2xl animate-scale-in"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label={t('Settings')}
@@ -91,7 +91,10 @@ export function SettingsPanel() {
           </div>
 
           {/* Content — fixed height, matches largest tab (Proactive) */}
-          <div className="overflow-y-auto px-4 py-3 h-[480px]">
+          <div
+            key={activeNav}
+            className="overflow-y-auto px-4 py-3 h-[480px] animate-slide-up"
+          >
             {renderContent()}
           </div>
         </div>
