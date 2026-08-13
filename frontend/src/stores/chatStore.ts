@@ -9,6 +9,13 @@ export interface ToolActivity {
   startedAt: number;
 }
 
+type WsSendMessage = (
+  content: string,
+  characterId: string,
+  opts?: { forceVision?: boolean },
+  clientMessageId?: string,
+) => boolean;
+
 interface ChatState {
   messages: Message[];
   currentConversationId: string | null;
@@ -22,12 +29,13 @@ interface ChatState {
   speakMessage: ((content: string) => void) | null;
   stopSpeaking: (() => void) | null;
   // WebSocket bridge — populated by the singleton connection in App.
-  wsSendMessage: ((content: string, characterId: string, opts?: { forceVision?: boolean }) => boolean) | null;
+  wsSendMessage: WsSendMessage | null;
   wsSendApprovalResponse: ((requestId: string, approved: boolean) => void) | null;
   wsSendJson: ((data: Record<string, unknown>) => boolean) | null;
 
   addMessage: (msg: Message) => void;
   removeMessage: (msgId: string) => void;
+  replaceMessageId: (clientMessageId: string, serverId: string) => void;
   setMessages: (msgs: Message[]) => void;
   appendStreamingToken: (token: string, isProactive?: boolean) => void;
   finalizeStreamingMessage: (msgId: string, isProactive?: boolean) => void;
@@ -39,7 +47,7 @@ interface ChatState {
   finishTool: (name: string, status: 'success' | 'error' | 'denied', result?: string) => void;
   clearOldTools: () => void;
   setWsBridge: (
-    send: ((content: string, characterId: string, opts?: { forceVision?: boolean }) => boolean) | null,
+    send: WsSendMessage | null,
     sendApproval: ((requestId: string, approved: boolean) => void) | null,
     sendJson: ((data: Record<string, unknown>) => boolean) | null,
   ) => void;
@@ -73,6 +81,20 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => ({
       messages: state.messages.filter((m) => m.id !== msgId),
     })),
+
+  // Swap a client-side temporary id for the server-persisted UUID in place,
+  // preserving message order (issue #10, tickets #12/#13). No-ops silently
+  // when there is no match (stale ack) or the server id already exists
+  // (ack replayed after the conversation was reloaded).
+  replaceMessageId: (clientMessageId, serverId) =>
+    set((state) => {
+      if (state.messages.some((m) => m.id === serverId)) return {};
+      return {
+        messages: state.messages.map((m) =>
+          m.id === clientMessageId ? { ...m, id: serverId } : m
+        ),
+      };
+    }),
 
   setMessages: (msgs) => set({ messages: msgs }),
 

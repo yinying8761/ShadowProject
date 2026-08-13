@@ -19,6 +19,7 @@ export function useWebSocketBridge(conversationId: string | null) {
 
   const appendStreamingToken = useChatStore((s) => s.appendStreamingToken);
   const finalizeStreamingMessage = useChatStore((s) => s.finalizeStreamingMessage);
+  const replaceMessageId = useChatStore((s) => s.replaceMessageId);
   const setStreaming = useChatStore((s) => s.setStreaming);
   const setPendingApproval = useChatStore((s) => s.setPendingApproval);
   const pushToolRunning = useChatStore((s) => s.pushToolRunning);
@@ -113,6 +114,13 @@ export function useWebSocketBridge(conversationId: string | null) {
                 addMemoryNotification(data.count);
               }
               break;
+            case 'message_ack':
+              // Server persisted our user message — swap the temporary
+              // local-* id for the real UUID (ticket #12).
+              if (data.client_message_id && data.message_id) {
+                replaceMessageId(data.client_message_id, data.message_id);
+              }
+              break;
             case 'error':
               console.error('Server error:', data.message);
               setStreaming(false);
@@ -137,6 +145,7 @@ export function useWebSocketBridge(conversationId: string | null) {
       content: string,
       characterId: string,
       opts?: { forceVision?: boolean },
+      clientMessageId?: string,
     ) => {
       if (ws.current?.readyState !== WebSocket.OPEN) {
         connect();
@@ -148,6 +157,9 @@ export function useWebSocketBridge(conversationId: string | null) {
         character_id: characterId,
       };
       if (opts?.forceVision) payload.force_vision = true;
+      // Temporary local id the server echoes back in message_ack so we can
+      // replace it with the persisted message's real UUID (ticket #12).
+      if (clientMessageId) payload.client_message_id = clientMessageId;
       ws.current.send(JSON.stringify(payload));
       setStreaming(true);
       return true;
@@ -183,6 +195,7 @@ export function useWebSocketBridge(conversationId: string | null) {
     conversationId,
     appendStreamingToken,
     finalizeStreamingMessage,
+    replaceMessageId,
     setStreaming,
     setConnected,
     setPendingApproval,

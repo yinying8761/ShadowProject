@@ -21,6 +21,7 @@ export function useChat() {
   const setConversationId = useChatStore((s) => s.setConversationId);
   const setMessages = useChatStore((s) => s.setMessages);
   const addMessage = useChatStore((s) => s.addMessage);
+  const replaceMessageId = useChatStore((s) => s.replaceMessageId);
   const clearMessages = useChatStore((s) => s.clearMessages);
   const activeCharacter = useAppStore((s) => s.activeCharacter);
   const isConnected = useAppStore((s) => s.isConnected);
@@ -74,14 +75,18 @@ export function useChat() {
     async (text: string, opts?: { forceVision?: boolean }) => {
       if (!text.trim() || !activeCharacter || !currentConversationId) return;
       const userMsg = {
-        id: `local-${Date.now()}`,
+        // Random suffix: this id is now a wire correlation key echoed back
+        // by the server, so millisecond-precision alone could collide.
+        id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         conversationId: currentConversationId,
         role: 'user' as const,
         content: text,
         createdAt: new Date().toISOString(),
       };
       addMessage(userMsg);
-      const sent = wsSendMessage?.(text, activeCharacter.id, opts) ?? false;
+      // Pass the temporary id so the server can echo it back in message_ack
+      // (WS path, ticket #12) or user_message_id (HTTP fallback, ticket #13).
+      const sent = wsSendMessage?.(text, activeCharacter.id, opts, userMsg.id) ?? false;
       if (!sent) {
         try {
           const res = await fetch('/api/chat/send', {
@@ -91,9 +96,13 @@ export function useChat() {
               message: text,
               conversation_id: currentConversationId,
               character_id: activeCharacter.id,
+              client_message_id: userMsg.id,
             }),
           });
           const data = await res.json();
+          if (data.user_message_id) {
+            replaceMessageId(userMsg.id, data.user_message_id);
+          }
           addMessage({
             id: data.message_id || `resp-${Date.now()}`,
             conversationId: currentConversationId,
@@ -106,7 +115,7 @@ export function useChat() {
         }
       }
     },
-    [activeCharacter, currentConversationId, addMessage, wsSendMessage]
+    [activeCharacter, currentConversationId, addMessage, replaceMessageId, wsSendMessage]
   );
 
   const newConversation = useCallback(async () => {
