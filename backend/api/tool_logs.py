@@ -29,6 +29,7 @@ def _run_to_dict(run: ToolRun) -> dict:
         "success": run.success,
         "error_message": run.error_message,
         "conversation_id": run.conversation_id,
+        "retry_count": run.retry_count,
         "created_at": run.created_at.isoformat() if run.created_at else None,
     }
 

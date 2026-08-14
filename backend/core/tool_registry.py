@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from typing import Any, Callable, Awaitable
 
@@ -44,6 +46,11 @@ class ToolRegistry:
     def needs_approval(self, name: str) -> bool:
         tool = self._tools.get(name)
         return tool["require_approval"] if tool else False
+
+    def get_handler(self, name: str) -> ToolHandler | None:
+        """Return the handler registered for *name*, or ``None`` if unknown."""
+        tool = self._tools.get(name)
+        return tool["handler"] if tool else None
 
     async def dispatch(self, name: str, arguments: dict) -> str:
         """Validate and execute a tool call. Returns the result as a string."""

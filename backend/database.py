@@ -54,6 +54,7 @@ ADDITIVE_MIGRATIONS = [
     ("conversations", "summary", "TEXT"),
     ("memories", "character_id", "VARCHAR(36) REFERENCES character_profiles(id)"),
     ("memories", "source", "VARCHAR(20) DEFAULT 'ai_summarized'"),
+    ("tool_runs", "retry_count", "INTEGER DEFAULT 0"),
 ]
 
 

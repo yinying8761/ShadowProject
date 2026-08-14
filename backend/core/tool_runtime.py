@@ -1,5 +1,5 @@
 """
-ToolRuntime — wraps ToolRegistry with tracing, sandbox, and future extension points.
+ToolRuntime — wraps ToolRegistry with tracing, sandbox, retry, and extension points.
 
 Exposes the same interface as ToolRegistry (register / unregister / dispatch /
 get_tool_definitions / needs_approval) so Agent requires zero behavioural changes.
@@ -7,18 +7,24 @@ get_tool_definitions / needs_approval) so Agent requires zero behavioural change
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from core.tool_registry import ToolRegistry, ToolHandler
+from services.retry import is_retryable, retry
 
 
 # ── Tool category → default timeout (seconds) ──────────────────────────
 _NETWORK_TOOLS = {"fetch_url", "research", "mcp__"}
 _SCREEN_TOOLS = {"see_screen"}
 _FILE_TOOLS = {"read_file", "write_file", "list_directory", "search_files"}
+_IDEMPOTENT_TOOLS = {
+    "read_file", "search_files", "list_directory", "search_memory",
+    "fetch_url", "research", "get_current_time",
+}
 
 
 def _default_timeout_sec(tool_name: str) -> float:
@@ -32,8 +38,35 @@ def _default_timeout_sec(tool_name: str) -> float:
     return 10.0
 
 
+def _default_retry_config(tool_name: str) -> dict[str, int]:
+    """Return the default retry config for *tool_name*.
+
+    Idempotent tools retry once on transient failures; everything else
+    (including write tools) does not retry by default.
+    """
+    if tool_name in _IDEMPOTENT_TOOLS:
+        return {"max_retries": 1}
+    return {"max_retries": 0}
+
+
+_RETRY_BASE_DELAY = 0.5
+
+
+def _is_tool_retryable(exc: Exception, retryable_exceptions: tuple[type[Exception], ...] | None) -> bool:
+    """True when a tool-handler exception is transient and worth retrying.
+
+    Sandbox timeouts are always retried; otherwise *retryable_exceptions*
+    (when given) or the built-in transient set decides.
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    if retryable_exceptions:
+        return isinstance(exc, retryable_exceptions)
+    return is_retryable(exc)
+
+
 class ToolRuntime:
-    """Thin wrapper around ToolRegistry that adds tracing + sandbox + placeholders.
+    """Thin wrapper around ToolRegistry that adds tracing + sandbox + retry + placeholders.
 
     Parameters
     ----------
@@ -66,6 +99,7 @@ class ToolRuntime:
         enable_rate_limit: bool = False,
         circuit_threshold: int = 5,
         rate_limit_per_min: int = 30,
+        retry_sleep: Callable[[float], Awaitable[None]] | None = None,
     ):
         self._registry = registry or _default_registry()
         self.enable_tracing = enable_tracing
@@ -74,9 +108,13 @@ class ToolRuntime:
         self.enable_rate_limit = enable_rate_limit
         self.circuit_threshold = circuit_threshold
         self.rate_limit_per_min = rate_limit_per_min
+        self._retry_sleep = retry_sleep if retry_sleep is not None else asyncio.sleep
 
         # Per-tool sandbox config: tool_name → {"timeout_sec": float}
         self._sandbox: dict[str, dict] = {}
+
+        # Per-tool retry config: tool_name → {"max_retries", "retryable_exceptions"}
+        self._retry: dict[str, dict] = {}
 
         # Tracing store (lazy-init on first dispatch to avoid import at module level)
         self._trace_store: Any = None
@@ -92,19 +130,26 @@ class ToolRuntime:
         require_approval: bool = False,
         *,
         sandbox_config: dict | None = None,
+        retry_config: dict | None = None,
     ):
-        """Register a tool, optionally with sandbox config.
+        """Register a tool, optionally with sandbox/retry config.
 
         *sandbox_config* may contain ``timeout_sec`` to override the
-        per-category default.
+        per-category default.  *retry_config* may contain ``max_retries``
+        and ``retryable_exceptions`` (optional tuple of exception types;
+        timeouts are always retried).  When *retry_config* is omitted, a
+        per-category default applies (idempotent tools retry once).
         """
         self._registry.register(name, description, parameters, handler, require_approval)
         if sandbox_config is not None:
             self._sandbox[name] = sandbox_config
+        if retry_config is not None:
+            self._retry[name] = retry_config
 
     def unregister(self, name: str):
         self._registry.unregister(name)
         self._sandbox.pop(name, None)
+        self._retry.pop(name, None)
 
     def get_tool_definitions(self) -> list[dict]:
         return self._registry.get_tool_definitions()
@@ -119,7 +164,7 @@ class ToolRuntime:
         *,
         conversation_id: str | None = None,
     ) -> str:
-        """Execute a tool call with tracing and optional sandbox timeout.
+        """Execute a tool call with tracing, optional retry, and sandbox timeout.
 
         Parameters
         ----------
@@ -132,20 +177,40 @@ class ToolRuntime:
         error_msg: str | None = None
         result = ""
 
-        # Resolve timeout for sandbox
+        # Resolve timeout + retry config for this tool
         sandbox_cfg = self._sandbox.get(name)
         timeout = sandbox_cfg["timeout_sec"] if sandbox_cfg else _default_timeout_sec(name)
+        retry_cfg = self._retry.get(name)
+        if retry_cfg is None:
+            retry_cfg = _default_retry_config(name)
+        max_retries = retry_cfg.get("max_retries", 0)
+        retryable_exceptions = retry_cfg.get("retryable_exceptions")
+
+        attempts = 0
+
+        async def _attempt() -> str:
+            nonlocal attempts
+            attempts += 1
+            handler = self._registry.get_handler(name)
+            if handler is None:
+                return json.dumps({"error": f"Unknown tool: {name}"})
+            if self.enable_sandbox:
+                result = await asyncio.wait_for(handler(**arguments), timeout=timeout)
+            else:
+                result = await handler(**arguments)
+            return str(result) if not isinstance(result, str) else result
 
         try:
-            import asyncio
-
-            if self.enable_sandbox:
-                result = await asyncio.wait_for(
-                    self._registry.dispatch(name, arguments),
-                    timeout=timeout,
+            if max_retries > 0:
+                result = await retry(
+                    _attempt,
+                    max_retries=max_retries,
+                    base_delay=_RETRY_BASE_DELAY,
+                    retryable=lambda exc: _is_tool_retryable(exc, retryable_exceptions),
+                    sleep=self._retry_sleep,
                 )
             else:
-                result = await self._registry.dispatch(name, arguments)
+                result = await _attempt()
         except asyncio.TimeoutError:
             success = False
             error_msg = f"Timeout after {timeout:.0f}s"
@@ -154,6 +219,8 @@ class ToolRuntime:
             success = False
             error_msg = str(exc)
             result = json.dumps({"error": error_msg}, ensure_ascii=False)
+
+        retry_count = max(0, attempts - 1)
 
         # Determine success from result JSON if no exception was caught above
         if success and not error_msg:
@@ -169,7 +236,10 @@ class ToolRuntime:
 
         # ── Persist trace ──────────────────────────────────────────
         if self.enable_tracing:
-            await self._trace(call_id, name, arguments, result, elapsed_ms, success, error_msg, conversation_id)
+            await self._trace(
+                call_id, name, arguments, result, elapsed_ms, success, error_msg,
+                conversation_id, retry_count,
+            )
 
         return result
 
@@ -192,6 +262,7 @@ class ToolRuntime:
         success: bool,
         error_message: str | None,
         conversation_id: str | None,
+        retry_count: int = 0,
     ):
         """Persist a trace record asynchronously."""
         try:
@@ -205,6 +276,7 @@ class ToolRuntime:
                 success=success,
                 error_message=error_message,
                 conversation_id=conversation_id,
+                retry_count=retry_count,
             )
         except Exception as exc:
             print(f"[ToolRuntime] trace write failed: {exc}", flush=True)

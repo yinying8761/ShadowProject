@@ -34,6 +34,7 @@ class ToolTraceStore:
         success: bool = True,
         error_message: str | None = None,
         conversation_id: str | None = None,
+        retry_count: int = 0,
     ) -> ToolRun:
         """Persist a tool-call trace record. Returns the saved ToolRun."""
         import json
@@ -62,6 +63,7 @@ class ToolTraceStore:
             success=success,
             error_message=error_message,
             conversation_id=conversation_id,
+            retry_count=retry_count,
         )
 
         async with await self._get_session() as session:
