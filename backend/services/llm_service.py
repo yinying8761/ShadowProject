@@ -1,14 +1,37 @@
+import asyncio
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Awaitable, Callable
+
 from config import settings
 from services.formatters import get_formatter, MessageFormatter
+from services.retry import is_retryable, retry
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    """Classify an LLM SDK error as transient (worth retrying).
+
+    Status-code errors (429 / 5xx) and generic timeout/connection errors are
+    covered by :func:`services.retry.is_retryable`.  SDK connection/timeout
+    errors carry no ``status_code`` and are recognised by their SDK base class.
+    """
+    if is_retryable(exc):
+        return True
+    from openai import APIConnectionError
+    from anthropic import APIConnectionError as AnthropicAPIConnectionError
+    return isinstance(exc, (APIConnectionError, AnthropicAPIConnectionError))
 
 
 class LLMService:
     """LLM abstraction. Uses settings.llm_provider/llm_model/llm_base_url/llm_api_key."""
 
-    def __init__(self):
-        self._clients: dict[str, object] = {}
+    def __init__(
+        self,
+        *,
+        clients: dict[str, object] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ):
+        self._clients: dict[str, object] = clients if clients is not None else {}
+        self._sleep = sleep if sleep is not None else asyncio.sleep
 
     def _get_formatter(self) -> MessageFormatter | None:
         """Return a provider-specific formatter, or ``None`` when the
@@ -35,6 +58,10 @@ class LLMService:
                 api_key=settings.llm_api_key
             )
         return self._clients["anthropic"]
+
+    def _retry(self, fn):
+        """Wrap *fn* in the shared LLM retry policy (backoff + classification)."""
+        return retry(fn, retryable=_is_retryable_llm_error, sleep=self._sleep)
 
     async def chat_sync(
         self,
@@ -67,15 +94,17 @@ class LLMService:
             }
             if system_msg:
                 kwargs["system"] = system_msg
-            response = await client.messages.create(**kwargs)
+            response = await self._retry(lambda: client.messages.create(**kwargs))
             return response.content[0].text
         else:
             client = self._get_openai_client()
-            response = await client.chat.completions.create(
-                model=effective_model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                messages=messages,
+            response = await self._retry(
+                lambda: client.chat.completions.create(
+                    model=effective_model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    messages=messages,
+                ),
             )
             return response.choices[0].message.content or ""
 
@@ -139,7 +168,13 @@ class LLMService:
                 kwargs["tools"] = provider_tools
 
             client = self._get_anthropic_client()
-            async with client.messages.stream(**kwargs) as stream:
+
+            async def _open_stream():
+                manager = client.messages.stream(**kwargs)
+                return manager, await manager.__aenter__()
+
+            manager, stream = await self._retry(_open_stream)
+            try:
                 if formatter:
                     async for event in stream:
                         token = formatter.parse_stream_event(event)
@@ -169,6 +204,8 @@ class LLMService:
                                 "name": block.name,
                                 "arguments": block.input,
                             }
+            finally:
+                await manager.__aexit__(None, None, None)
         except Exception as e:
             yield {"type": "error", "message": str(e)}
 
@@ -211,7 +248,7 @@ class LLMService:
                 ]
 
             client = self._get_openai_client()
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await self._retry(lambda: client.chat.completions.create(**kwargs))
             accumulated_tool_calls: dict[int, dict] = {}
 
             async for chunk in stream:
