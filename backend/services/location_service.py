@@ -53,7 +53,7 @@ async def geocode_reverse(lat: float, lng: float) -> dict | None:
                 "address": address,
             }
     except Exception as e:
-        print(f"[Location] regeo failed: {e}", flush=True)
+        print(f"[Location] regeo failed: {type(e).__name__}: {e}", flush=True)
         return None
 
 
@@ -145,7 +145,8 @@ async def search_nearby_places(
             print(f"[Nearby] found {len(results)} places for kw='{kw}'", flush=True)
             return results
     except Exception as e:
-        print(f"[Nearby] failed: {e}", flush=True)
+        # httpx.ConnectError can carry an empty message — always log the type
+        print(f"[Nearby] failed: {type(e).__name__}: {e}", flush=True)
         return []
 
 
