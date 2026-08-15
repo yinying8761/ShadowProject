@@ -316,8 +316,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[Startup] MCP init failed: {e}", flush=True)
 
+    mcp_manager.start_health_check(settings.mcp_health_check_interval)
+
     yield
 
+    await mcp_manager.stop_health_check()
     await mcp_manager.disconnect_all()
     from services.tts_service import stop_api
     stop_api()

@@ -168,6 +168,12 @@ class ToolRuntime:
     def needs_approval(self, name: str) -> bool:
         return self._registry.needs_approval(name)
 
+    def reset_breaker(self, name: str) -> None:
+        """Reset the circuit breaker for *name* (used on MCP reconnect)."""
+        breaker = self._circuit_breakers.get(name)
+        if breaker is not None:
+            breaker.reset()
+
     async def dispatch(
         self,
         name: str,

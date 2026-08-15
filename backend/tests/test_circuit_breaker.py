@@ -264,6 +264,23 @@ class TestCircuitBreakerIntegration:
         assert "[CircuitBreaker] failing OPEN" in capsys.readouterr().out
 
     @pytest.mark.asyncio
+    async def test_reset_breaker_closes_open_breaker(self):
+        reg = ToolRegistry()
+        clock = FakeClock()
+        rt = self._make_rt(reg, clock, threshold=1)
+
+        async def failing(**kw):
+            raise RuntimeError("boom")
+
+        rt.register("failing", "fails", {"type": "object", "properties": {}}, failing, False)
+
+        await rt.dispatch("failing", {})  # OPEN
+        assert rt._circuit_breakers["failing"].state == OPEN
+
+        rt.reset_breaker("failing")
+        assert rt._circuit_breakers["failing"].state == CLOSED
+
+    @pytest.mark.asyncio
     async def test_rejected_dispatch_traces_failure(self):
         from sqlalchemy import select
         from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

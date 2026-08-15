@@ -12,6 +12,7 @@ Supports two transports:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os as _os
 from pathlib import Path
@@ -69,6 +70,7 @@ class McpManager:
         # Any → ToolRegistry, but we avoid a circular import by duck-typing.
         self._registry = registry
         self._connections: dict[str, dict[str, Any]] = {}
+        self._health_task: asyncio.Task | None = None
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -124,19 +126,7 @@ class McpManager:
     async def disconnect_all(self) -> None:
         """Disconnect every server and unregister its tools."""
         for name, conn in list(self._connections.items()):
-            # Remove tools from registry first so the LLM won't try to
-            # call them while the session is tearing down.
-            for tool_name in conn["tool_names"]:
-                self._registry.unregister(tool_name)
-
-            # Exit session context manager first, then transport.
-            for mgr_key in ("session_cm", "transport_cm"):
-                try:
-                    cm = conn[mgr_key]
-                    await cm.__aexit__(None, None, None)
-                except Exception as exc:
-                    print(f"[McpManager] error closing {mgr_key} for '{name}': {exc}")
-
+            await self._close_connection(name, conn)
             print(f"[McpManager] '{name}' disconnected")
 
         self._connections.clear()
@@ -146,7 +136,93 @@ class McpManager:
         """Names of currently-connected MCP servers."""
         return list(self._connections.keys())
 
+    async def health_check(self) -> dict[str, bool]:
+        """Ping every connected server; reconnect the unhealthy ones.
+
+        Returns a mapping of server name → healthy (after any reconnect).
+        """
+        results: dict[str, bool] = {}
+        for name, conn in list(self._connections.items()):
+            if await self._ping(conn):
+                results[name] = True
+                continue
+            results[name] = await self._reconnect(name, conn)
+        return results
+
+    def start_health_check(self, interval: float = 30.0) -> asyncio.Task:
+        """Start the periodic health-check background task."""
+        if self._health_task is None:
+            self._health_task = asyncio.create_task(self._health_loop(interval))
+        return self._health_task
+
+    async def stop_health_check(self) -> None:
+        """Cancel the periodic health-check background task and await it."""
+        if self._health_task is not None:
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except asyncio.CancelledError:
+                pass
+            self._health_task = None
+
+    async def _health_loop(self, interval: float) -> None:
+        """Background loop: health-check every *interval* seconds."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.health_check()
+            except Exception as exc:
+                print(f"[McpManager] health check failed: {exc}", flush=True)
+
     # ── Internals ───────────────────────────────────────────────────
+
+    async def _close_connection(self, name: str, conn: dict) -> None:
+        """Unregister a server's tools and close its session/transport."""
+        for tool_name in conn["tool_names"]:
+            self._registry.unregister(tool_name)
+
+        for mgr_key in ("session_cm", "transport_cm"):
+            try:
+                cm = conn[mgr_key]
+                await cm.__aexit__(None, None, None)
+            except Exception as exc:
+                print(f"[McpManager] error closing {mgr_key} for '{name}': {exc}", flush=True)
+
+    async def _ping(self, conn: dict) -> bool:
+        """Return True when the server's session answers ``list_tools``."""
+        try:
+            await conn["session"].list_tools()
+            return True
+        except Exception:
+            return False
+
+    async def _reconnect(self, name: str, conn: dict) -> bool:
+        """Tear down and re-establish *name*; True on success.
+
+        On failure the closed connection stays tracked (its tools are
+        already unregistered) so the next health check retries it.
+        """
+        cfg = conn.get("cfg")
+        await self._close_connection(name, conn)
+
+        if cfg is None:
+            return False
+        try:
+            count = await self._connect_one(cfg)
+            self._reset_breakers(self._connections[name]["tool_names"])
+            print(f"[McpManager] '{name}' reconnected: {count} tool(s)", flush=True)
+            return True
+        except Exception as exc:
+            print(f"[McpManager] '{name}' reconnect failed: {exc}", flush=True)
+            return False
+
+    def _reset_breakers(self, tool_names: list[str]) -> None:
+        """Reset the circuit breaker for each *tool_name* (duck-typed registry)."""
+        reset_breaker = getattr(self._registry, "reset_breaker", None)
+        if reset_breaker is None:
+            return
+        for tool_name in tool_names:
+            reset_breaker(tool_name)
 
     async def _connect_one(self, cfg: dict) -> int:
         """Connect a single server and register its tools.  Returns tool count."""
@@ -177,6 +253,7 @@ class McpManager:
             tool_names.append(full_name)
 
         self._connections[name] = {
+            "cfg": cfg,
             "session": session,
             "transport_cm": transport_cm,
             "session_cm": session_cm,

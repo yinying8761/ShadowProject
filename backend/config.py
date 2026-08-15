@@ -149,6 +149,8 @@ class Settings(BaseSettings):
     # ---- MCP (Model Context Protocol) ----
     # Path to mcp_servers.json.  Leave empty to use {data_dir}/mcp_servers.json.
     mcp_config_path: str = ""
+    # Health-check interval (seconds) between MCP connectivity probes.
+    mcp_health_check_interval: float = 30.0
 
     def get_embedding_provider(self) -> str:
         return self.embedding_provider or self.llm_provider

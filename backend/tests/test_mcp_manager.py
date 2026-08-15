@@ -296,6 +296,123 @@ class TestDisconnectAll:
         assert "mcp__srv__t2" not in remaining
 
 
+# ── Health check & reconnect ────────────────────────────────────────────────
+
+
+class TestHealthCheck:
+    """Periodic health check: ping, reconnect, reset breakers (ticket #19)."""
+
+    @pytest.mark.asyncio
+    async def test_healthy_server_no_reconnect(self, registry, manager):
+        session = _make_mock_session([{"name": "t1"}])
+        calls = {"n": 0}
+
+        async def fake_connect(cfg):
+            calls["n"] += 1
+            return MagicMock(), MagicMock(), session
+
+        with patch.object(manager, "_connect_stdio", fake_connect):
+            await manager.connect_all(
+                _write_temp_config({"servers": [{"name": "srv", "transport": "stdio", "command": "echo"}]})
+            )
+
+        assert calls["n"] == 1
+        results = await manager.health_check()
+        assert results == {"srv": True}
+        assert calls["n"] == 1  # no reconnect happened
+
+    @pytest.mark.asyncio
+    async def test_unhealthy_server_reconnects(self, registry, manager):
+        session1 = _make_mock_session([{"name": "t1"}])
+        session2 = _make_mock_session([{"name": "t1"}])
+        sessions = [session1, session2]
+        calls = {"n": 0}
+
+        async def fake_connect(cfg):
+            s = sessions[calls["n"]]
+            calls["n"] += 1
+            return MagicMock(), MagicMock(), s
+
+        with patch.object(manager, "_connect_stdio", fake_connect):
+            await manager.connect_all(
+                _write_temp_config({"servers": [{"name": "srv", "transport": "stdio", "command": "echo"}]})
+            )
+            session1.list_tools.side_effect = Exception("connection lost")
+            results = await manager.health_check()
+
+        assert results == {"srv": True}
+        assert calls["n"] == 2  # reconnected once
+        assert "mcp__srv__t1" in {d["name"] for d in registry.get_tool_definitions()}
+
+    @pytest.mark.asyncio
+    async def test_single_server_isolation(self, registry, manager):
+        s1 = _make_mock_session([{"name": "a"}])
+        s2 = _make_mock_session([{"name": "b"}])
+        s2_new = _make_mock_session([{"name": "b"}])
+        srv2_calls = {"n": 0}
+
+        async def fake_connect(cfg):
+            name = cfg["name"]
+            if name == "srv1":
+                return MagicMock(), MagicMock(), s1
+            s = [s2, s2_new][srv2_calls["n"]]
+            srv2_calls["n"] += 1
+            return MagicMock(), MagicMock(), s
+
+        with patch.object(manager, "_connect_stdio", fake_connect):
+            await manager.connect_all(
+                _write_temp_config({
+                    "servers": [
+                        {"name": "srv1", "transport": "stdio", "command": "echo"},
+                        {"name": "srv2", "transport": "stdio", "command": "echo"},
+                    ],
+                })
+            )
+            s2.list_tools.side_effect = Exception("down")
+            results = await manager.health_check()
+
+        assert results == {"srv1": True, "srv2": True}
+        names = {d["name"] for d in registry.get_tool_definitions()}
+        assert "mcp__srv1__a" in names
+        assert "mcp__srv2__b" in names
+
+    @pytest.mark.asyncio
+    async def test_reconnect_resets_breakers(self):
+        class RecordingRegistry:
+            def __init__(self):
+                self.reset_calls = []
+
+            def register(self, name, description, parameters, handler, require_approval=False, **kwargs):
+                pass
+
+            def unregister(self, name):
+                pass
+
+            def reset_breaker(self, name):
+                self.reset_calls.append(name)
+
+        reg = RecordingRegistry()
+        manager = McpManager(reg)
+        session1 = _make_mock_session([{"name": "t1"}])
+        session2 = _make_mock_session([{"name": "t1"}])
+        sessions = [session1, session2]
+        calls = {"n": 0}
+
+        async def fake_connect(cfg):
+            s = sessions[calls["n"]]
+            calls["n"] += 1
+            return MagicMock(), MagicMock(), s
+
+        with patch.object(manager, "_connect_stdio", fake_connect):
+            await manager.connect_all(
+                _write_temp_config({"servers": [{"name": "srv", "transport": "stdio", "command": "echo"}]})
+            )
+            session1.list_tools.side_effect = Exception("down")
+            await manager.health_check()
+
+        assert "mcp__srv__t1" in reg.reset_calls
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
