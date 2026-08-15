@@ -13,6 +13,7 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable
 
+from core.circuit_breaker import CLOSED, OPEN, HALF_OPEN, CircuitBreaker
 from core.tool_registry import ToolRegistry, ToolHandler
 from services.retry import is_retryable, retry
 
@@ -80,13 +81,16 @@ class ToolRuntime:
         When ``True`` (default) handlers are wrapped in
         ``asyncio.wait_for`` with a per-tool timeout.
     enable_circuit_breaker:
-        Reserved — stored but not implemented.
+        When ``True``, ``dispatch()`` consults a per-tool CircuitBreaker
+        and short-circuits open tools.
     enable_rate_limit:
         Reserved — stored but not implemented.
     circuit_threshold:
-        Reserved.
+        Consecutive failures before a breaker opens (default 5).
     rate_limit_per_min:
         Reserved.
+    circuit_open_sec:
+        Cooldown before an open breaker allows a probe (default 60).
     """
 
     def __init__(
@@ -99,7 +103,9 @@ class ToolRuntime:
         enable_rate_limit: bool = False,
         circuit_threshold: int = 5,
         rate_limit_per_min: int = 30,
+        circuit_open_sec: float = 60.0,
         retry_sleep: Callable[[float], Awaitable[None]] | None = None,
+        clock: Callable[[], float] | None = None,
     ):
         self._registry = registry or _default_registry()
         self.enable_tracing = enable_tracing
@@ -108,13 +114,18 @@ class ToolRuntime:
         self.enable_rate_limit = enable_rate_limit
         self.circuit_threshold = circuit_threshold
         self.rate_limit_per_min = rate_limit_per_min
+        self.circuit_open_sec = circuit_open_sec
         self._retry_sleep = retry_sleep if retry_sleep is not None else asyncio.sleep
+        self._clock = clock if clock is not None else time.monotonic
 
         # Per-tool sandbox config: tool_name → {"timeout_sec": float}
         self._sandbox: dict[str, dict] = {}
 
         # Per-tool retry config: tool_name → {"max_retries", "retryable_exceptions"}
         self._retry: dict[str, dict] = {}
+
+        # Per-tool circuit breakers: tool_name → CircuitBreaker
+        self._circuit_breakers: dict[str, CircuitBreaker] = {}
 
         # Tracing store (lazy-init on first dispatch to avoid import at module level)
         self._trace_store: Any = None
@@ -164,7 +175,7 @@ class ToolRuntime:
         *,
         conversation_id: str | None = None,
     ) -> str:
-        """Execute a tool call with tracing, optional retry, and sandbox timeout.
+        """Execute a tool call with tracing, retry, circuit breaker, and sandbox timeout.
 
         Parameters
         ----------
@@ -176,6 +187,7 @@ class ToolRuntime:
         success = True
         error_msg: str | None = None
         result = ""
+        retry_count = 0
 
         # Resolve timeout + retry config for this tool
         sandbox_cfg = self._sandbox.get(name)
@@ -185,6 +197,21 @@ class ToolRuntime:
             retry_cfg = _default_retry_config(name)
         max_retries = retry_cfg.get("max_retries", 0)
         retryable_exceptions = retry_cfg.get("retryable_exceptions")
+
+        # Circuit breaker: short-circuit when open
+        breaker = self._breaker_for(name)
+        if breaker is not None:
+            prev_state = breaker.state
+            if not breaker.allow_request():
+                success = False
+                error_msg = f"Circuit breaker open for {name}"
+                result = json.dumps({"error": error_msg}, ensure_ascii=False)
+                await self._persist_trace(
+                    call_id, name, arguments, result, start, success, error_msg,
+                    conversation_id, retry_count,
+                )
+                return result
+            self._breaker_transition(name, breaker, prev_state)
 
         attempts = 0
 
@@ -232,18 +259,54 @@ class ToolRuntime:
             except (json.JSONDecodeError, TypeError):
                 pass  # non-JSON result → success stays True
 
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        # Record the circuit-breaker outcome
+        if breaker is not None:
+            prev_state = breaker.state
+            if success:
+                breaker.record_success()
+            else:
+                breaker.record_failure()
+            self._breaker_transition(name, breaker, prev_state)
 
-        # ── Persist trace ──────────────────────────────────────────
-        if self.enable_tracing:
-            await self._trace(
-                call_id, name, arguments, result, elapsed_ms, success, error_msg,
-                conversation_id, retry_count,
-            )
+        await self._persist_trace(
+            call_id, name, arguments, result, start, success, error_msg,
+            conversation_id, retry_count,
+        )
 
         return result
 
     # ── Internals ──────────────────────────────────────────────────────
+
+    def _breaker_for(self, name: str) -> CircuitBreaker | None:
+        """Return the per-tool breaker, or ``None`` when CB is disabled."""
+        if not self.enable_circuit_breaker:
+            return None
+        if name not in self._circuit_breakers:
+            self._circuit_breakers[name] = CircuitBreaker(
+                threshold=self.circuit_threshold,
+                open_timeout=self.circuit_open_sec,
+                clock=self._clock,
+            )
+        return self._circuit_breakers[name]
+
+    def _breaker_transition(self, name: str, breaker: CircuitBreaker, prev: str) -> None:
+        """Log a circuit-breaker state transition for *name*."""
+        new = breaker.state
+        if new == prev:
+            return
+        if new == OPEN:
+            if prev == HALF_OPEN:
+                reason = "probe failed"
+            else:
+                reason = f"{breaker.threshold} consecutive failures"
+            print(
+                f"[CircuitBreaker] {name} OPEN ({reason}, retry in {breaker.open_timeout:.0f}s)",
+                flush=True,
+            )
+        elif new == HALF_OPEN:
+            print(f"[CircuitBreaker] {name} HALF_OPEN (probing...)", flush=True)
+        elif new == CLOSED:
+            print(f"[CircuitBreaker] {name} CLOSED (probe succeeded)", flush=True)
 
     def _get_trace_store(self):
         """Lazy-init the trace store (avoids import at module level)."""
@@ -251,6 +314,27 @@ class ToolRuntime:
             from services.tool_trace_store import ToolTraceStore
             self._trace_store = ToolTraceStore()
         return self._trace_store
+
+    async def _persist_trace(
+        self,
+        call_id: str,
+        name: str,
+        arguments: dict,
+        result: str,
+        start: float,
+        success: bool,
+        error_msg: str | None,
+        conversation_id: str | None,
+        retry_count: int,
+    ) -> None:
+        """Persist a trace record when tracing is enabled."""
+        if not self.enable_tracing:
+            return
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        await self._trace(
+            call_id, name, arguments, result, elapsed_ms, success, error_msg,
+            conversation_id, retry_count,
+        )
 
     async def _trace(
         self,
