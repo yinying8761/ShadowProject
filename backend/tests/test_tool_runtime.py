@@ -546,6 +546,84 @@ class TestAgentWithToolRuntime:
         await engine.dispose()
         await trace_engine.dispose()
 
+    @pytest.mark.asyncio
+    async def test_denied_tool_not_counted_as_failure(self, monkeypatch):
+        """A user-denied tool call never reaches dispatch, so it can't trip the breaker (#18)."""
+        from services.memory_service import memory_service as memory_svc
+        from core.agent import Agent
+
+        engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with session_factory() as session:
+            from models.character import CharacterProfile
+            from models.conversation import Conversation
+            from models.user_config import UserConfig
+
+            char = CharacterProfile(id="char-deny-1", name="DenyTest", personality="cool",
+                                     role="companion", archetype="friend")
+            conv = Conversation(id="conv-deny-1", character_id="char-deny-1")
+            cfg = UserConfig(id=1)
+            session.add_all([char, conv, cfg])
+            await session.commit()
+
+            monkeypatch.setattr(memory_svc, "search", _fake_memory_search)
+
+            reg = ToolRegistry()
+            calls = {"n": 0}
+
+            async def dangerous(**kw) -> str:
+                calls["n"] += 1
+                return "written"
+
+            reg.register("write_file", "write", {"type": "object", "properties": {}}, dangerous, True)
+
+            # CB enabled with threshold=1: a single failure would open it, so this
+            # test proves the deny does NOT count as a circuit-breaker failure.
+            rt = ToolRuntime(
+                registry=reg,
+                enable_tracing=False,
+                enable_sandbox=False,
+                enable_circuit_breaker=True,
+                circuit_threshold=1,
+            )
+
+            fake_llm = FakeLLMService([
+                {"type": "token", "content": "我来写文件"},
+                {"type": "tool_use", "id": "call_deny", "name": "write_file",
+                 "arguments": {"path": "/tmp/x"}},
+                {"type": "token", "content": "写好了。"},
+            ])
+
+            agent = Agent(llm_service=fake_llm, tool_registry=rt)
+
+            async def deny(name, arguments):
+                return False
+
+            events = []
+            async for event in agent.run(
+                session=session,
+                user_message="测试",
+                conversation_id="conv-deny-1",
+                character_id="char-deny-1",
+                approval_callback=deny,
+            ):
+                events.append(event)
+
+            # Denied → handler never invoked, breaker never consulted.
+            assert calls["n"] == 0
+            assert "write_file" not in rt._circuit_breakers
+
+            # The deny surfaced as a tool_result with denied=True (an error to the
+            # LLM, but NOT a circuit-breaker failure).
+            denied = [e for e in events if e["type"] == "tool_result"]
+            assert len(denied) == 1
+            assert denied[0]["denied"] is True
+
+        await engine.dispose()
+
 
 # ── Seam 2: GET /api/tool-runs — in-memory SQLite + TestClient ──────────────
 

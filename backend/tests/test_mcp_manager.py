@@ -413,6 +413,51 @@ class TestHealthCheck:
         assert "mcp__srv__t1" in reg.reset_calls
 
 
+# ── MCP tools through a CB-enabled ToolRuntime ───────────────────────────────
+
+
+class TestMcpCircuitBreakerIntegration:
+    """MCP tools are protected by their own per-tool CircuitBreaker (ticket #19, reuses E3)."""
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_failures_trip_circuit_breaker(self):
+        from core.circuit_breaker import OPEN
+        from core.tool_runtime import ToolRuntime
+
+        # Production wiring: McpManager is given the CB-enabled ToolRuntime,
+        # so MCP tools flow through the same dispatch() that consults breakers.
+        rt = ToolRuntime(
+            registry=ToolRegistry(),
+            enable_tracing=False,
+            enable_sandbox=False,
+            enable_circuit_breaker=True,
+            circuit_threshold=2,
+        )
+        manager = McpManager(rt)
+
+        session = _make_mock_session([{"name": "boom"}])
+        session.call_tool.return_value = _make_text_result("kaputt", is_error=True)
+
+        async def fake_connect(cfg):
+            return MagicMock(), MagicMock(), session
+
+        with patch.object(manager, "_connect_stdio", fake_connect):
+            await manager.connect_all(
+                _write_temp_config({"servers": [{"name": "srv", "transport": "stdio", "command": "echo"}]})
+            )
+
+        # Two consecutive failures open the breaker.
+        await rt.dispatch("mcp__srv__boom", {})
+        await rt.dispatch("mcp__srv__boom", {})
+        assert rt._circuit_breakers["mcp__srv__boom"].state == OPEN
+
+        # Third call is short-circuited — call_tool is NOT invoked again.
+        calls_before = session.call_tool.await_count
+        result = await rt.dispatch("mcp__srv__boom", {})
+        assert session.call_tool.await_count == calls_before
+        assert "Circuit breaker open" in json.loads(result)["error"]
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
