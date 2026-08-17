@@ -15,4 +15,5 @@ numpy>=1.26,<2.0
 httpx>=0.27
 beautifulsoup4>=4.12
 ddgs>=9.0
+jsonschema>=4.20
 # fastembed>=0.3.0  # optional: local offline embeddings (uncomment to enable)

@@ -1,5 +1,6 @@
 """
-ToolRuntime — wraps ToolRegistry with tracing, sandbox, retry, and extension points.
+ToolRuntime — wraps ToolRegistry with tracing, sandbox, retry, schema
+validation, and extension points.
 
 Exposes the same interface as ToolRegistry (register / unregister / dispatch /
 get_tool_definitions / needs_approval) so Agent requires zero behavioural changes.
@@ -12,6 +13,8 @@ import json
 import time
 import uuid
 from typing import Any, Awaitable, Callable
+
+import jsonschema
 
 from core.circuit_breaker import CLOSED, OPEN, HALF_OPEN, CircuitBreaker
 from core.tool_registry import ToolRegistry, ToolHandler
@@ -64,6 +67,17 @@ def _is_tool_retryable(exc: Exception, retryable_exceptions: tuple[type[Exceptio
     if retryable_exceptions:
         return isinstance(exc, retryable_exceptions)
     return is_retryable(exc)
+
+
+def _format_validation_error(exc: jsonschema.exceptions.ValidationError) -> str:
+    """Turn a jsonschema error into a short, LLM-friendly message.
+
+    Uses the JSON pointer path (e.g. ``path``, ``$`` for the root) so the
+    LLM knows exactly which argument is wrong, plus jsonschema's own
+    human-readable message (e.g. ``'123' is not of type 'string'``).
+    """
+    loc = "/".join(str(p) for p in exc.path) if exc.path else "$"
+    return f"Schema validation failed: {loc} — {exc.message}"
 
 
 class ToolRuntime:
@@ -195,6 +209,36 @@ class ToolRuntime:
         result = ""
         retry_count = 0
 
+        # Schema validation (Workflow F): reject malformed arguments before the
+        # handler runs, so the LLM can correct them on a later round. This sits
+        # before the circuit-breaker check on purpose: argument errors are the
+        # LLM's responsibility, not a tool-health signal, so they must never
+        # count toward tripping a breaker. _validate_args converts only
+        # ValidationError into a "Schema validation failed" message; a malformed
+        # schema (SchemaError / unresolvable $ref, e.g. a broken MCP
+        # inputSchema) raises and is caught here as a generic dispatch failure
+        # so dispatch keeps its "returns, never raises" contract.
+        try:
+            validation_error = await self._validate_args(name, arguments)
+        except Exception as exc:
+            success = False
+            error_msg = str(exc)
+            result = json.dumps({"error": error_msg}, ensure_ascii=False)
+            await self._persist_trace(
+                call_id, name, arguments, result, start, success, error_msg,
+                conversation_id, retry_count,
+            )
+            return result
+        if validation_error is not None:
+            success = False
+            error_msg = validation_error
+            result = json.dumps({"error": validation_error}, ensure_ascii=False)
+            await self._persist_trace(
+                call_id, name, arguments, result, start, success, error_msg,
+                conversation_id, retry_count,
+            )
+            return result
+
         # Resolve timeout + retry config for this tool
         sandbox_cfg = self._sandbox.get(name)
         timeout = sandbox_cfg["timeout_sec"] if sandbox_cfg else _default_timeout_sec(name)
@@ -313,6 +357,22 @@ class ToolRuntime:
             print(f"[CircuitBreaker] {name} HALF_OPEN (probing...)", flush=True)
         elif new == CLOSED:
             print(f"[CircuitBreaker] {name} CLOSED (probe succeeded)", flush=True)
+
+    async def _validate_args(self, name: str, arguments: dict) -> str | None:
+        """Validate *arguments* against *name*'s registered JSON Schema.
+
+        Returns an error message when the arguments are invalid, or ``None``
+        when they pass (or the tool is unknown / has no schema — those paths
+        fall through to the normal dispatch flow).
+        """
+        schema = self._registry.get_parameters(name)
+        if not schema:
+            return None
+        try:
+            await asyncio.to_thread(jsonschema.validate, instance=arguments, schema=schema)
+        except jsonschema.exceptions.ValidationError as exc:
+            return _format_validation_error(exc)
+        return None
 
     def _get_trace_store(self):
         """Lazy-init the trace store (avoids import at module level)."""

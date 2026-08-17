@@ -52,6 +52,11 @@ class ToolRegistry:
         tool = self._tools.get(name)
         return tool["handler"] if tool else None
 
+    def get_parameters(self, name: str) -> dict | None:
+        """Return the JSON Schema registered for *name*, or None if unknown."""
+        tool = self._tools.get(name)
+        return tool["parameters"] if tool else None
+
     async def dispatch(self, name: str, arguments: dict) -> str:
         """Validate and execute a tool call. Returns the result as a string."""
         tool = self._tools.get(name)
