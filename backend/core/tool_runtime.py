@@ -15,6 +15,7 @@ import uuid
 from typing import Any, Awaitable, Callable
 
 import jsonschema
+from referencing.exceptions import Unresolvable
 
 from core.circuit_breaker import CLOSED, OPEN, HALF_OPEN, CircuitBreaker
 from core.tool_registry import ToolRegistry, ToolHandler
@@ -220,7 +221,7 @@ class ToolRuntime:
         # so dispatch keeps its "returns, never raises" contract.
         try:
             validation_error = await self._validate_args(name, arguments)
-        except (jsonschema.exceptions.SchemaError, jsonschema.exceptions.RefResolutionError) as exc:
+        except (jsonschema.exceptions.SchemaError, Unresolvable) as exc:
             # A malformed schema (bad MCP inputSchema / broken $ref) is a config
             # problem, not an argument problem: surface it as a generic failure
             # so dispatch keeps its "returns, never raises" contract.
