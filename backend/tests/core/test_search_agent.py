@@ -47,6 +47,11 @@ class FakeLLMService:
         for event in round_events:
             yield event
 
+    async def estimate_prompt_tokens(self, messages) -> int:
+        """Stub for Workflow G — fake LLMs emit no usage events, so the
+        Agent never persists; returning 0 keeps the loop well-defined."""
+        return 0
+
     def _is_multi_round(self) -> bool:
         return (
             len(self._events) > 0

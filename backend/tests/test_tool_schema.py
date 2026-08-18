@@ -98,6 +98,11 @@ class RoundBasedFakeLLM:
         for event in events:
             yield event
 
+    async def estimate_prompt_tokens(self, messages) -> int:
+        """Stub for Workflow G — the Agent pre-estimates each round's prompt;
+        this fake emits no usage events so nothing is persisted."""
+        return 0
+
 
 async def _seed_test_db(session):
     """Minimal test data: character + conversation + user config."""

@@ -32,6 +32,10 @@ class FakeStreamLLM:
     async def stream_chat(self, messages, tools=None):
         yield {"type": "token", "content": self._response}
 
+    async def estimate_prompt_tokens(self, messages) -> int:
+        """Stub for Workflow G — fake emits no usage event; loop stays defined."""
+        return 0
+
 
 async def _fake_memory_search(session, query="", top_k=3, character_id=None):
     return []

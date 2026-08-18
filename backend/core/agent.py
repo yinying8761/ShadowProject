@@ -22,11 +22,13 @@ class Agent:
         self,
         llm_service: LLMService | None = None,
         tool_registry: ToolRuntime | None = None,
+        usage_store: "LLMUsageStore | None" = None,
     ):
         self.prompt_manager = PromptManager()
         self.conversation_manager = ConversationManager()
         self.llm_service = llm_service or LLMService()
         self.tool_registry = tool_registry or ToolRuntime()
+        self._usage_store = usage_store
 
     async def run(
         self,
@@ -253,6 +255,12 @@ class Agent:
         for round_num in range(max_tool_rounds):
             tool_use_blocks: list[dict] = []
             round_text = ""
+            usage = None
+
+            # Pre-estimate the prompt tokens about to be sent (Workflow G).
+            # Estimation never interrupts the request — tokenizer problems
+            # degrade to a character heuristic internally.
+            estimated_prompt_tokens = await self.llm_service.estimate_prompt_tokens(messages)
 
             async for event in self.llm_service.stream_chat(
                 messages=messages,
@@ -268,6 +276,8 @@ class Agent:
                         "arguments": event["arguments"],
                     })
                     yield event
+                elif event["type"] == "usage":
+                    usage = event
                 elif event["type"] == "error":
                     # Stream error — save partial response so the frontend
                     # can finalize the streaming message, then surface the error.
@@ -281,6 +291,23 @@ class Agent:
                         yield done
                     yield event
                     return
+
+            # Persist the authoritative usage for this round once the stream
+            # completed and the API reported it (Workflow G). Stream errors
+            # return above, so a missing usage event simply means no record.
+            if usage is not None:
+                try:
+                    await self._get_usage_store().save(
+                        conversation_id=conversation_id,
+                        round_num=round_num,
+                        model=usage.get("model", ""),
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
+                        estimated_prompt_tokens=estimated_prompt_tokens,
+                    )
+                except Exception as exc:
+                    print(f"[Agent] usage save failed: {exc}", flush=True)
 
             full_response += round_text
 
@@ -432,3 +459,10 @@ class Agent:
             out.append((event, tool_msg))
 
         return out
+
+    def _get_usage_store(self) -> "LLMUsageStore":
+        """Lazy-init the token usage store (avoids import at module level)."""
+        if self._usage_store is None:
+            from services.usage_store import LLMUsageStore
+            self._usage_store = LLMUsageStore()
+        return self._usage_store

@@ -303,6 +303,11 @@ class FakeLLMService:
         for event in self._events:
             yield event
 
+    async def estimate_prompt_tokens(self, messages) -> int:
+        """Stub for Workflow G — the fake emits no usage event, so the
+        Agent never persists; returning 0 keeps the loop well-defined."""
+        return 0
+
 
 # ── In-memory DB helpers ────────────────────────────────────────────────
 
