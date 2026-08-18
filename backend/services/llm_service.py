@@ -63,6 +63,40 @@ class LLMService:
         """Wrap *fn* in the shared LLM retry policy (backoff + classification)."""
         return retry(fn, retryable=_is_retryable_llm_error, sleep=self._sleep)
 
+    async def estimate_prompt_tokens(self, messages: list[dict]) -> int:
+        """Estimate prompt tokens for the current provider (non-blocking).
+
+        OpenAI-compatible providers (deepseek/qwen/zhipu/moonshot/custom/openai)
+        use tiktoken's ``cl100k_base`` via :func:`services.token_counter
+        .estimate_openai_tokens`, run in a thread so the first (possibly
+        network-touching) encoder load never blocks the event loop. Anthropic
+        uses the SDK's ``count_tokens``. Either path degrades to a character
+        heuristic when its tokenizer is unavailable — never raises.
+        """
+        from services.token_counter import estimate_openai_tokens
+
+        if settings.get_sdk_type() == "anthropic":
+            return await self._anthropic_input_tokens(messages)
+        return await asyncio.to_thread(estimate_openai_tokens, messages)
+
+    async def _anthropic_input_tokens(self, messages: list[dict]) -> int:
+        """Anthropic SDK count_tokens → input_tokens; fallback to char estimate.
+
+        ``AsyncAnthropic.messages.count_tokens`` is async and requires the
+        ``model`` argument; awaiting it keeps the count authoritative instead
+        of silently degrading.
+        """
+        from services.token_counter import _char_estimate
+
+        try:
+            client = self._get_anthropic_client()
+            result = await client.messages.count_tokens(
+                model=settings.get_model(), messages=messages
+            )
+            return result.input_tokens
+        except Exception:
+            return sum(_char_estimate(str(m.get("content") or "")) for m in messages)
+
     async def chat_sync(
         self,
         messages: list[dict],
@@ -116,7 +150,9 @@ class LLMService:
     ) -> AsyncIterator[dict]:
         """
         Stream chat response.
-        Yields: {"type": "token"/"tool_use"/"error", ...}
+        Yields: {"type": "token"/"tool_use"/"error"/"usage", ...}
+        The final ``usage`` event carries the authoritative token counts
+        (model / prompt_tokens / completion_tokens / total_tokens).
         """
         effective_model = model or settings.get_model()
         sdk_type = settings.get_sdk_type()
@@ -204,6 +240,16 @@ class LLMService:
                                 "name": block.name,
                                 "arguments": block.input,
                             }
+
+                # Authoritative usage from the final message (Workflow G).
+                # input_tokens ≈ prompt_tokens, output_tokens ≈ completion_tokens.
+                yield {
+                    "type": "usage",
+                    "model": model,
+                    "prompt_tokens": final_msg.usage.input_tokens,
+                    "completion_tokens": final_msg.usage.output_tokens,
+                    "total_tokens": final_msg.usage.input_tokens + final_msg.usage.output_tokens,
+                }
             finally:
                 await manager.__aexit__(None, None, None)
         except Exception as e:
@@ -236,6 +282,9 @@ class LLMService:
                 "messages": openai_messages,
                 "max_tokens": 4096,
                 "stream": True,
+                # Prompt the API to include a `usage` field on the final chunk
+                # so the authoritative token count can be surfaced (Workflow G).
+                "stream_options": {"include_usage": True},
             }
             if tools:
                 kwargs["tools"] = [
@@ -250,8 +299,14 @@ class LLMService:
             client = self._get_openai_client()
             stream = await self._retry(lambda: client.chat.completions.create(**kwargs))
             accumulated_tool_calls: dict[int, dict] = {}
+            usage = None
 
             async for chunk in stream:
+                # The final chunk (with `stream_options.include_usage`) carries
+                # usage and an empty choices list; capture it before the delta
+                # skip below. getattr keeps fakes without a usage attr working.
+                if getattr(chunk, "usage", None):
+                    usage = chunk.usage
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta is None:
                     continue
@@ -280,6 +335,15 @@ class LLMService:
                     "id": tc["id"] or f"call_{tc['name']}",
                     "name": tc["name"],
                     "arguments": args,
+                }
+
+            if usage:
+                yield {
+                    "type": "usage",
+                    "model": model,
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
                 }
 
         except Exception as e:
