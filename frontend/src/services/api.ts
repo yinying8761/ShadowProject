@@ -1,4 +1,4 @@
-import type { CharacterProfile, Conversation, Message, AppConfig, ApiMessage, MemoryEntry, UserProfile } from '../types';
+import type { CharacterProfile, Conversation, Message, AppConfig, ApiMessage, MemoryEntry, UserProfile, TokenUsageResponse } from '../types';
 
 const BASE = '/api';
 
@@ -88,4 +88,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  fetchTokenUsage: (conversationId: string) =>
+    request<TokenUsageResponse>(
+      `/token-usage?conversation_id=${encodeURIComponent(conversationId)}`
+    ),
 };

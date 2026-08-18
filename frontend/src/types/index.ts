@@ -114,3 +114,28 @@ export interface WsMessage {
   reason?: string;
   client_message_id?: string;
 }
+
+export interface TokenUsageEntry {
+  id: string;
+  conversation_id: string;
+  round_num: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_prompt_tokens: number;
+  created_at: string | null;
+}
+
+export interface TokenUsageSummary {
+  rounds: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface TokenUsageResponse {
+  total: number;
+  usage: TokenUsageEntry[];
+  summary: TokenUsageSummary;
+}

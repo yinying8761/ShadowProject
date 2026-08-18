@@ -1,6 +1,6 @@
 import { useTranslation } from '../../i18n/useTranslation';
 
-type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory';
+type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory' | 'usage';
 
 const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: 'general',   label: 'General' },
@@ -10,6 +10,7 @@ const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: 'proactive', label: 'Proactive Chat' },
   { key: 'voice',     label: 'Voice (TTS)' },
   { key: 'memory',    label: 'Memories' },
+  { key: 'usage',     label: 'Usage' },
 ];
 
 interface SettingsNavProps {

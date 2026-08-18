@@ -11,8 +11,9 @@ import { ModelSettings } from './ModelSettings';
 import { ProactiveSettings } from './ProactiveSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { MemoryPanel } from './MemoryPanel';
+import { UsagePanel } from './UsagePanel';
 
-type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory';
+type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory' | 'usage';
 
 export function SettingsPanel() {
   const showSettings = useAppStore((s) => s.showSettings);
@@ -62,6 +63,7 @@ export function SettingsPanel() {
       case 'proactive': return <ProactiveSettings />;
       case 'voice':     return <VoiceSettings />;
       case 'memory':    return <MemoryPanel />;
+      case 'usage':     return <UsagePanel />;
     }
   };
 

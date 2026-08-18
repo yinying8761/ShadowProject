@@ -178,6 +178,23 @@ const zh: TranslationDict = {
   Conversations: '对话列表',
   'New': '新建',
   'Chat': '对话',
+
+  // Usage panel
+  Usage: '用量统计',
+  Summary: '汇总',
+  'Prompt Tokens': 'Prompt Token',
+  'Completion Tokens': 'Completion Token',
+  'Total Tokens': '总 Token',
+  Rounds: '轮次',
+  Round: '轮次',
+  Prompt: 'Prompt',
+  Completion: 'Completion',
+  Total: '合计',
+  Estimated: '预估',
+  Actual: '实际',
+  'No usage yet': '暂无用量记录',
+  'Failed to load usage': '用量加载失败',
+  'Select a conversation to see token usage': '选择会话以查看 Token 用量',
 };
 
 const en: TranslationDict = {};
