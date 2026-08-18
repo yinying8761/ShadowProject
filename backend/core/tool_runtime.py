@@ -220,24 +220,19 @@ class ToolRuntime:
         # so dispatch keeps its "returns, never raises" contract.
         try:
             validation_error = await self._validate_args(name, arguments)
-        except Exception as exc:
-            success = False
-            error_msg = str(exc)
-            result = json.dumps({"error": error_msg}, ensure_ascii=False)
-            await self._persist_trace(
-                call_id, name, arguments, result, start, success, error_msg,
+        except (jsonschema.exceptions.SchemaError, jsonschema.exceptions.RefResolutionError) as exc:
+            # A malformed schema (bad MCP inputSchema / broken $ref) is a config
+            # problem, not an argument problem: surface it as a generic failure
+            # so dispatch keeps its "returns, never raises" contract.
+            return await self._fail(
+                call_id, name, arguments, start, str(exc),
                 conversation_id, retry_count,
             )
-            return result
         if validation_error is not None:
-            success = False
-            error_msg = validation_error
-            result = json.dumps({"error": validation_error}, ensure_ascii=False)
-            await self._persist_trace(
-                call_id, name, arguments, result, start, success, error_msg,
+            return await self._fail(
+                call_id, name, arguments, start, validation_error,
                 conversation_id, retry_count,
             )
-            return result
 
         # Resolve timeout + retry config for this tool
         sandbox_cfg = self._sandbox.get(name)
@@ -253,14 +248,10 @@ class ToolRuntime:
         if breaker is not None:
             prev_state = breaker.state
             if not breaker.allow_request():
-                success = False
-                error_msg = f"Circuit breaker open for {name}"
-                result = json.dumps({"error": error_msg}, ensure_ascii=False)
-                await self._persist_trace(
-                    call_id, name, arguments, result, start, success, error_msg,
+                return await self._fail(
+                    call_id, name, arguments, start, f"Circuit breaker open for {name}",
                     conversation_id, retry_count,
                 )
-                return result
             self._breaker_transition(name, breaker, prev_state)
 
         attempts = 0
@@ -401,6 +392,24 @@ class ToolRuntime:
             call_id, name, arguments, result, elapsed_ms, success, error_msg,
             conversation_id, retry_count,
         )
+
+    async def _fail(
+        self,
+        call_id: str,
+        name: str,
+        arguments: dict,
+        start: float,
+        error_msg: str,
+        conversation_id: str | None,
+        retry_count: int,
+    ) -> str:
+        """Persist a failure trace and return the JSON error envelope."""
+        result = json.dumps({"error": error_msg}, ensure_ascii=False)
+        await self._persist_trace(
+            call_id, name, arguments, result, start, False, error_msg,
+            conversation_id, retry_count,
+        )
+        return result
 
     async def _trace(
         self,
