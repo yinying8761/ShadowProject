@@ -59,17 +59,27 @@ class TestTokenizer:
 
         monkeypatch.setattr("services.llm_service.settings", FakeSettings())
 
+        seen = {}
+
         class FakeAnthropicClient:
             @property
             def messages(self):
                 return self
 
             async def count_tokens(self, **kwargs):
-                assert kwargs["model"] == "claude-test"  # model is SDK-required
+                seen.update(kwargs)
                 return SimpleNamespace(input_tokens=42)
 
         llm = LLMService(clients={"anthropic": FakeAnthropicClient()})
-        assert await llm.estimate_prompt_tokens([{"role": "user", "content": "hi"}]) == 42
+        result = await llm.estimate_prompt_tokens([
+            {"role": "system", "content": "you are helpful"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert result == 42
+        assert seen["model"] == "claude-test"  # model is SDK-required
+        # system must be split out of `messages` (Anthropic rejects it inline)
+        assert seen["system"] == "you are helpful"
+        assert seen["messages"] == [{"role": "user", "content": "hi"}]
 
     @pytest.mark.asyncio
     async def test_anthropic_count_tokens_fallback(self, monkeypatch):

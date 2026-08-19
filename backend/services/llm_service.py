@@ -85,14 +85,37 @@ class LLMService:
         ``AsyncAnthropic.messages.count_tokens`` is async and requires the
         ``model`` argument; awaiting it keeps the count authoritative instead
         of silently degrading.
+
+        Anthropic takes ``system`` as a top-level field — ``messages`` only
+        accepts ``user``/``assistant`` roles — so the system message is split
+        out via the formatter (same as ``_stream_anthropic``) before the call.
+        Otherwise the SDK rejects the request and we silently degrade to the
+        character heuristic on every round (the Agent's first message is always
+        ``system``).
         """
         from services.token_counter import _char_estimate
 
         try:
+            formatter = self._get_formatter()
+            if formatter:
+                system_msg, user_messages = formatter.format_messages(messages)
+            else:
+                system_msg = None
+                user_messages = []
+                for m in messages:
+                    if m["role"] == "system":
+                        system_msg = m["content"]
+                    else:
+                        user_messages.append({"role": m["role"], "content": m["content"]})
+
             client = self._get_anthropic_client()
-            result = await client.messages.count_tokens(
-                model=settings.get_model(), messages=messages
-            )
+            kwargs = {
+                "model": settings.get_model(),
+                "messages": user_messages,
+            }
+            if system_msg:
+                kwargs["system"] = system_msg
+            result = await client.messages.count_tokens(**kwargs)
             return result.input_tokens
         except Exception:
             return sum(_char_estimate(str(m.get("content") or "")) for m in messages)

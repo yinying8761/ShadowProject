@@ -16,5 +16,6 @@ httpx>=0.27
 beautifulsoup4>=4.12
 ddgs>=9.0
 jsonschema>=4.20
+referencing>=0.28.4  # direct dep: tool_runtime catches referencing.exceptions.Unresolvable
 tiktoken>=0.7
 # fastembed>=0.3.0  # optional: local offline embeddings (uncomment to enable)
