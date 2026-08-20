@@ -277,3 +277,11 @@ or circuit-breaker failures).
 | 每日问候 | Daily greeting | first-open contextual greeting via `GreetingOrchestrator` |
 | 熔断 | Circuit breaker | per-tool CLOSED/OPEN/HALF_OPEN fault isolation |
 | 增量迁移 | Additive migration | `database.ADDITIVE_MIGRATIONS` column additions |
+| 供应商 | Provider | 官方 API 渠道 + 中转站（如 opencode-go、AIcodeMirror）；内置预设硬编码，自定义的可增删。_Avoid_: 提供方、服务商 |
+| 自定义供应商 | Custom provider | 用户自建的供应商条目：名字 + base_url，存于 `config.yaml` 的 `providers:` |
+| 模型 | Model | 实际调用的模型 id 字符串（如 `deepseek-chat`） |
+| 模型列表 | Model list | 从供应商 `GET /v1/models` 拉取到的可用模型 id 集合 |
+| 密钥 | API Key | 每供应商一个 `<PROVIDER>_API_KEY`，存于 `.env` |
+| 接口地址 | Base URL | OpenAI 兼容 endpoint 根地址（形如 `…/v1`） |
+| 生效配置 | Effective config | `data/config.yaml` 里的当前供应商 + 模型选择 |
+| LLM 运行时配置 | Runtime LLM config | 内存中的可变配置对象；UI 写 yaml/.env 后刷新，立即生效 |
