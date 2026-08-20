@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from database import Base
+from services.llm_config import LLMRuntimeConfig
 from services.token_counter import estimate_openai_tokens
 
 
@@ -46,19 +47,11 @@ class TestTokenizer:
         assert estimate_openai_tokens([{"role": "user", "content": ""}], encoder=encoder) == 0
 
     @pytest.mark.asyncio
-    async def test_anthropic_count_tokens(self, monkeypatch):
+    async def test_anthropic_count_tokens(self):
         """Anthropic estimate goes through the SDK count_tokens (S1)."""
         from services.llm_service import LLMService
 
-        class FakeSettings:
-            def get_sdk_type(self):
-                return "anthropic"
-
-            def get_model(self):
-                return "claude-test"
-
-        monkeypatch.setattr("services.llm_service.settings", FakeSettings())
-
+        runtime_config = LLMRuntimeConfig(provider="anthropic", model="claude-test")
         seen = {}
 
         class FakeAnthropicClient:
@@ -70,7 +63,7 @@ class TestTokenizer:
                 seen.update(kwargs)
                 return SimpleNamespace(input_tokens=42)
 
-        llm = LLMService(clients={"anthropic": FakeAnthropicClient()})
+        llm = LLMService(clients={"anthropic": FakeAnthropicClient()}, runtime_config=runtime_config)
         result = await llm.estimate_prompt_tokens([
             {"role": "system", "content": "you are helpful"},
             {"role": "user", "content": "hi"},
@@ -82,18 +75,11 @@ class TestTokenizer:
         assert seen["messages"] == [{"role": "user", "content": "hi"}]
 
     @pytest.mark.asyncio
-    async def test_anthropic_count_tokens_fallback(self, monkeypatch):
+    async def test_anthropic_count_tokens_fallback(self):
         """count_tokens failure → char heuristic, never raises."""
         from services.llm_service import LLMService
 
-        class FakeSettings:
-            def get_sdk_type(self):
-                return "anthropic"
-
-            def get_model(self):
-                return "claude-test"
-
-        monkeypatch.setattr("services.llm_service.settings", FakeSettings())
+        runtime_config = LLMRuntimeConfig(provider="anthropic", model="claude-test")
 
         class BrokenClient:
             @property
@@ -103,7 +89,7 @@ class TestTokenizer:
             async def count_tokens(self, **kwargs):
                 raise RuntimeError("count_tokens down")
 
-        llm = LLMService(clients={"anthropic": BrokenClient()})
+        llm = LLMService(clients={"anthropic": BrokenClient()}, runtime_config=runtime_config)
         n = await llm.estimate_prompt_tokens([{"role": "user", "content": "你好"}])
         assert isinstance(n, int) and n > 0
 
@@ -177,14 +163,7 @@ class TestAnthropicUsage:
     async def test_stream_yields_usage_from_final_message(self, monkeypatch):
         from services.llm_service import LLMService
 
-        class FakeSettings:
-            def get_sdk_type(self):
-                return "anthropic"
-
-            def get_model(self):
-                return "claude-test"
-
-        monkeypatch.setattr("services.llm_service.settings", FakeSettings())
+        runtime_config = LLMRuntimeConfig(provider="anthropic", model="claude-test")
 
         class FakeStreamManager:
             async def __aenter__(self):
@@ -213,7 +192,7 @@ class TestAnthropicUsage:
             def stream(self, **kwargs):
                 return FakeStreamManager()
 
-        llm = LLMService(clients={"anthropic": FakeAnthropicClient()})
+        llm = LLMService(clients={"anthropic": FakeAnthropicClient()}, runtime_config=runtime_config)
         monkeypatch.setattr(llm, "_get_formatter", lambda: None)
 
         events = [e async for e in llm.stream_chat([{"role": "user", "content": "hi"}])]

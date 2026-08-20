@@ -6,7 +6,8 @@ from sqlalchemy import select
 from database import get_session
 from models.user_config import UserConfig
 from core.tool_registry import tool_registry
-from config import settings, PROVIDER_PRESETS
+from config import PROVIDER_PRESETS
+from services.llm_config import runtime_config
 
 router = APIRouter(prefix="/api", tags=["config"])
 
@@ -60,9 +61,9 @@ async def get_config(session: AsyncSession = Depends(get_session)):
         "language": config.language,
         "tts_enabled": config.tts_enabled,
         "last_character_id": config.last_character_id,
-        "llm_provider": settings.llm_provider,
-        "llm_model": settings.get_model(),
-        "has_api_key": bool(settings.llm_api_key),
+        "llm_provider": runtime_config.provider,
+        "llm_model": runtime_config.get_model(),
+        "has_api_key": bool(runtime_config.api_key),
     }
 
 
@@ -120,8 +121,8 @@ async def list_providers():
             {"id": k, "description": v["description"], "default_model": v["default_model"]}
             for k, v in PROVIDER_PRESETS.items()
         ],
-        "current": settings.llm_provider,
-        "current_model": settings.get_model(),
+        "current": runtime_config.provider,
+        "current_model": runtime_config.get_model(),
     }
 
 

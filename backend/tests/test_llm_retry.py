@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from services.llm_config import LLMRuntimeConfig
 from services.llm_service import LLMService, _is_retryable_llm_error
 
 
@@ -279,14 +280,7 @@ class TestRetryableClassification:
 class TestAnthropicChatSync:
     @pytest.mark.asyncio
     async def test_retries_429_then_succeeds(self, monkeypatch):
-        class FakeSettings:
-            def get_sdk_type(self):
-                return "anthropic"
-
-            def get_model(self):
-                return "claude-test"
-
-        monkeypatch.setattr("services.llm_service.settings", FakeSettings())
+        runtime_config = LLMRuntimeConfig(provider="anthropic", model="claude-test")
 
         client = FakeAnthropicClient()
 
@@ -297,7 +291,7 @@ class TestAnthropicChatSync:
 
         client.set_handler(handler)
         sleep = RecordingSleep()
-        llm = LLMService(clients={"anthropic": client}, sleep=sleep)
+        llm = LLMService(clients={"anthropic": client}, sleep=sleep, runtime_config=runtime_config)
         monkeypatch.setattr(llm, "_get_formatter", lambda: None)
 
         result = await llm.chat_sync([{"role": "user", "content": "hi"}])

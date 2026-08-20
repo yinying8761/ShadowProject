@@ -2,8 +2,8 @@ import asyncio
 import json
 from typing import AsyncIterator, Awaitable, Callable
 
-from config import settings
 from services.formatters import get_formatter, MessageFormatter
+from services.llm_config import LLMRuntimeConfig, default_runtime
 from services.retry import is_retryable, retry
 
 
@@ -22,31 +22,40 @@ def _is_retryable_llm_error(exc: Exception) -> bool:
 
 
 class LLMService:
-    """LLM abstraction. Uses settings.llm_provider/llm_model/llm_base_url/llm_api_key."""
+    """LLM abstraction. Reads the mutable ``LLMRuntimeConfig`` (provider/model/
+    base_url/key) instead of the static settings, so UI edits take effect
+    without a restart."""
 
     def __init__(
         self,
         *,
         clients: dict[str, object] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        runtime_config: LLMRuntimeConfig | None = None,
     ):
         self._clients: dict[str, object] = clients if clients is not None else {}
         self._sleep = sleep if sleep is not None else asyncio.sleep
+        self._runtime = runtime_config if runtime_config is not None else default_runtime()
+
+    def invalidate_clients(self) -> None:
+        """Drop cached SDK clients so the next call rebuilds them from the
+        current runtime config (base_url / api_key changes)."""
+        self._clients.clear()
 
     def _get_formatter(self) -> MessageFormatter | None:
         """Return a provider-specific formatter, or ``None`` when the
         SDK type is not yet supported by the formatters package."""
         try:
-            return get_formatter(settings.get_sdk_type())
+            return get_formatter(self._runtime.get_sdk_type())
         except (NotImplementedError, ValueError):
             return None
 
     def _get_openai_client(self):
         if "openai" not in self._clients:
             from openai import AsyncOpenAI
-            base_url = settings.get_base_url() or None
+            base_url = self._runtime.get_base_url() or None
             self._clients["openai"] = AsyncOpenAI(
-                api_key=settings.llm_api_key,
+                api_key=self._runtime.api_key,
                 base_url=base_url,
             )
         return self._clients["openai"]
@@ -55,7 +64,7 @@ class LLMService:
         if "anthropic" not in self._clients:
             import anthropic
             self._clients["anthropic"] = anthropic.AsyncAnthropic(
-                api_key=settings.llm_api_key
+                api_key=self._runtime.api_key
             )
         return self._clients["anthropic"]
 
@@ -75,7 +84,7 @@ class LLMService:
         """
         from services.token_counter import estimate_openai_tokens
 
-        if settings.get_sdk_type() == "anthropic":
+        if self._runtime.get_sdk_type() == "anthropic":
             return await self._anthropic_input_tokens(messages)
         return await asyncio.to_thread(estimate_openai_tokens, messages)
 
@@ -110,7 +119,7 @@ class LLMService:
 
             client = self._get_anthropic_client()
             kwargs = {
-                "model": settings.get_model(),
+                "model": self._runtime.get_model(),
                 "messages": user_messages,
             }
             if system_msg:
@@ -128,8 +137,8 @@ class LLMService:
         temperature: float = 0.7,
     ) -> str:
         """Non-streaming chat for summarization/extraction. Returns full text."""
-        effective_model = model or settings.get_model()
-        sdk_type = settings.get_sdk_type()
+        effective_model = model or self._runtime.get_model()
+        sdk_type = self._runtime.get_sdk_type()
 
         if sdk_type == "anthropic":
             formatter = self._get_formatter()
@@ -177,8 +186,8 @@ class LLMService:
         The final ``usage`` event carries the authoritative token counts
         (model / prompt_tokens / completion_tokens / total_tokens).
         """
-        effective_model = model or settings.get_model()
-        sdk_type = settings.get_sdk_type()
+        effective_model = model or self._runtime.get_model()
+        sdk_type = self._runtime.get_sdk_type()
 
         if sdk_type == "anthropic":
             async for event in self._stream_anthropic(messages, tools, effective_model):

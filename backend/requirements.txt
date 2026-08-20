@@ -7,6 +7,7 @@ sqlalchemy[asyncio]==2.0.*
 aiosqlite==0.20.*
 pydantic-settings==2.7.*
 python-dotenv==1.0.*
+pyyaml>=6.0  # config.yaml read/write (services/llm_config.py)
 jinja2==3.1.*
 mcp>=1.6.0
 mss>=9.0

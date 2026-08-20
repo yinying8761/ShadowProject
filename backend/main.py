@@ -25,10 +25,16 @@ for env_path in [backend_dir / ".env", backend_dir.parent / ".env"]:
         break
 
 from config import settings
+from services.llm_config import ConfigStore, runtime_config
 from database import init_db, async_session
 from models.user_config import UserConfig
 from models.character import CharacterProfile
 from sqlalchemy import select
+
+# Load the mutable LLM runtime config (data/config.yaml + per-provider .env
+# keys) over the legacy settings seed. UI saves mutate the same singleton, so
+# edits take effect without a restart (Workflow H).
+runtime_config.copy_from(ConfigStore().load())
 
 
 # ---- Tool Registration ----

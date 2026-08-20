@@ -522,8 +522,8 @@ def main():
     started_at = datetime.now(timezone.utc)
 
     # ── Resolve model name ──────────────────────────────────────────
-    from config import settings
-    model = settings.get_model() or settings.llm_model or "unknown"
+    from services.llm_config import runtime_config
+    model = runtime_config.get_model() or "unknown"
 
     print(f"Agent Eval Runner")
     print(f"  Model: {model}")
