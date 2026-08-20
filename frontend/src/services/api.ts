@@ -1,4 +1,17 @@
-import type { CharacterProfile, Conversation, Message, AppConfig, ApiMessage, MemoryEntry, UserProfile, TokenUsageResponse } from '../types';
+import type {
+  CharacterProfile,
+  Conversation,
+  Message,
+  AppConfig,
+  ApiMessage,
+  MemoryEntry,
+  UserProfile,
+  TokenUsageResponse,
+  ProviderPreset,
+  LlmModelsResponse,
+  LlmTestResponse,
+  LlmConfigUpdate,
+} from '../types';
 
 const BASE = '/api';
 
@@ -50,6 +63,7 @@ export const api = {
       llmProvider: (raw.llm_provider as string) ?? '',
       llmModel: (raw.llm_model as string) ?? '',
       hasApiKey: (raw.has_api_key as boolean) ?? false,
+      apiKeyHint: (raw.api_key_hint as string) ?? undefined,
       showFloatingIcon: (raw.show_floating_icon as boolean) ?? true,
       floatingIconX: (raw.floating_icon_x as number) ?? -1,
       floatingIconY: (raw.floating_icon_y as number) ?? -1,
@@ -92,4 +106,28 @@ export const api = {
     request<TokenUsageResponse>(
       `/token-usage?conversation_id=${encodeURIComponent(conversationId)}`
     ),
+  fetchProviders: () =>
+    request<{ providers: ProviderPreset[]; current: string; current_model: string }>(
+      '/providers'
+    ),
+  fetchModels: (body: { provider: string; base_url?: string; api_key?: string }) =>
+    request<LlmModelsResponse>('/llm/models', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  testConnection: (body: {
+    provider: string;
+    base_url?: string;
+    api_key?: string;
+    model: string;
+  }) =>
+    request<LlmTestResponse>('/llm/test', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateLlmConfig: (data: LlmConfigUpdate) =>
+    request<{ status: string }>('/llm-config', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
 };

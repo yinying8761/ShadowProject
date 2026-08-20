@@ -134,6 +134,7 @@ async def list_providers():
             "base_url": cp.get("base_url"),
             "default_model": None,
             "sdk_type": "openai",
+            "is_custom": True,
         })
     return {
         "providers": providers,

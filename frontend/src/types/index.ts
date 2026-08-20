@@ -54,6 +54,7 @@ export interface AppConfig {
   llmProvider: string;
   llmModel: string;
   hasApiKey: boolean;
+  apiKeyHint?: string;
   showFloatingIcon: boolean;
   floatingIconX: number;
   floatingIconY: number;
@@ -138,4 +139,38 @@ export interface TokenUsageResponse {
   total: number;
   usage: TokenUsageEntry[];
   summary: TokenUsageSummary;
+}
+
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  base_url?: string;
+  default_model?: string | null;
+  sdk_type?: string;
+  is_custom?: boolean;
+}
+
+export interface LlmModelsResponse {
+  models?: string[];
+  error?: string;
+}
+
+export interface LlmTestResponse {
+  ok: boolean;
+  latency_ms?: number;
+  error?: string;
+}
+
+export interface CustomProvider {
+  id: string;
+  name: string;
+  base_url: string;
+}
+
+export interface LlmConfigUpdate {
+  llm_provider?: string;
+  llm_model?: string;
+  base_url?: string;
+  api_key?: string | null;
+  custom_providers?: CustomProvider[];
 }
