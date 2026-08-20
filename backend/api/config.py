@@ -64,6 +64,8 @@ async def get_config(session: AsyncSession = Depends(get_session)):
         "llm_provider": runtime_config.provider,
         "llm_model": runtime_config.get_model(),
         "has_api_key": bool(runtime_config.api_key),
+        # Only the last-4 tail of the key, never the full secret (Workflow H).
+        "api_key_hint": runtime_config.api_key[-4:] if runtime_config.api_key else None,
     }
 
 
@@ -115,12 +117,26 @@ async def update_config(
 
 @router.get("/providers")
 async def list_providers():
-    """Return available provider presets for the frontend dropdown."""
+    """Return built-in presets + custom providers for the frontend dropdown."""
+    providers = []
+    for k, v in PROVIDER_PRESETS.items():
+        providers.append({
+            "id": k,
+            "name": v["description"],
+            "base_url": v.get("base_url"),
+            "default_model": v.get("default_model"),
+            "sdk_type": v.get("sdk_type"),
+        })
+    for cp in runtime_config.custom_providers:
+        providers.append({
+            "id": cp.get("id"),
+            "name": cp.get("name", cp.get("id")),
+            "base_url": cp.get("base_url"),
+            "default_model": None,
+            "sdk_type": "openai",
+        })
     return {
-        "providers": [
-            {"id": k, "description": v["description"], "default_model": v["default_model"]}
-            for k, v in PROVIDER_PRESETS.items()
-        ],
+        "providers": providers,
         "current": runtime_config.provider,
         "current_model": runtime_config.get_model(),
     }

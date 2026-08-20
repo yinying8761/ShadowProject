@@ -25,7 +25,7 @@ for env_path in [backend_dir / ".env", backend_dir.parent / ".env"]:
         break
 
 from config import settings
-from services.llm_config import ConfigStore, runtime_config
+from services.llm_config import config_store, runtime_config
 from database import init_db, async_session
 from models.user_config import UserConfig
 from models.character import CharacterProfile
@@ -34,7 +34,7 @@ from sqlalchemy import select
 # Load the mutable LLM runtime config (data/config.yaml + per-provider .env
 # keys) over the legacy settings seed. UI saves mutate the same singleton, so
 # edits take effect without a restart (Workflow H).
-runtime_config.copy_from(ConfigStore().load())
+runtime_config.copy_from(config_store.load())
 
 
 # ---- Tool Registration ----
@@ -397,6 +397,7 @@ from api.chat import router as chat_router
 from api.character import router as character_router
 from api.conversation import router as conversation_router
 from api.config import router as config_router
+from api.llm_config import router as llm_config_router
 from api.tts import router as tts_router
 from api.user_profile import router as user_profile_router
 from api.tool_logs import router as tool_logs_router
@@ -406,6 +407,7 @@ app.include_router(chat_router)
 app.include_router(character_router)
 app.include_router(conversation_router)
 app.include_router(config_router)
+app.include_router(llm_config_router)
 app.include_router(tts_router)
 app.include_router(user_profile_router)
 app.include_router(tool_logs_router)

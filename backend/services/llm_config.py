@@ -212,3 +212,8 @@ class ConfigStore:
         if key:
             return key
         return values.get("LLM_API_KEY") or ""
+
+
+# Module-level ConfigStore singleton (production data/config.yaml + .env).
+# The API layer uses this; tests monkeypatch it to a temp-dir store.
+config_store = ConfigStore()

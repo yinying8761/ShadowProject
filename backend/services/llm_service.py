@@ -1,10 +1,15 @@
 import asyncio
 import json
+import weakref
 from typing import AsyncIterator, Awaitable, Callable
 
 from services.formatters import get_formatter, MessageFormatter
 from services.llm_config import LLMRuntimeConfig, default_runtime
 from services.retry import is_retryable, retry
+
+# Live LLMService instances (weak refs) — used to invalidate cached SDK
+# clients after a runtime-config change without tracking each call site.
+_instances: "weakref.WeakSet[LLMService]" = weakref.WeakSet()
 
 
 def _is_retryable_llm_error(exc: Exception) -> bool:
@@ -36,6 +41,7 @@ class LLMService:
         self._clients: dict[str, object] = clients if clients is not None else {}
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._runtime = runtime_config if runtime_config is not None else default_runtime()
+        _instances.add(self)
 
     def invalidate_clients(self) -> None:
         """Drop cached SDK clients so the next call rebuilds them from the
@@ -380,3 +386,13 @@ class LLMService:
 
         except Exception as e:
             yield {"type": "error", "message": str(e)}
+
+
+def invalidate_llm_clients() -> None:
+    """Clear cached SDK clients on every live ``LLMService`` instance.
+
+    Called after a runtime-config change (``PUT /api/llm-config``) so the next
+    request rebuilds its client with the new base_url / api_key.
+    """
+    for llm in list(_instances):
+        llm.invalidate_clients()
