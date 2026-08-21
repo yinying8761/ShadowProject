@@ -128,6 +128,11 @@ async def update_llm_config(data: LlmConfigUpdate):
         runtime_config.base_url = data.base_url
     if data.api_key is not None:
         runtime_config.api_key = data.api_key  # "" clears, else sets
+    else:
+        # api_key null = keep → re-resolve the (possibly switched) provider's own
+        # key, rather than carrying over the previous provider's key (US13).
+        # No-op when the provider didn't change.
+        runtime_config.api_key = config_store.get_provider_key(runtime_config.provider)
     if data.custom_providers is not None:
         runtime_config.custom_providers = data.custom_providers
 

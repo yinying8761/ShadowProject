@@ -131,10 +131,14 @@ export function ModelSettings() {
     setSaving(true);
     setMessage('');
     try {
+      const isCustom = providers.find((p) => p.id === provider)?.is_custom;
       await api.updateLlmConfig({
         llm_provider: provider,
         llm_model: model,
-        base_url: resolvedBaseUrl,
+        // Built-in providers send '' so the preset default base_url (config.py)
+        // is NOT frozen into config.yaml; only custom providers persist theirs.
+        // '' (not null) also clears a stale base_url from a previous save.
+        base_url: isCustom ? resolvedBaseUrl : '',
         api_key: apiKey.trim() ? apiKey.trim() : null, // null = keep existing key
         custom_providers: customProviders,
       });

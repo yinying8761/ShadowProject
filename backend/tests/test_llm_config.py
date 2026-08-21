@@ -12,6 +12,7 @@ No real LLM API, no real .env / config.yaml.
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from dotenv import dotenv_values
 
 from services.llm_config import ConfigStore, LLMRuntimeConfig
@@ -222,3 +223,37 @@ class TestConfigStore:
 
         values = dotenv_values(str(env))
         assert "DEEPSEEK_API_KEY" not in values
+
+    def test_builtin_provider_base_url_not_persisted(self, tmp_path):
+        """Saving a built-in provider with base_url='' must not freeze a
+        base_url into config.yaml — the preset default stays in config.py
+        (ADR-0001)."""
+        store = ConfigStore(data_dir=tmp_path, env_path=tmp_path / ".env")
+
+        # A prior custom save persisted a base_url…
+        store.save(
+            LLMRuntimeConfig(
+                provider="opencode-go",
+                model="m1",
+                base_url="https://x/v1",
+                custom_providers=[
+                    {"id": "opencode-go", "name": "oc", "base_url": "https://x/v1"}
+                ],
+            )
+        )
+        yaml_path = tmp_path / "config.yaml"
+        assert yaml.safe_load(yaml_path.read_text(encoding="utf-8"))["model"][
+            "base_url"
+        ] == "https://x/v1"
+
+        # …then switching to a built-in provider sends '' (not the preset URL).
+        store.save(
+            LLMRuntimeConfig(provider="deepseek", model="deepseek-chat", base_url="")
+        )
+
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        assert "base_url" not in data["model"]
+
+        loaded = store.load()
+        assert loaded.base_url == ""
+        assert loaded.get_base_url() == "https://api.deepseek.com/v1"

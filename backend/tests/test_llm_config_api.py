@@ -118,11 +118,16 @@ class TestPutLlmConfig:
     @pytest.mark.asyncio
     async def test_api_key_three_state(self, llm_config_client):
         client, cfg, store = llm_config_client
-        cfg.provider = "deepseek"
-        cfg.model = "m0"
-        cfg.api_key = "sk-old"
 
-        # null → keep
+        # Establish a persisted key for deepseek through the public save path
+        # (so "keep" below has a real key to re-resolve from .env).
+        await client.put(
+            "/api/llm-config",
+            json={"llm_provider": "deepseek", "llm_model": "m0", "api_key": "sk-old"},
+        )
+        assert cfg.api_key == "sk-old"
+
+        # null → keep (re-resolves deepseek's persisted key; unchanged)
         resp = await client.put(
             "/api/llm-config", json={"llm_model": "m1", "api_key": None}
         )
@@ -138,6 +143,28 @@ class TestPutLlmConfig:
         # "" → clear
         await client.put("/api/llm-config", json={"api_key": ""})
         assert cfg.api_key == ""
+
+    @pytest.mark.asyncio
+    async def test_switch_provider_does_not_copy_old_key(self, llm_config_client):
+        """Switching provider with api_key=null must NOT write the previous
+        provider's key into the new provider's <PROVIDER>_API_KEY (US13)."""
+        client, cfg, store = llm_config_client
+
+        # Save deepseek's key.
+        await client.put(
+            "/api/llm-config", json={"llm_provider": "deepseek", "api_key": "sk-deep"}
+        )
+        assert store.get_provider_key("deepseek") == "sk-deep"
+
+        # Switch to openai, leave key empty (null = keep). The old deepseek key
+        # must not leak into OPENAI_API_KEY; the runtime key re-resolves to
+        # openai's own (empty here).
+        await client.put(
+            "/api/llm-config", json={"llm_provider": "openai", "api_key": None}
+        )
+        assert store.get_provider_key("openai") == ""
+        assert cfg.api_key == ""
+        assert store.get_provider_key("deepseek") == "sk-deep"
 
 
 # ── GET /api/providers ─────────────────────────────────────────────────────
