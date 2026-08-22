@@ -37,7 +37,7 @@ class MemoryRetriever:
         """Strip FTS5 special characters from a user search string."""
         import re
 
-        safe = re.sub(r'[\(\)\[\]\{\}\^\~\:\*\-\+\=\/\\\"\']', ' ', query)
+        safe = re.sub(r'[\(\)\[\]\{\}\^\~\:\*\-\+\=\/\\\"\'&|]', ' ', query)
         safe = re.sub(r'\s+', ' ', safe).strip()
         return safe or 'unknown'
 

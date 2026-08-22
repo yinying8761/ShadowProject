@@ -100,6 +100,33 @@ class TestMemoryRetriever:
             assert any("coffee" in r.content for r in results)
         await engine.dispose()
 
+    def test_sanitize_strips_ampersand_and_pipe(self):
+        """`_sanitize_fts5` strips FTS5 operators `&` and `|` from user input."""
+        assert MemoryRetriever._sanitize_fts5("Token Counting & Cost") == "Token Counting Cost"
+        assert MemoryRetriever._sanitize_fts5("a | b") == "a b"
+        assert "&" not in MemoryRetriever._sanitize_fts5("x&y")
+        assert "|" not in MemoryRetriever._sanitize_fts5("x|y")
+
+    @pytest.mark.asyncio
+    async def test_fts5_query_with_ampersand_reaches_keyword_path(self):
+        """A query containing '&' must reach the FTS5 path, not silently fall
+        back to importance-only results (regression for the syntax error)."""
+        engine, factory = await _setup_db()
+        async with factory() as session:
+            # The keyword-matching memory is the LOWEST importance, so the
+            # importance-only fallback would NOT return it — only a working
+            # FTS5 match can.
+            await _seed_memory(session, "user likes coffee & tea", importance=5)
+            await _seed_memory(session, "user drives a red car", importance=9)
+            await _seed_memory(session, "user has a pet dog", importance=8)
+            await _seed_memory(session, "user plays the piano", importance=7)
+
+            retriever = MemoryRetriever(MemoryStore())
+            results = await retriever.search(session, "coffee & tea", top_k=3)
+
+            assert any("coffee" in r.content for r in results)
+        await engine.dispose()
+
     @pytest.mark.asyncio
     async def test_character_filter(self):
         """Memories are filtered by character_id directly on the Memory row."""
