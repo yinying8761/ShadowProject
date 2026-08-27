@@ -234,15 +234,25 @@ def _evaluate_case(case: EvalCase, result: CaseResult) -> None:
 
     # ── Answer quality ──────────────────────────────────────────────
     text = result.final_response.lower() if result.final_response else ""
-    has_contains = bool(case.answer_should_contain) or bool(case.answer_should_not_contain)
+    has_contains = (
+        bool(case.answer_should_contain)
+        or bool(case.answer_should_contain_any)
+        or bool(case.answer_should_not_contain)
+    )
     if has_contains:
+        # AND: every keyword must appear.
         contains_ok = all(
             kw.lower() in text for kw in case.answer_should_contain
         )
+        # OR: at least one keyword must appear; empty list = always true.
+        contains_any_ok = (not case.answer_should_contain_any) or any(
+            kw.lower() in text for kw in case.answer_should_contain_any
+        )
+        # NOT: every keyword must be absent.
         not_contains_ok = all(
             kw.lower() not in text for kw in case.answer_should_not_contain
         )
-        result.answer_pass = contains_ok and not_contains_ok
+        result.answer_pass = contains_ok and contains_any_ok and not_contains_ok
     else:
         # No answer checks defined — pass if we got non-empty response
         result.answer_pass = len(text.strip()) > 0
@@ -362,6 +372,19 @@ def _check_mark(value: bool) -> str:
     return "✅" if value else "❌"
 
 
+def _render_keyword_checks(
+    lines: list[str], header: str, keywords: list[str], text: str, *, negate: bool = False
+) -> None:
+    """Append a per-keyword ✓/✗ block to *lines* (no-op when *keywords* empty)."""
+    if not keywords:
+        return
+    lines.append(header)
+    for kw in keywords:
+        found = kw.lower() in text
+        lines.append(f"- `{kw}`: {_check_mark(not found if negate else found)}")
+    lines.append("")
+
+
 def _combined_pass(r: CaseResult) -> bool:
     return r.tool_selection_pass and r.argument_pass and r.answer_pass
 
@@ -455,18 +478,23 @@ def _generate_report(results: list[CaseResult], model: str, started_at: datetime
                 lines.append("")
 
             # Answer checks
-            if c.answer_should_contain:
-                lines.append("**Answer checks (should contain):**")
-                for kw in c.answer_should_contain:
-                    found = kw.lower() in (r.final_response or "").lower()
+            text = (r.final_response or "").lower()
+            _render_keyword_checks(
+                lines, "**Answer checks (should contain):**",
+                c.answer_should_contain, text,
+            )
+            if c.answer_should_contain_any:
+                any_ok = any(kw.lower() in text for kw in c.answer_should_contain_any)
+                lines.append("**Answer checks (should contain ANY):**")
+                lines.append(f"- any keyword present: {_check_mark(any_ok)}")
+                for kw in c.answer_should_contain_any:
+                    found = kw.lower() in text
                     lines.append(f"- `{kw}`: {_check_mark(found)}")
                 lines.append("")
-            if c.answer_should_not_contain:
-                lines.append("**Answer checks (should NOT contain):**")
-                for kw in c.answer_should_not_contain:
-                    found = kw.lower() in (r.final_response or "").lower()
-                    lines.append(f"- `{kw}`: {_check_mark(not found)}")
-                lines.append("")
+            _render_keyword_checks(
+                lines, "**Answer checks (should NOT contain):**",
+                c.answer_should_not_contain, text, negate=True,
+            )
 
             # Verdict row
             lines.append(

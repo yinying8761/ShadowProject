@@ -21,8 +21,9 @@ class EvalCase:
     description: str                            # what this case tests
     expected_tools: list[str] = field(default_factory=list)   # expected tool names (order-sensitive for chains)
     expected_args_contain: dict[str, list[str]] = field(default_factory=dict)  # tool_name → substrings in args JSON
-    answer_should_contain: list[str] = field(default_factory=list)    # keywords that MUST appear in final response
-    answer_should_not_contain: list[str] = field(default_factory=list)  # keywords that MUST NOT appear
+    answer_should_contain: list[str] = field(default_factory=list)    # keywords that MUST ALL appear (AND)
+    answer_should_contain_any: list[str] = field(default_factory=list)  # keywords where ANY must appear (OR); empty = always true
+    answer_should_not_contain: list[str] = field(default_factory=list)  # keywords that MUST NOT appear (NOT)
     category: str = "tool_selection"            # tool_selection | argument_accuracy | answer_quality | edge_case | memory
 
 
@@ -122,7 +123,8 @@ EVAL_CASES: list[EvalCase] = [
         query="你好，请介绍一下你自己，你是谁？",
         description="自我介绍 → 回答应包含身份/角色关键词（伙伴/朋友/助手等）",
         expected_tools=[],  # self-intro shouldn't need tools
-        answer_should_contain=["伙伴", "朋友"],
+        answer_should_contain=[],
+        answer_should_contain_any=["伙伴", "朋友", "助手"],
         answer_should_not_contain=["error", "错误"],
         category="answer_quality",
     ),
