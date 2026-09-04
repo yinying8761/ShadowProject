@@ -61,9 +61,13 @@ class SubAgent:
         user_prompt: str,
         *,
         temperature: float = 0.3,
-    ) -> str:
-        """Execute an LLM ↔ tool calling loop and return the final
-        assistant text response.
+    ) -> tuple[str, list[str]]:
+        """Execute an LLM ↔ tool calling loop.
+
+        Returns ``(final_text, tool_outputs)`` — the assistant's last text
+        plus the raw content of every tool result collected across rounds.
+        Callers that need a grounded answer (e.g. SearchAgent) summarise
+        from *tool_outputs* rather than trusting *final_text*.
 
         Parameters
         ----------
@@ -81,6 +85,7 @@ class SubAgent:
         ]
         tools = self._tool_definitions()
         final_text = ""
+        tool_outputs: list[str] = []
 
         for round_num in range(self._max_tool_rounds):
             tool_use_blocks: list[dict] = []
@@ -134,6 +139,7 @@ class SubAgent:
                 except Exception as exc:
                     content = json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+                tool_outputs.append(content)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tb["id"],
@@ -142,4 +148,4 @@ class SubAgent:
 
             final_text = round_text
 
-        return final_text
+        return final_text, tool_outputs

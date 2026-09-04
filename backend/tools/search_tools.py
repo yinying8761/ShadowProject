@@ -52,10 +52,10 @@ def _extract_title(html: str) -> str:
 # ── Search backends ─────────────────────────────────────────────────────────
 
 # ddgs>=9 "auto" fans out to ~11 engines, but from China without a proxy most
-# are blocked (google/brave/duckduckgo) or actively reset bot requests (yahoo,
-# os error 10054). Pin to engines reachable from China; add duckduckgo back
-# when a proxy is configured.
-_DDGS_ENGINES = "duckduckgo,bing,yandex,wikipedia,mojeek" if _proxy else "bing,yandex,wikipedia,mojeek"
+# are blocked (google/brave/duckduckgo/yandex/wikipedia) or actively reset bot
+# requests (yahoo, os error 10054). Pin to engines reachable from China (bing,
+# mojeek); add duckduckgo back when a proxy is configured.
+_DDGS_ENGINES = "duckduckgo,bing,mojeek" if _proxy else "bing,mojeek"
 _DDGS_TIMEOUT = 6  # per-engine timeout (seconds)
 
 def _search_duckduckgo_sync(query: str, limit: int) -> list[dict]:

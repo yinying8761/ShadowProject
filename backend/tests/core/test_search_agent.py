@@ -52,6 +52,10 @@ class FakeLLMService:
         Agent never persists; returning 0 keeps the loop well-defined."""
         return 0
 
+    async def chat_sync(self, messages, model=None, max_tokens=1024, temperature=0.7):
+        """Return a canned grounded summary (SearchAgent's summarise step)."""
+        return "Rust 2024 edition 已发布，更多特性见官方博客。[confidence: high]"
+
     def _is_multi_round(self) -> bool:
         return (
             len(self._events) > 0
@@ -194,9 +198,10 @@ class TestSubAgent:
         sub = SubAgent(llm_service=fake_llm, max_tool_rounds=2)
         sub.register_tool("echo", "echo", {"type": "object", "properties": {}}, echo)
 
-        result = await sub._run_tool_loop("system", "user")
+        final_text, tool_outputs = await sub._run_tool_loop("system", "user")
         # Should stop after 2 rounds (index 0 and 1)
-        assert "round0" in result or "round1" in result
+        assert "round0" in final_text or "round1" in final_text
+        assert len(tool_outputs) == 2  # two echo tool results collected
 
     @pytest.mark.asyncio
     async def test_tool_loop_no_tools(self):
@@ -206,8 +211,9 @@ class TestSubAgent:
         ])
 
         sub = SubAgent(llm_service=fake_llm)
-        result = await sub._run_tool_loop("system", "user")
-        assert "直接回答" in result
+        final_text, tool_outputs = await sub._run_tool_loop("system", "user")
+        assert "直接回答" in final_text
+        assert tool_outputs == []
 
     @pytest.mark.asyncio
     async def test_register_tool_adds_to_registry(self):
