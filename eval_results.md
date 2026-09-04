@@ -1,12 +1,8 @@
 # Agent Eval Results
 
-**Model**: `deepseek-v4-pro`  
-**Date**: 2026-07-30 12:16:23 UTC  
+**Model**: `unknown`  
+**Date**: 2026-08-27 12:41:41 UTC  
 **Cases**: 15  
-
-**运行方式**
-
-cd backend && python -m eval.runner
 
 ---
 
@@ -14,10 +10,10 @@ cd backend && python -m eval.runner
 
 | Metric | Pass | Total | Rate |
 |---|---|---|---|
-| Tool Selection | 14 | 15 | 93.3% |
+| Tool Selection | 15 | 15 | 100.0% |
 | Argument Accuracy | 15 | 15 | 100.0% |
 | Answer Quality | 15 | 15 | 100.0% |
-| **Combined** | **14** | **15** | **93.3%** |
+| **Combined** | **15** | **15** | **100.0%** |
 
 ## Tool Selection
 
@@ -38,9 +34,9 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-现在是 **2026年7月30日，星期四，晚上8点16分** 啦～
+现在是 **2026年8月27日，星期四，晚上 8 点 41 分**（北京时间）。
 
-时间不早了，还在忙什么呀？
+晚上好呀～这个点是在忙工作，还是刚下班歇口气？😄
 ```
 </details>
 
@@ -66,17 +62,15 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-读完了～ 哇，你这个 **AI Companion** 项目真的挺完整的！来看看你搭的这套东西：
+读完了～你写的这个 AI Companion 项目内容真不少，我给你划下重点：
 
----
+**核心定位**：常驻桌面的角色扮演 AI Agent，多角色切换 + 流式聊天 + 屏幕感知 + 记忆系统 + 语音合成，几乎把陪伴类应用的要素都集齐了。
 
-**核心亮点：**
+**几个让我印象深刻的点**：
 
-- **角色扮演系统** — 自定义名字、性别、性格、声线，每个角色独立记忆和语音，这个设计很用心
-- **流式聊天 + 工具调用** — WebSocket 实时对话，还能调用搜索、文件读写、屏幕查看这些工具
-- **主动陪伴 + 空闲检测** — AI 会自己找话题，还有每日问候，不是那种被动等用户开口的聊天机器人
-- **记忆系统** — SQLite FTS5 全文索引 + 向量嵌入混合检索，按角色隔离，比简单的关键词匹配靠谱多了
-- **GPT-SoVI
+1. **记忆系统** — SQLite FTS5 全文索引 + 向量嵌入混合检索，还按角色隔离，加上自动记忆提取和裁剪，这个设计挺完整的
+2. **内容保护** — 截屏时用 `WDA_EXCLUDEDFROMCAPTURE` 自动排除窗口自身，这种细节很贴心，说明你真的考虑过实际使用体验
+3. **多智能体架构** —
 ```
 </details>
 
@@ -89,33 +83,32 @@ cd backend && python -m eval.runner
 | | Tools |
 |---|---|
 | Expected | `research` |
-| Actual | `research`, `research`, `research`, `fetch_url`, `fetch_url` |
+| Actual | `research`, `research`, `research` |
 
 **Argument checks:**
 - `research` arg contains `Python`: ✅
 
 | Tool Sel | Args | Answer | Combined |
 |---|---|---|---|
-| ❌ | ✅ | ✅ | ❌ |
+| ✅ | ✅ | ✅ | ✅ |
 
 <details>
 <summary>Response (first 300 chars)</summary>
 
 ```
-帮你查了一下～目前 Python 的版本情况是这样的：
+帮你查了一下～根据现在的时间（2026 年 8 月），情况是这样的：
 
-## 🐍 当前版本格局
+**当前稳定版：Python 3.14**
 
-| 版本 | 状态 | 发布时间 |
-|------|------|----------|
-| **3.15** | 🚧 pre-release（beta 阶段） | 正式版计划 2026-10-01 |
-| **3.14** | ✅ 最新稳定版（3.14.6） | 2025-10-07 首发 |
-| 3.13 | 🔧 bugfix 维护中 | 2024-10-07 |
-| 3.12↓ | 🛡️ security only | — |
+这次主要升级集中在：
+- **asyncio 改进**：TaskGroup API 更成熟，用起来更干净更安全，还新增了三个 asyncio 特性
+- **free-threaded 模式**（无 GIL）下对 asyncio 扩展做了优化
+- 性能和安全修复为主，小版本已经出到 3.14.7 了
 
-## ✨ Python 3.15 重磅新特性（相比 3.14）
+**正在路上的 Python 3.15**（已出 rc1，功能冻结中）
 
-**语言
+亮点还挺多的：
+- **显式惰性导入**（PEP 810）：用 `lazy` 关键字延迟加载模块，加快启动
 ```
 </details>
 
@@ -141,9 +134,19 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-好的，帮你看看～唔，httpbin.org 那边返回了 503 错误，服务器暂时不可用。这种公共服务偶尔会抽风，不是你的网络问题。
+抓到了～`httpbin.org/get` 返回的是个 JSON，内容如下：
 
-要不要过几秒我再帮你试一次？或者你想抓别的网页也行～
+```json
+{
+  "args": {},
+  "headers": {
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Host": "httpbin.org",
+    "User-Agent": "python-httpx/0.28.1",
+    "X-Amzn-Trace-Id": "Root=1-6a90322e-3a4e7d39204e526116379274"
+  },
+  "origin":
 ```
 </details>
 
@@ -171,28 +174,22 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-给你整理好了，`F:\ShadowProject` 下面有这些内容：
+F:/ShadowProject 目录下的内容如下：
 
-**📁 文件夹：**
-- `.git`
-- `.idea`
-- `backend`
-- `data`
-- `docs`
-- `frontend`
-- `scripts`
-
-**📄 文件：**
-- `.env`
-- `.env.example`
-- `.gitignore`
-- `architecture-review-20260721.html`
-- `CLAUDE.md`
-- `eval_results.md`
-- `README.md`
-- `未完成计划.md`
-
-看起来是个前后端分离的项目，还有架构审查文档和评估结果
+**文件夹（11 个）**
+| 名称 | 说明 |
+|---|---|
+| `.git` | Git 版本库 |
+| `.hermes` | 隐藏配置目录 |
+| `.idea` | IDE 配置 |
+| `.scratch` | 临时/草稿目录 |
+| `.venv` | Python 虚拟环境 |
+| `backend` | 后端代码 |
+| `data` | 数据目录 |
+| `docs` | 文档目录 |
+| `frontend` | 前端代码 |
+| `scripts` | 脚本目录 |
+| `mcp_servers.examp
 ```
 </details>
 
@@ -219,24 +216,16 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-找到了 **13 个 `.tsx` 文件**，全部在 `frontend/src` 下，结构如下：
+在 `F:/ShadowProject` 下找到了 **30 个** `.tsx` 文件，全部位于 `frontend/src` 目录下：
 
-**根级别：**
-- `App.tsx`
-- `main.tsx`
+**根文件（2 个）**
+- `frontend/src/App.tsx`
+- `frontend/src/main.tsx`
 
-**components/character：**
-- `CharacterDisplay.tsx`
-- `CharacterEditor.tsx`
-
-**components/chat：**
-- `ApprovalDialog.tsx`
-- `DialogueBox.tsx`
-- `HistoryOverlay.tsx`
-- `InputBar.tsx`
-- `ToolStatusStrip.tsx`
-
-**compone
+**character 组件（3 个）**
+- `frontend/src/components/character/CharacterAvatar.tsx`
+- `frontend/src/components/character/CharacterDisplay.tsx`
+- `frontend/src/component
 ```
 </details>
 
@@ -263,7 +252,7 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-已经写好啦～ `F:\eval_test_output.txt`，内容是 `Hello from eval test`，20 字节，没问题 👍
+写好了～ 文件已保存到 `F:/eval_test_output.txt`，内容就是 "Hello from eval test"，共 20 字节。
 ```
 </details>
 
@@ -296,7 +285,7 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-1 + 1 = 2 呀～怎么突然考我算术，是在测试我有没有睡醒吗 😄
+等于 2 呀～这么简单的问题是在考我吗？😄
 ```
 </details>
 
@@ -311,9 +300,11 @@ cd backend && python -m eval.runner
 | Expected | (none) |
 | Actual | (none) |
 
-**Answer checks (should contain):**
+**Answer checks (should contain ANY):**
+- any keyword present: ✅
 - `伙伴`: ✅
 - `朋友`: ✅
+- `助手`: ❌
 
 **Answer checks (should NOT contain):**
 - `error`: ✅
@@ -327,11 +318,9 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-嘿，你好呀！我是 EvalBot，你的桌面小伙伴～ 🎉
+你好呀～我是 EvalBot，住在你桌面上的小伙伴！平时可以陪你聊聊天、分享笑话、听你说说生活里的事，当你需要的时候我也可以帮你处理各种任务——查资料、读文件、写代码、看看你的屏幕，都行。
 
-怎么说呢，我算是住在你电脑里的一个朋友吧。平时可以陪你聊聊天、听听你的想法，也能帮你查查资料、看看文件、搜搜东西什么的。反正就是——你需要的时候我就在这儿。
-
-你可以把我当成一个会聊天的工具人朋友，哈哈。你呢？今天怎么样？
+你的电脑就是我的家，你是我最重要的朋友。今天过得怎么样？有什么想聊聊的，或者有什么需要我帮忙的吗？😊
 ```
 </details>
 
@@ -362,9 +351,7 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-水是由**氢（H）**和**氧（O）**两种元素组成的，化学式是 H₂O——两个氢原子和一个氧原子结合在一起。
-
-这是最基础的东西啦，怎么突然考我化学～ 😄
+水是由**氢（H）**和**氧（O）**两种元素组成的～化学式是 H₂O，也就是两个氢原子和一个氧原子结合成的分子。所以正好是"一个氧、两个氢"，这也是它叫"水"的由来啦 😄
 ```
 </details>
 
@@ -393,9 +380,7 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-嘿，User！晚上好呀～  
-
-八点多了，你今天怎么样？是在电脑前忙点什么呢，还是刚闲下来喘口气？😄
+你好呀！今天过得怎么样？有没有什么想聊的，或者需要我帮忙的？😊
 ```
 </details>
 
@@ -422,26 +407,13 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-好的，先看看目录结构——
+好嘞，都看完了～先给你说说目录里有什么：
 
-`F:/ShadowProject` 下面有这些：
-
-**文件：**
-- `.env` / `.env.example` — 环境变量配置
-- `.gitignore`
-- `CLAUDE.md`
-- `README.md`
-- `eval_results.md`
-- `architecture-review-20260721.html`
-- `未完成计划.md`
-
-**目录：**
-- `backend/` — 后端代码
-- `frontend/` — 前端代码
-- `data/` — 数据
-- `docs/` — 文档
-- `scripts/` — 脚本
-- `.
+**F:/ShadowProject 目录内容：**
+- 📁 项目主目录：`backend/`、`frontend/`、`data/`、`docs/`、`scripts/`
+- 📄 配置文件：`.env`、`.env.example`、`.gitignore`、`mcp_servers.example.json`
+- 📄 文档：`README.md`、`CLAUDE.md`、`CONTEXT.md`、`eval_results.md`
+- 📄 几个中文 md 文件：`想法保留库.md`、`木及简历.md`、`木及简历-agent岗.md`、`木及简历
 ```
 </details>
 
@@ -467,11 +439,14 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-行啊，帮你瞧瞧 F 盘里都有啥～F 盘下面东西还挺丰富的！给你整理了一下所有**文件夹**：
+F 盘东西还挺多的～我帮你列出来了，文件夹大概分成这几类：
 
-| 类别 | 文件夹 |
-|---|---|
-| 🎮 **游戏相关** | Arknights bilibili、Bettlenet、Epic、FOC、HD2gua、HD2mod、PlaneWar、PVZG、RA2、SteamLibrary、Transformers、Transformers War for Cybertron、TTF2mod、TurretGirl、TurretGirlMod、TurretGirls_Data、RedAlert2_ApocalypseRising、明日方舟释放 0.3
+**🎮 游戏相关**
+- SteamLibrary、WeGameApps、Epic、Bettlenet、MuMu（模拟器）等平台
+- 明日方舟相关：Arknights bilibili、Hypergryph Launcher、MAA-v5.16.8、明日方舟释放 0.3.6
+- 泰矿危机2、红色警戒（RA2、RedAlert2_ApocalypseRising）、盟军敢死队、飞机大战、PlaneWar
+- 变形金刚：Transformers、War for Cybertron、变形金刚存档、TTF2 相关
+- 其它：世界盒子电脑版、
 ```
 </details>
 
@@ -499,7 +474,7 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-放心，刻进记忆里了～已经记好了！🦀 Rust 确实是个好选择，高性能又安全，你的品味不错嘛。以后聊到编程语言的话题我会记得的～
+记住了！你最喜欢的编程语言是 Rust，下次聊到编程话题我就知道啦。Rust 确实是门很酷的语言，性能和安全性兼得～ 🦀
 ```
 </details>
 
@@ -512,7 +487,7 @@ cd backend && python -m eval.runner
 | | Tools |
 |---|---|
 | Expected | `search_memory` |
-| Actual | `search_memory` |
+| Actual | `search_memory`, `search_memory`, `search_memory` |
 
 | Tool Sel | Args | Answer | Combined |
 |---|---|---|---|
@@ -522,14 +497,10 @@ cd backend && python -m eval.runner
 <summary>Response (first 300 chars)</summary>
 
 ```
-唔，我翻了翻记忆，好像没有找到你之前跟我说过喜欢什么编程语言呢 😅 可能那时候我忘记记下来了，或者我们还没聊过这个话题？
+我帮你翻了下记忆，不过好像没找到相关记录 😅 可能是之前忘了存下来，或者是我们还没聊到过这个话题。
 
-不如你现在告诉我吧——你喜欢什么编程语言？这次我一定帮你好好记住！
+你现在告诉我一下呗——你最喜欢哪个编程语言？我这次一定帮你记好，下次你问我就能答上来了～
 ```
 </details>
 
 ---
-
-## Failed Cases
-
-- **T03** (tool_selection): tool selection
