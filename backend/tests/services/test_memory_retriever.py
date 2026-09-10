@@ -107,6 +107,14 @@ class TestMemoryRetriever:
         assert "&" not in MemoryRetriever._sanitize_fts5("x&y")
         assert "|" not in MemoryRetriever._sanitize_fts5("x|y")
 
+    def test_sanitize_strips_punctuation_dots_included(self):
+        """Regression: the old blacklist missed the dot in a filename like
+        "agent岗.md", producing `fts5: syntax error near "."`."""
+        assert MemoryRetriever._sanitize_fts5("帮我看看 agent岗.md 这个文件") == "帮我看看 agent岗 md 这个文件"
+        assert "." not in MemoryRetriever._sanitize_fts5("升级到 v1.2.3 了")
+        # bare FTS5 operator words must not survive as operators
+        assert MemoryRetriever._sanitize_fts5("foo AND bar NEAR") == "foo bar"
+
     @pytest.mark.asyncio
     async def test_fts5_query_with_ampersand_reaches_keyword_path(self):
         """A query containing '&' must reach the FTS5 path, not silently fall

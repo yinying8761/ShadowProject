@@ -19,6 +19,12 @@
 - **双模式布局**：Compact（桌面伴侣）和 Full（聊天面板+侧边栏）一键切换，窗口尺寸按模式独立记忆
 - **相对日期**：记忆面板中的日期自动显示为「今天/昨天/N天前」等中文相对描述
 
+## 界面预览
+
+| Token 用量统计 | 多供应商模型配置 | 主动陪伴 |
+|:---:|:---:|:---:|
+| ![Token 用量统计](docs/screenshots/usage.png) | ![模型配置](docs/screenshots/model-config.png) | ![主动陪伴](docs/screenshots/proactive.png) |
+
 ## 技术栈
 
 | 层 | 技术 |

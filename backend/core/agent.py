@@ -95,6 +95,14 @@ class Agent:
                     full_response += event["content"]
                     yield {"type": "token", "content": event["content"], "daily_greeting": True}
                 elif event["type"] == "error":
+                    # Greeting generation failed — surface the reason server-side
+                    # too, otherwise the only trace is the orchestrator's
+                    # "no content produced" (the error event goes to the WS
+                    # client, which may not display it).
+                    print(
+                        f"[Agent] greeting stream error: {event.get('message', '(no message)')}",
+                        flush=True,
+                    )
                     if full_response.strip():
                         msg = await self.conversation_manager.add_message(
                             session, conversation_id, "assistant", full_response

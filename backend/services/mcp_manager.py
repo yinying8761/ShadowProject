@@ -23,6 +23,12 @@ from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult
 
+# Per-server connect timeout (seconds). A hung MCP server must never block
+# app startup or the health-check loop indefinitely — on Windows/Python 3.14
+# a stdio server that starts but never answers `initialize` would otherwise
+# freeze the FastAPI lifespan forever (uvicorn never binds the port).
+CONNECT_TIMEOUT_SEC = 20.0
+
 
 def mcp_tool_name(server_name: str, tool_name: str) -> str:
     """Generate the prefixed tool name for an MCP-sourced tool.
@@ -113,13 +119,23 @@ class McpManager:
                 continue
 
             try:
-                count = await self._connect_one(server_cfg)
+                count = await asyncio.wait_for(
+                    self._connect_one(server_cfg), timeout=CONNECT_TIMEOUT_SEC
+                )
                 result["connected"] += 1
                 result["tools"] += count
-                print(f"[McpManager] '{name}': {count} tool(s) registered")
-            except Exception as exc:
+                print(f"[McpManager] '{name}': {count} tool(s) registered", flush=True)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as exc:
+                # Per-server isolation: one dead MCP server must never kill
+                # app startup. The mcp SDK's stdio client can raise
+                # BaseExceptionGroup / CancelledError out of its internal
+                # anyio task group on Windows (a server that exits instantly
+                # poisons the NEXT connect attempt) — plain `except Exception`
+                # lets those escape and crash the FastAPI lifespan.
                 result["failed"] += 1
-                print(f"[McpManager] '{name}' failed: {exc}")
+                print(f"[McpManager] '{name}' failed: {exc!r}", flush=True)
 
         return result
 
@@ -208,7 +224,9 @@ class McpManager:
         if cfg is None:
             return False
         try:
-            count = await self._connect_one(cfg)
+            count = await asyncio.wait_for(
+                self._connect_one(cfg), timeout=CONNECT_TIMEOUT_SEC
+            )
             self._reset_breakers(self._connections[name]["tool_names"])
             print(f"[McpManager] '{name}' reconnected: {count} tool(s)", flush=True)
             return True
@@ -282,9 +300,18 @@ class McpManager:
         transport_cm = stdio_client(params)
         read, write = await transport_cm.__aenter__()
 
+        # If the session fails to start, close the transport too — otherwise
+        # a half-open stdio transport (and its subprocess) leaks.
         session_cm = ClientSession(read, write)
-        session: ClientSession = await session_cm.__aenter__()
-        await session.initialize()
+        try:
+            session: ClientSession = await session_cm.__aenter__()
+            await session.initialize()
+        except BaseException:
+            try:
+                await transport_cm.__aexit__(None, None, None)
+            except Exception:
+                pass  # teardown errors during cleanup must not mask the cause
+            raise
 
         return transport_cm, session_cm, session
 

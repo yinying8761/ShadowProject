@@ -34,10 +34,20 @@ class MemoryRetriever:
 
     @staticmethod
     def _sanitize_fts5(query: str) -> str:
-        """Strip FTS5 special characters from a user search string."""
+        """Reduce a user search string to plain FTS5 tokens.
+
+        Whitelist approach: keep only word characters (CJK, letters, digits,
+        underscore) and whitespace — every other character (punctuation,
+        quotes, FTS5 operators) becomes a space. The old character blacklist
+        kept getting missed (e.g. the dot in a filename like "agent岗.md"
+        broke MATCH syntax).
+        """
         import re
 
-        safe = re.sub(r'[\(\)\[\]\{\}\^\~\:\*\-\+\=\/\\\"\'&|]', ' ', query)
+        safe = re.sub(r'[^\w\s]', ' ', query)
+        # FTS5 treats uppercase AND/OR/NOT/NEAR as query operators — a bare
+        # trailing "AND" alone is a syntax error. Drop them from user text.
+        safe = re.sub(r'\b(AND|OR|NOT|NEAR)\b', ' ', safe)
         safe = re.sub(r'\s+', ' ', safe).strip()
         return safe or 'unknown'
 

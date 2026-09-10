@@ -550,7 +550,11 @@ def main():
     started_at = datetime.now(timezone.utc)
 
     # ── Resolve model name ──────────────────────────────────────────
-    from services.llm_config import runtime_config
+    # Load the effective config (data/config.yaml) first, exactly like
+    # main.py does at startup. Otherwise the bare seed only has an api_key
+    # (provider="custom", model="") and get_model() returns "" → "unknown".
+    from services.llm_config import config_store, runtime_config
+    runtime_config.copy_from(config_store.load())
     model = runtime_config.get_model() or "unknown"
 
     print(f"Agent Eval Runner")

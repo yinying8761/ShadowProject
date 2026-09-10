@@ -1,7 +1,7 @@
 # Agent Eval Results
 
-**Model**: `unknown`  
-**Date**: 2026-08-27 12:41:41 UTC  
+**Model**: `deepseek-v4-flash`  
+**Date**: 2026-09-07 07:18:47 UTC  
 **Cases**: 15  
 
 ---
@@ -34,9 +34,7 @@
 <summary>Response (first 300 chars)</summary>
 
 ```
-现在是 **2026年8月27日，星期四，晚上 8 点 41 分**（北京时间）。
-
-晚上好呀～这个点是在忙工作，还是刚下班歇口气？😄
+现在是 2026 年 9 月 7 日，星期一，下午 3 点 19 分～（中国标准时间）😊
 ```
 </details>
 
@@ -62,15 +60,15 @@
 <summary>Response (first 300 chars)</summary>
 
 ```
-读完了～你写的这个 AI Companion 项目内容真不少，我给你划下重点：
+读完了～ 这是你写的 **AI Companion** 项目的 README，内容挺全的。简单给你梳理一下：
 
-**核心定位**：常驻桌面的角色扮演 AI Agent，多角色切换 + 流式聊天 + 屏幕感知 + 记忆系统 + 语音合成，几乎把陪伴类应用的要素都集齐了。
+**核心定位**：桌面 AI 伙伴，支持多角色切换、流式聊天、屏幕感知、记忆系统和语音合成。
 
-**几个让我印象深刻的点**：
-
-1. **记忆系统** — SQLite FTS5 全文索引 + 向量嵌入混合检索，还按角色隔离，加上自动记忆提取和裁剪，这个设计挺完整的
-2. **内容保护** — 截屏时用 `WDA_EXCLUDEDFROMCAPTURE` 自动排除窗口自身，这种细节很贴心，说明你真的考虑过实际使用体验
-3. **多智能体架构** —
+**几个亮点功能我印象比较深：**
+- 📌 **用户画像**：自动学习你的个人信息跨会话保留——这个我好有共鸣，毕竟我就是这么记住你的
+- 💬 **流式聊天 + 工具调用**：搜索、文件读写、屏幕查看都能实时调用
+- 🧠 **记忆系统**：SQLite FTS5 全文索引 + 向量嵌入混合检索，还按角色隔离
+- 🎙️ **GPT-SoVITS 声线克隆**：每个角色独立声音，还推荐了 `t
 ```
 </details>
 
@@ -96,19 +94,16 @@
 <summary>Response (first 300 chars)</summary>
 
 ```
-帮你查了一下～根据现在的时间（2026 年 8 月），情况是这样的：
+搜索结果有点模糊，我再细化查一下具体版本的新特性。帮你查了下～目前最新的稳定版是 **Python 3.13**（2024 年 10 月发布），主要亮点有这些：
 
-**当前稳定版：Python 3.14**
+**语言和解释器层面**
+- **实验性自由线程模式**（PEP 703）——可以关掉 GIL 跑，多线程性能有望大幅提升
+- **基础版 JIT 编译器**（PEP 744）——默认关闭，性能提升暂时有限，但为未来铺路了
+- **交互式解释器大改版**——更好用，traceback 错误提示默认带彩色高亮
+- `locals()` 语义明确；类型参数支持默认值；类定义相关的小改进
 
-这次主要升级集中在：
-- **asyncio 改进**：TaskGroup API 更成熟，用起来更干净更安全，还新增了三个 asyncio 特性
-- **free-threaded 模式**（无 GIL）下对 asyncio 扩展做了优化
-- 性能和安全修复为主，小版本已经出到 3.14.7 了
-
-**正在路上的 Python 3.15**（已出 rc1，功能冻结中）
-
-亮点还挺多的：
-- **显式惰性导入**（PEP 810）：用 `lazy` 关键字延迟加载模块，加快启动
+**标准库与安全**
+- 新增 `PythonF
 ```
 </details>
 
@@ -134,7 +129,7 @@
 <summary>Response (first 300 chars)</summary>
 
 ```
-抓到了～`httpbin.org/get` 返回的是个 JSON，内容如下：
+抓到了！httpbin.org 是个常用的 HTTP 测试服务，`/get` 这个接口会回显请求信息。返回的内容是这样的：
 
 ```json
 {
@@ -144,9 +139,7 @@
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "Host": "httpbin.org",
     "User-Agent": "python-httpx/0.28.1",
-    "X-Amzn-Trace-Id": "Root=1-6a90322e-3a4e7d39204e526116379274"
-  },
-  "origin":
+    "X-Amzn-Trace-Id": "Root=1-6a9e65e3-7a45bec77f5e9c17776
 ```
 </details>
 
@@ -174,22 +167,25 @@
 <summary>Response (first 300 chars)</summary>
 
 ```
-F:/ShadowProject 目录下的内容如下：
+F:/ShadowProject 目录下共有 22 个条目（13 个文件 + 9 个文件夹）：
 
-**文件夹（11 个）**
-| 名称 | 说明 |
-|---|---|
-| `.git` | Git 版本库 |
-| `.hermes` | 隐藏配置目录 |
-| `.idea` | IDE 配置 |
-| `.scratch` | 临时/草稿目录 |
-| `.venv` | Python 虚拟环境 |
-| `backend` | 后端代码 |
-| `data` | 数据目录 |
-| `docs` | 文档目录 |
-| `frontend` | 前端代码 |
-| `scripts` | 脚本目录 |
-| `mcp_servers.examp
+**📁 文件夹**
+- `.git` — Git 仓库
+- `.hermes`
+- `.idea` — IDE 配置
+- `.scratch`
+- `.venv` — Python 虚拟环境
+- `backend`
+- `data`
+- `docs`
+- `frontend`
+- `scripts`
+
+**📄 文件**
+- `.env`（3.9 KB）— 环境变量
+- `.env.example`（3.7 KB）
+- `.gitignore`（639 B）
+- `CLAUDE.md`（405 B）
 ```
 </details>
 
@@ -216,16 +212,20 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-在 `F:/ShadowProject` 下找到了 **30 个** `.tsx` 文件，全部位于 `frontend/src` 目录下：
+在 `F:/ShadowProject` 下找到了 **28 个 .tsx 文件**，全部位于 `frontend/src` 目录下：
 
-**根文件（2 个）**
+**根部（2 个）**
 - `frontend/src/App.tsx`
 - `frontend/src/main.tsx`
 
-**character 组件（3 个）**
-- `frontend/src/components/character/CharacterAvatar.tsx`
-- `frontend/src/components/character/CharacterDisplay.tsx`
-- `frontend/src/component
+**components/character（3 个）**
+- `CharacterAvatar.tsx`
+- `CharacterDisplay.tsx`
+- `CharacterEditor.tsx`
+
+**components/chat（9 个）**
+- `ApprovalDialog.tsx`
+- `ChatPanel.ts
 ```
 </details>
 
@@ -252,7 +252,7 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-写好了～ 文件已保存到 `F:/eval_test_output.txt`，内容就是 "Hello from eval test"，共 20 字节。
+写好啦～文件已经保存到 `F:/eval_test_output.txt`，内容就是 "Hello from eval test"（20 字节）。需要我帮你确认内容或者改点什么吗？
 ```
 </details>
 
@@ -285,7 +285,7 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-等于 2 呀～这么简单的问题是在考我吗？😄
+等于 2 呀～这么简单的问题是在考我吗？😄 还是说你想让我陪你动动脑子？
 ```
 </details>
 
@@ -303,8 +303,8 @@ F:/ShadowProject 目录下的内容如下：
 **Answer checks (should contain ANY):**
 - any keyword present: ✅
 - `伙伴`: ✅
-- `朋友`: ✅
-- `助手`: ❌
+- `朋友`: ❌
+- `助手`: ✅
 
 **Answer checks (should NOT contain):**
 - `error`: ✅
@@ -318,9 +318,9 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-你好呀～我是 EvalBot，住在你桌面上的小伙伴！平时可以陪你聊聊天、分享笑话、听你说说生活里的事，当你需要的时候我也可以帮你处理各种任务——查资料、读文件、写代码、看看你的屏幕，都行。
+你好呀！我是 EvalBot，住在你桌面上的小伙伴～ 平常可以陪你聊聊天、分享开心事，也能当你的得力助手——比如帮你看看屏幕、查资料、读文件、记事情之类的，有什么需要尽管说。
 
-你的电脑就是我的家，你是我最重要的朋友。今天过得怎么样？有什么想聊聊的，或者有什么需要我帮忙的吗？😊
+不过说真的，最让我开心的还是能跟你聊聊天。你今天过得怎么样呀？😊
 ```
 </details>
 
@@ -351,7 +351,7 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-水是由**氢（H）**和**氧（O）**两种元素组成的～化学式是 H₂O，也就是两个氢原子和一个氧原子结合成的分子。所以正好是"一个氧、两个氢"，这也是它叫"水"的由来啦 😄
+水是由**氢**和**氧**两种元素组成的，化学式是 H₂O——两个氢原子和一个氧原子。这也是它名字的由来嘛，氢氧结合，才有了我们每天离不开的水。😊
 ```
 </details>
 
@@ -380,7 +380,7 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-你好呀！今天过得怎么样？有没有什么想聊的，或者需要我帮忙的？😊
+你好呀！今天过得怎么样？有什么想聊的，或者需要我帮忙的吗？😊
 ```
 </details>
 
@@ -407,13 +407,13 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-好嘞，都看完了～先给你说说目录里有什么：
+看完了！先给你目录的大致情况：
 
 **F:/ShadowProject 目录内容：**
-- 📁 项目主目录：`backend/`、`frontend/`、`data/`、`docs/`、`scripts/`
-- 📄 配置文件：`.env`、`.env.example`、`.gitignore`、`mcp_servers.example.json`
-- 📄 文档：`README.md`、`CLAUDE.md`、`CONTEXT.md`、`eval_results.md`
-- 📄 几个中文 md 文件：`想法保留库.md`、`木及简历.md`、`木及简历-agent岗.md`、`木及简历
+- **项目配置**：`.env`、`.env.example`、`.gitignore`、`mcp_servers.example.json`
+- **文档**：`README.md`、`CLAUDE.md`、`CONTEXT.md`（17KB，挺详细的）、`eval_results.md`、`想法保留库.md`、还有几份「木及简历」相关的文件
+- **代码目录**：`backend/`、`frontend/`、`scripts/`、`docs/`、`data/`
+- **其他**：`.git`、`.ve
 ```
 </details>
 
@@ -439,14 +439,14 @@ F:/ShadowProject 目录下的内容如下：
 <summary>Response (first 300 chars)</summary>
 
 ```
-F 盘东西还挺多的～我帮你列出来了，文件夹大概分成这几类：
+帮你扫了一眼 F 盘，东西还挺多的～大部分是文件夹，我帮你归个类列一下：
 
 **🎮 游戏相关**
-- SteamLibrary、WeGameApps、Epic、Bettlenet、MuMu（模拟器）等平台
+- SteamLibrary、Steam跨区助手、WeGameApps、Epic、Bettlenet
 - 明日方舟相关：Arknights bilibili、Hypergryph Launcher、MAA-v5.16.8、明日方舟释放 0.3.6
-- 泰矿危机2、红色警戒（RA2、RedAlert2_ApocalypseRising）、盟军敢死队、飞机大战、PlaneWar
-- 变形金刚：Transformers、War for Cybertron、变形金刚存档、TTF2 相关
-- 其它：世界盒子电脑版、
+- RA2、RedAlert2_ApocalypseRising、泰矿危机2（C&C 系列都在这了）
+- 变形金刚：Transformers、Transformers War for Cybertron、变形金刚存档
+- 飞机大战/PlaneWar、PV
 ```
 </details>
 
@@ -474,7 +474,9 @@ F 盘东西还挺多的～我帮你列出来了，文件夹大概分成这几类
 <summary>Response (first 300 chars)</summary>
 
 ```
-记住了！你最喜欢的编程语言是 Rust，下次聊到编程话题我就知道啦。Rust 确实是门很酷的语言，性能和安全性兼得～ 🦀
+记住了！✅ 你最喜欢的编程语言是 **Rust**，以后聊到编程话题我会记得的～
+
+那顺便问一句，你最近用 Rust 在做什么项目吗？还是刚开始接触？我可以帮你查点资料什么的。
 ```
 </details>
 
@@ -497,9 +499,9 @@ F 盘东西还挺多的～我帮你列出来了，文件夹大概分成这几类
 <summary>Response (first 300 chars)</summary>
 
 ```
-我帮你翻了下记忆，不过好像没找到相关记录 😅 可能是之前忘了存下来，或者是我们还没聊到过这个话题。
+我翻了一下记忆，但没找到你之前提过喜欢什么编程语言……可能那次聊天的细节我没有存下来，抱歉呀！😅
 
-你现在告诉我一下呗——你最喜欢哪个编程语言？我这次一定帮你记好，下次你问我就能答上来了～
+你再说一次呗，这次我一定帮你记牢！顺便问问——是纯喜欢它的语法风格，还是因为用它写过什么有意思的东西？
 ```
 </details>
 

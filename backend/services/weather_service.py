@@ -50,5 +50,5 @@ async def get_weather(adcode: str = "", city: str = "") -> dict | None:
             print(f"[Weather] {result['city']}: {result['condition']} {result['temp']}°C", flush=True)
             return result
     except Exception as e:
-        print(f"[Weather] failed: {e}", flush=True)
+        print(f"[Weather] failed: {type(e).__name__}: {e!r}", flush=True)
         return None

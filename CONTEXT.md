@@ -266,6 +266,7 @@ or circuit-breaker failures).
 |---|---|---|
 | 角色 | Character | `CharacterProfile`; name/gender/personality/archetype/voice |
 | 会话 | Conversation | `Conversation`; owns `messages`, has `summary` |
+| 会话标题 | Title | 会话的显示名。规则：AI 在首答后自动命名一次（title 仍为默认值时才生成）；用户改名后永久生效，AI 不再覆盖；AI 失败则保持默认、下次对话再试 |
 | 消息 | Message | `role` user/assistant; optional `tool_calls`/`tool_call_id` |
 | 记忆 | Memory | per-character; `user_fact`/`user_preference`/`important_event`; `source` user_stated/ai_summarized |
 | 用户画像 | User profile | learned facts about the user, per character (or global fallback) |
