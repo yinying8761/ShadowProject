@@ -79,6 +79,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
 
     pending_approvals: dict[str, asyncio.Future] = {}
     _daily_greeting_tasks: dict[str, asyncio.Task] = {}
+    _title_tasks: dict[str, asyncio.Task] = {}
     last_known_character_id: str | None = None
     screen_fingerprints = ScreenFingerprintStore(maxlen=5)
 
@@ -394,6 +395,17 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             flush=True,
         )
 
+    async def _ensure_title_bg(conv_id: str):
+        try:
+            from database import async_session
+            from services.llm_service import LLMService
+
+            async with async_session() as bg_session:
+                llm = LLMService()
+                await conv_manager.ensure_title(bg_session, conv_id, llm)
+        except Exception as e:
+            print(f"[WS] background title generation failed: {e}", flush=True)
+
     async def handle_message(data: dict):
         msg_type = data.get("type", "chat")
 
@@ -471,6 +483,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
 
         try:
             async with async_session() as session:
+                done_event = None
                 async for event in agent.run(
                     session=session,
                     user_message=augmented_message,
@@ -480,7 +493,16 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     client_message_id=client_message_id,
                 ):
                     await websocket.send_json(event)
+                    if event.get("type") == "done":
+                        done_event = event
             proactive_session.reset_idle()
+
+            if done_event and not done_event.get("daily_greeting") and not done_event.get("proactive"):
+                existing = _title_tasks.get(conversation_id)
+                if not existing or existing.done():
+                    task = asyncio.create_task(_ensure_title_bg(conversation_id))
+                    _title_tasks[conversation_id] = task
+                    task.add_done_callback(lambda _t: _title_tasks.pop(conversation_id, None))
         except Exception as e:
             import traceback
             print(f"[WS] handle_message error: {e}\n{traceback.format_exc()}", flush=True)

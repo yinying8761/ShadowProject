@@ -144,6 +144,36 @@ async def delete_conversation(
     return {"status": "deleted"}
 
 
+class ConversationUpdate(BaseModel):
+    title: str
+
+
+@router.put("/{conversation_id}")
+async def update_conversation(
+    conversation_id: str,
+    data: ConversationUpdate,
+    session: AsyncSession = Depends(get_session),
+):
+    conv = await session.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    stripped = data.title.strip()
+    if not stripped:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+    conv.title = stripped
+    await session.commit()
+    await session.refresh(conv)
+    return {
+        "id": conv.id,
+        "character_id": conv.character_id,
+        "title": conv.title,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+    }
+
+
 @router.post("/{conversation_id}/compact")
 async def compact_conversation(
     conversation_id: str,

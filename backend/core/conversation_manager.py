@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from models.message import Message
 from models.conversation import Conversation
+from services.retry import retry
 
 
 class ConversationManager:
@@ -112,6 +113,83 @@ class ConversationManager:
             )
         )
         return result.scalar() or 0
+
+    DEFAULT_TITLE: str = "New Conversation"
+
+    async def ensure_title(
+        self,
+        session: AsyncSession,
+        conversation_id: str,
+        llm_service,
+    ) -> str | None:
+        """Generate a concise title if the conversation still has the default.
+
+        Rules:
+        - Skip when title != DEFAULT_TITLE (covers user renames).
+        - Use first user message + first assistant reply as context.
+        - LLM prompt asks for ≤12 Chinese characters, no quotes.
+        - Retry up to 2 times with 0.5s base delay; fail silently keeping default.
+        - Empty or whitespace-only results keep default.
+        """
+        conv = await session.get(Conversation, conversation_id)
+        if not conv:
+            return None
+
+        if conv.title != self.DEFAULT_TITLE:
+            return conv.title
+
+        # Fetch first user message and first assistant message
+        first_user = await session.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id, Message.role == "user")
+            .order_by(Message.created_at.asc())
+            .limit(1)
+        )
+        first_user_msg = first_user.scalar_one_or_none()
+
+        first_assistant = await session.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id, Message.role == "assistant")
+            .order_by(Message.created_at.asc())
+            .limit(1)
+        )
+        first_assistant_msg = first_assistant.scalar_one_or_none()
+
+        if not first_user_msg and not first_assistant_msg:
+            return None
+
+        user_snippet = first_user_msg.content[:200] if first_user_msg else ""
+        assistant_snippet = first_assistant_msg.content[:200] if first_assistant_msg else ""
+
+        prompt = (
+            "根据以下对话，生成一个不超过12字的简短标题。只输出标题，不要加引号，不要解释。\n\n"
+            f"用户：{user_snippet}\n"
+            f"助手：{assistant_snippet}"
+        )
+
+        messages = [
+            {"role": "system", "content": "你是一个会话标题生成助手。根据对话内容生成一个极其简短的标题（≤12字），只输出标题。"},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            raw_title = await retry(
+                lambda: llm_service.chat_sync(messages, max_tokens=50, temperature=0.3),
+                max_retries=2,
+                base_delay=0.5,
+            )
+        except Exception as e:
+            print(f"[ConvManager] title generation failed: {e}", flush=True)
+            return None
+
+        # Clean: strip whitespace and surrounding quotes/brackets
+        title = raw_title.strip().strip('"').strip("'").strip("「").strip("」").strip("《").strip("》").strip()
+        if not title:
+            return None
+
+        conv.title = title
+        await session.commit()
+        return title
 
     async def summarize_and_trim(
         self,
