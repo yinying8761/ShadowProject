@@ -27,6 +27,8 @@ interface ChatState {
   memoryNotificationCount: number;
   showMemoryViewer: boolean;
   speakMessage: ((content: string) => void) | null;
+  conversationListVersion: number;
+  bumpConversationList: () => void;
   stopSpeaking: (() => void) | null;
   // WebSocket bridge — populated by the singleton connection in App.
   wsSendMessage: WsSendMessage | null;
@@ -69,6 +71,7 @@ export const useChatStore = create<ChatState>((set) => ({
   memoryNotificationCount: 0,
   showMemoryViewer: false,
   speakMessage: null,
+  conversationListVersion: 0,
   stopSpeaking: null,
   wsSendMessage: null,
   wsSendApprovalResponse: null,
@@ -192,4 +195,9 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setShowMemoryViewer: (show) =>
     set({ showMemoryViewer: show }),
+
+  bumpConversationList: () =>
+    set((state) => ({
+      conversationListVersion: state.conversationListVersion + 1,
+    })),
 }));

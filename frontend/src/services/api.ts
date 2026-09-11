@@ -52,6 +52,11 @@ export const api = {
     }),
   fetchMessages: (conversationId: string) =>
     request<ApiMessage[]>(`/conversations/${conversationId}/messages`),
+  updateConversation: (id: string, title: string) =>
+    request<Conversation>(`/conversations/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    }),
   deleteConversation: (id: string) =>
     request<{ status: string }>(`/conversations/${id}`, { method: 'DELETE' }),
   fetchConfig: async (): Promise<AppConfig> => {

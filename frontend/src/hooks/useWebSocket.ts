@@ -26,6 +26,7 @@ export function useWebSocketBridge(conversationId: string | null) {
   const finishTool = useChatStore((s) => s.finishTool);
   const setWsBridge = useChatStore((s) => s.setWsBridge);
   const addMemoryNotification = useChatStore((s) => s.addMemoryNotification);
+  const bumpConversationList = useChatStore((s) => s.bumpConversationList);
   const setConnected = useAppStore((s) => s.setConnected);
   const proactiveSystemNotification = useAppStore(
     (s) => s.config.proactiveSystemNotification
@@ -71,6 +72,9 @@ export function useWebSocketBridge(conversationId: string | null) {
                 finalizeStreamingMessage(data.message_id, isProactiveLike);
                 if (data.daily_greeting) {
                   localStorage.setItem('daily_greeting_date', new Date().toISOString().slice(0, 10));
+                }
+                if (!isProactiveLike) {
+                  bumpConversationList();
                 }
                 if (isProactiveLike) {
                   console.log('[WS] proactive done, calling notifyProactiveReply, content length=', content.length);
@@ -203,6 +207,7 @@ export function useWebSocketBridge(conversationId: string | null) {
     finishTool,
     setWsBridge,
     proactiveSystemNotification,
+    bumpConversationList,
   ]);
 
   return { isConnected };
