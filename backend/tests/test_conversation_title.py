@@ -177,6 +177,30 @@ class TestEnsureTitle:
             assert conv.title == mgr.DEFAULT_TITLE
 
     @pytest.mark.asyncio
+    async def test_user_message_without_assistant_reply_skips(self, session_factory):
+        """Only a user message, no AI reply (e.g. partial_error done) → no LLM call."""
+        from core.conversation_manager import ConversationManager
+        from models.conversation import Conversation
+        from models.character import CharacterProfile
+
+        async with session_factory() as s:
+            s.add(CharacterProfile(id="char-partial", name="Test", personality="", role="companion", archetype="friend"))
+            s.add(Conversation(id="conv-partial", character_id="char-partial"))
+            s.add(Message(conversation_id="conv-partial", role="user", content="你好"))
+            await s.commit()
+
+        mgr = ConversationManager()
+        llm = FakeTitleLLM("标题")
+
+        async with session_factory() as s:
+            result = await mgr.ensure_title(s, "conv-partial", llm)
+            assert result is None
+            assert llm.call_count == 0
+
+            conv = await s.get(Conversation, "conv-partial")
+            assert conv.title == mgr.DEFAULT_TITLE
+
+    @pytest.mark.asyncio
     async def test_no_messages_keeps_default(self, session_factory):
         """No messages → no title generated."""
         from core.conversation_manager import ConversationManager

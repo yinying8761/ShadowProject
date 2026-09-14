@@ -51,3 +51,6 @@ docs/analysis/resume-analysis.md
 
 # Logs
 *.log
+
+# Pi agent local artifacts
+.pi/

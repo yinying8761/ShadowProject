@@ -126,7 +126,8 @@ class ConversationManager:
 
         Rules:
         - Skip when title != DEFAULT_TITLE (covers user renames).
-        - Use first user message + first assistant reply as context.
+        - Require BOTH a first user message and a first assistant reply;
+          a conversation with no AI reply (e.g. partial_error done) is not named.
         - LLM prompt asks for ≤12 Chinese characters, no quotes.
         - Retry up to 2 times with 0.5s base delay; fail silently keeping default.
         - Empty or whitespace-only results keep default.
@@ -155,11 +156,13 @@ class ConversationManager:
         )
         first_assistant_msg = first_assistant.scalar_one_or_none()
 
-        if not first_user_msg and not first_assistant_msg:
+        # Naming needs a real exchange: user message AND assistant reply.
+        # A done with no assistant reply (partial_error) must not waste an LLM call.
+        if not first_user_msg or not first_assistant_msg:
             return None
 
-        user_snippet = first_user_msg.content[:200] if first_user_msg else ""
-        assistant_snippet = first_assistant_msg.content[:200] if first_assistant_msg else ""
+        user_snippet = first_user_msg.content[:200]
+        assistant_snippet = first_assistant_msg.content[:200]
 
         prompt = (
             "根据以下对话，生成一个不超过12字的简短标题。只输出标题，不要加引号，不要解释。\n\n"

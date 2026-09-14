@@ -151,6 +151,8 @@ export function ConversationSidebar({ onSwitchConversation, onNewConversation }:
                       e.preventDefault();
                       handleCancelEdit();
                     }}
+                    // Click anywhere outside the input blurs it → cancel edit
+                    onBlur={() => handleCancelEdit()}
                     className="flex-1 bg-companion-bg/80 text-companion-text text-xs px-2 py-1 rounded border border-companion-border/40 focus:border-companion-accent/60 outline-none truncate"
                   />
                 </div>
