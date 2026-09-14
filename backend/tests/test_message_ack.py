@@ -29,7 +29,7 @@ class FakeStreamLLM:
     def __init__(self, response_text: str = "你好！"):
         self._response = response_text
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, on_retry=None):
         yield {"type": "token", "content": self._response}
 
     async def estimate_prompt_tokens(self, messages) -> int:

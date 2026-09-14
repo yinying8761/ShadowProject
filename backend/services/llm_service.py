@@ -5,7 +5,7 @@ from typing import AsyncIterator, Awaitable, Callable
 
 from services.formatters import get_formatter, MessageFormatter
 from services.llm_config import LLMRuntimeConfig, default_runtime
-from services.retry import is_retryable, retry
+from services.retry import RetryCallback, is_retryable, retry
 
 # Live LLMService instances (weak refs) — used to invalidate cached SDK
 # clients after a runtime-config change without tracking each call site.
@@ -74,9 +74,14 @@ class LLMService:
             )
         return self._clients["anthropic"]
 
-    def _retry(self, fn):
+    def _retry(self, fn, on_retry: RetryCallback | None = None):
         """Wrap *fn* in the shared LLM retry policy (backoff + classification)."""
-        return retry(fn, retryable=_is_retryable_llm_error, sleep=self._sleep)
+        return retry(
+            fn,
+            retryable=_is_retryable_llm_error,
+            sleep=self._sleep,
+            on_retry=on_retry,
+        )
 
     async def estimate_prompt_tokens(self, messages: list[dict]) -> int:
         """Estimate prompt tokens for the current provider (non-blocking).
@@ -141,6 +146,7 @@ class LLMService:
         model: str | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
+        on_retry: RetryCallback | None = None,
     ) -> str:
         """Non-streaming chat for summarization/extraction. Returns full text."""
         effective_model = model or self._runtime.get_model()
@@ -166,7 +172,9 @@ class LLMService:
             }
             if system_msg:
                 kwargs["system"] = system_msg
-            response = await self._retry(lambda: client.messages.create(**kwargs))
+            response = await self._retry(
+                lambda: client.messages.create(**kwargs), on_retry=on_retry
+            )
             return response.content[0].text
         else:
             client = self._get_openai_client()
@@ -177,6 +185,7 @@ class LLMService:
                     temperature=temperature,
                     messages=messages,
                 ),
+                on_retry=on_retry,
             )
             return response.choices[0].message.content or ""
 
@@ -185,6 +194,7 @@ class LLMService:
         messages: list[dict],
         tools: list[dict] | None = None,
         model: str | None = None,
+        on_retry: RetryCallback | None = None,
     ) -> AsyncIterator[dict]:
         """
         Stream chat response.
@@ -196,14 +206,19 @@ class LLMService:
         sdk_type = self._runtime.get_sdk_type()
 
         if sdk_type == "anthropic":
-            async for event in self._stream_anthropic(messages, tools, effective_model):
+            async for event in self._stream_anthropic(
+                messages, tools, effective_model, on_retry=on_retry
+            ):
                 yield event
         else:
-            async for event in self._stream_openai(messages, tools, effective_model):
+            async for event in self._stream_openai(
+                messages, tools, effective_model, on_retry=on_retry
+            ):
                 yield event
 
     async def _stream_anthropic(
-        self, messages: list[dict], tools: list[dict] | None, model: str
+        self, messages: list[dict], tools: list[dict] | None, model: str,
+        on_retry: RetryCallback | None = None,
     ) -> AsyncIterator[dict]:
         try:
             formatter = self._get_formatter()
@@ -247,7 +262,7 @@ class LLMService:
                 manager = client.messages.stream(**kwargs)
                 return manager, await manager.__aenter__()
 
-            manager, stream = await self._retry(_open_stream)
+            manager, stream = await self._retry(_open_stream, on_retry=on_retry)
             try:
                 if formatter:
                     async for event in stream:
@@ -294,7 +309,8 @@ class LLMService:
             yield {"type": "error", "message": str(e)}
 
     async def _stream_openai(
-        self, messages: list[dict], tools: list[dict] | None, model: str
+        self, messages: list[dict], tools: list[dict] | None, model: str,
+        on_retry: RetryCallback | None = None,
     ) -> AsyncIterator[dict]:
         try:
             openai_messages = []
@@ -335,7 +351,9 @@ class LLMService:
                 ]
 
             client = self._get_openai_client()
-            stream = await self._retry(lambda: client.chat.completions.create(**kwargs))
+            stream = await self._retry(
+                lambda: client.chat.completions.create(**kwargs), on_retry=on_retry
+            )
             accumulated_tool_calls: dict[int, dict] = {}
             usage = None
 

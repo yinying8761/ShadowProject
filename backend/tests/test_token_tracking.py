@@ -259,7 +259,7 @@ class FakeLLMWithUsage:
         self._events = events
         self._estimate = estimate
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, on_retry=None):
         for e in self._events:
             yield e
 
@@ -275,7 +275,7 @@ class RoundBasedFakeLLM:
         self._idx = 0
         self._estimate = estimate
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, on_retry=None):
         if self._idx >= len(self._rounds):
             return
         events = self._rounds[self._idx]

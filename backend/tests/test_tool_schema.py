@@ -90,7 +90,7 @@ class RoundBasedFakeLLM:
         self._rounds = rounds
         self._idx = 0
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, on_retry=None):
         if self._idx >= len(self._rounds):
             return
         events = self._rounds[self._idx]

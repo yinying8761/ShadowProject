@@ -375,7 +375,7 @@ class FakeLLMService:
         self._events = events
         self._called = False
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, on_retry=None):
         if self._called:
             return
         self._called = True

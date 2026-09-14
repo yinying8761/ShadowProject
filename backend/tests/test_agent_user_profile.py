@@ -21,7 +21,7 @@ class CapturingLLM:
         self._response = response_text
         self.messages: list[dict] = []
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, on_retry=None):
         self.messages = messages
         yield {"type": "token", "content": self._response}
 

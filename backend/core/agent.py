@@ -9,6 +9,7 @@ from core.conversation_manager import ConversationManager
 from core.tool_runtime import ToolRuntime
 from services.llm_service import LLMService
 from services.memory_service import memory_service, pop_memory_notifications
+from services.retry import RetryCallback
 from models.character import CharacterProfile
 from models.conversation import Conversation
 
@@ -43,6 +44,7 @@ class Agent:
         mode: str = "chat",
         extra_context: dict | None = None,
         client_message_id: str | None = None,
+        on_llm_retry: RetryCallback | None = None,
     ) -> AsyncIterator[dict]:
         """
         Execute the agent loop, yielding events.
@@ -64,6 +66,11 @@ class Agent:
             Optional client-side temporary id for the user message.  When
             a user message is persisted, a ``message_ack`` event echoes it
             back together with the real message UUID.
+        on_llm_retry:
+            Optional synchronous callback forwarded to the LLM retry layer.
+            Called with ``(attempt, max_retries, exc)`` just before each
+            backoff retry.  ``None`` (default) keeps the previous silent
+            retry behaviour.
         """
         character = await session.get(CharacterProfile, character_id)
         if not character:
@@ -90,6 +97,7 @@ class Agent:
             async for event in self.llm_service.stream_chat(
                 messages=messages,
                 tools=None,  # no tools for greeting
+                on_retry=on_llm_retry,
             ):
                 if event["type"] == "token":
                     full_response += event["content"]
@@ -273,6 +281,7 @@ class Agent:
             async for event in self.llm_service.stream_chat(
                 messages=messages,
                 tools=None if suppress_tool_calls or is_proactive else (tools if tools else None),
+                on_retry=on_llm_retry,
             ):
                 if event["type"] == "token":
                     round_text += event["content"]

@@ -479,6 +479,21 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     f"[Screen capture request did not succeed, likely denied or failed.]"
                 )
 
+        # LLM retry progress → transient WS event.  The callback fires inside
+        # the retry loop's await chain, so it dispatches via create_task rather
+        # than the agent event stream (pure UI transient; CONTEXT.md §5.1).
+        # Only the chat path wires this — proactive/greeting stay silent.
+        def _on_llm_retry(attempt: int, max_retries: int, exc: Exception) -> None:
+            asyncio.create_task(
+                websocket.send_json(
+                    {
+                        "type": "llm_retry",
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                    }
+                )
+            )
+
         from database import async_session
 
         try:
@@ -491,6 +506,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     character_id=character_id,
                     approval_callback=approval_callback,
                     client_message_id=client_message_id,
+                    on_llm_retry=_on_llm_retry,
                 ):
                     await websocket.send_json(event)
                     if event.get("type") == "done":

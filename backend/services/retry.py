@@ -14,6 +14,9 @@ from typing import Awaitable, Callable, TypeVar
 
 T = TypeVar("T")
 
+# Sync callback invoked just before each backoff retry: (attempt, max_retries, exc).
+RetryCallback = Callable[[int, int, Exception], None]
+
 # Errors without an HTTP status_code that we treat as transient by default.
 _DEFAULT_TRANSIENT = (TimeoutError, ConnectionError)
 
@@ -41,6 +44,7 @@ async def retry(
     base_delay: float = 1.0,
     retryable: Callable[[Exception], bool] | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    on_retry: RetryCallback | None = None,
 ) -> T:
     """Call *fn*, retrying transient failures with exponential backoff.
 
@@ -49,6 +53,11 @@ async def retry(
     *retryable* decides which exceptions warrant a retry and defaults to
     :func:`is_retryable`.  When an exception is non-retryable, or the
     retries are exhausted, the last exception is re-raised.
+
+    *on_retry*, when given, is called synchronously just before each actual
+    backoff retry with ``(attempt, max_retries, exc)`` where *attempt* is the
+    upcoming retry number (1-based).  It is never called on success, on a
+    non-retryable error, or once retries are exhausted.
     """
     predicate = retryable or is_retryable
     for attempt in range(max_retries + 1):
@@ -57,4 +66,6 @@ async def retry(
         except Exception as exc:
             if attempt == max_retries or not predicate(exc):
                 raise
+            if on_retry is not None:
+                on_retry(attempt + 1, max_retries, exc)
             await sleep(base_delay * (2 ** attempt))

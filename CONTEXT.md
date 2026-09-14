@@ -212,6 +212,7 @@ pops it and emits `memory_updated`.
 | `error` | `message` | unrecoverable error |
 | `message_ack` | `client_message_id`, `message_id` | user message persisted (id swap) |
 | `memory_updated` | `count` | background memory extraction finished |
+| `llm_retry` | `attempt`, `max_retries` | LLM retry in progress (transient, chat path only) |
 | `proactive_skip` / `daily_greeting_skip` | | proactive/greeting aborted |
 
 ### 5.2 WebSocket inbound (client → server)

@@ -32,7 +32,7 @@ class FakeLLMService:
         self._events = events
         self._round = 0
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, on_retry=None):
         # Determine which round to play
         if self._is_multi_round():
             if self._round >= len(self._events):
