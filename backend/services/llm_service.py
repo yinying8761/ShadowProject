@@ -12,6 +12,31 @@ from services.retry import RetryCallback, is_retryable, retry
 _instances: "weakref.WeakSet[LLMService]" = weakref.WeakSet()
 
 
+# Bounded HTTP timeouts for the LLM SDK clients (seconds).
+#
+# Without an explicit timeout a severed connection leaves the request pending
+# on the socket until the OS TCP timeout — retry() never fires, no llm_retry
+# progress is emitted, and the UI shows an endless "thinking" state. httpx's
+# `read` timeout is a per-chunk stall timeout (not a total budget), so long
+# generations that keep streaming are unaffected.
+LLM_CONNECT_TIMEOUT = 10.0
+LLM_READ_TIMEOUT = 60.0
+LLM_WRITE_TIMEOUT = 30.0
+LLM_POOL_TIMEOUT = 10.0
+
+
+def _llm_timeout():
+    """Structured httpx timeout shared by the LLM SDK clients."""
+    import httpx
+
+    return httpx.Timeout(
+        connect=LLM_CONNECT_TIMEOUT,
+        read=LLM_READ_TIMEOUT,
+        write=LLM_WRITE_TIMEOUT,
+        pool=LLM_POOL_TIMEOUT,
+    )
+
+
 def _is_retryable_llm_error(exc: Exception) -> bool:
     """Classify an LLM SDK error as transient (worth retrying).
 
@@ -63,6 +88,11 @@ class LLMService:
             self._clients["openai"] = AsyncOpenAI(
                 api_key=self._runtime.api_key,
                 base_url=base_url,
+                timeout=_llm_timeout(),
+                # retry() above owns retries and per-attempt progress
+                # reporting; SDK-internal retries would hide attempts and
+                # multiply the backoff.
+                max_retries=0,
             )
         return self._clients["openai"]
 
@@ -70,7 +100,9 @@ class LLMService:
         if "anthropic" not in self._clients:
             import anthropic
             self._clients["anthropic"] = anthropic.AsyncAnthropic(
-                api_key=self._runtime.api_key
+                api_key=self._runtime.api_key,
+                timeout=_llm_timeout(),
+                max_retries=0,
             )
         return self._clients["anthropic"]
 

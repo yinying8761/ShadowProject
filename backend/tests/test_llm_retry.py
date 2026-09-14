@@ -490,3 +490,50 @@ class TestStreamChatOnRetryPassthrough:
         assert events[1]["type"] == "error"
         assert seen == []
 
+class TestClientTimeoutConfig:
+    """The SDK clients must carry a bounded timeout and no nested retries.
+
+    Regression guard for the "spinner forever" bug: with no client timeout a
+    severed connection left the request pending until the OS TCP timeout, so
+    retry() never fired, no llm_retry progress was reported and the user saw
+    an endless "thinking" state instead of an error.
+    """
+
+    def test_openai_client_is_built_with_bounded_timeout(self, monkeypatch):
+        import openai
+
+        recorded: dict = {}
+
+        class FakeAsyncOpenAI:
+            def __init__(self, **kwargs):
+                recorded.update(kwargs)
+
+        monkeypatch.setattr(openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
+        LLMService()._get_openai_client()
+
+        timeout = recorded.get("timeout")
+        assert timeout is not None, "client must be built with an explicit timeout"
+        assert timeout.connect <= 30, timeout
+        assert timeout.read <= 120, timeout
+        assert recorded.get("max_retries") == 0
+
+    def test_anthropic_client_is_built_with_bounded_timeout(self, monkeypatch):
+        import anthropic
+
+        recorded: dict = {}
+
+        class FakeAsyncAnthropic:
+            def __init__(self, **kwargs):
+                recorded.update(kwargs)
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", FakeAsyncAnthropic)
+
+        LLMService()._get_anthropic_client()
+
+        timeout = recorded.get("timeout")
+        assert timeout is not None, "client must be built with an explicit timeout"
+        assert timeout.connect <= 30, timeout
+        assert timeout.read <= 120, timeout
+        assert recorded.get("max_retries") == 0
+
