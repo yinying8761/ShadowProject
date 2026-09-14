@@ -136,12 +136,11 @@ export function useWebSocketBridge(conversationId: string | null) {
               break;
             case 'llm_retry':
               // Transient progress while the server backs off (issue #38/#39).
-              if (data.attempt != null && data.max_retries != null) {
-                setRetryState({
-                  attempt: data.attempt,
-                  maxRetries: data.max_retries,
-                });
-              }
+              // WsRetryMessage guarantees both fields are present.
+              setRetryState({
+                attempt: data.attempt,
+                maxRetries: data.max_retries,
+              });
               break;
             case 'error': {
               // Persistent, manually dismissed inline bubble (issue #39).

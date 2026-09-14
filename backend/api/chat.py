@@ -483,16 +483,29 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         # the retry loop's await chain, so it dispatches via create_task rather
         # than the agent event stream (pure UI transient; CONTEXT.md §5.1).
         # Only the chat path wires this — proactive/greeting stay silent.
-        def _on_llm_retry(attempt: int, max_retries: int, exc: Exception) -> None:
-            asyncio.create_task(
-                websocket.send_json(
+        _retry_send_tasks: set[asyncio.Task] = set()
+
+        async def _send_llm_retry(attempt: int, max_retries: int) -> None:
+            try:
+                await websocket.send_json(
                     {
                         "type": "llm_retry",
                         "attempt": attempt,
                         "max_retries": max_retries,
                     }
                 )
-            )
+            except Exception as e:
+                # WS closed / client gone mid-retry — progress is moot; swallow
+                # so the fire-and-forget task never raises "exception was
+                # never retrieved" noise.
+                print(f"[WS] llm_retry send skipped: {e}", flush=True)
+
+        def _on_llm_retry(attempt: int, max_retries: int, exc: Exception) -> None:
+            # Hold a strong reference until the task finishes so it cannot be
+            # garbage-collected mid-flight (asyncio fire-and-forget pitfall).
+            task = asyncio.create_task(_send_llm_retry(attempt, max_retries))
+            _retry_send_tasks.add(task)
+            task.add_done_callback(_retry_send_tasks.discard)
 
         from database import async_session
 

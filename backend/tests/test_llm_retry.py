@@ -90,15 +90,44 @@ class FakeOpenAIClient:
         return await self._handler(kwargs)
 
 
+class FakeAnthropicStreamManager:
+    """Fake for anthropic's async stream context manager."""
+
+    def __init__(self, events, final):
+        self._events = list(events)
+        self._final = final
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._events:
+            return self._events.pop(0)
+        raise StopAsyncIteration
+
+    def get_final_message(self):
+        return self._final
+
+
 class FakeAnthropicClient:
-    """Fake for anthropic.AsyncAnthropic: exposes messages.create."""
+    """Fake for anthropic.AsyncAnthropic: exposes messages.create / messages.stream."""
 
     def __init__(self):
         self.calls = 0
         self._handler = None
+        self._stream_handler = None
 
     def set_handler(self, handler):
         self._handler = handler
+
+    def set_stream_handler(self, handler):
+        self._stream_handler = handler
 
     @property
     def messages(self):
@@ -107,6 +136,10 @@ class FakeAnthropicClient:
     async def create(self, **kwargs):
         self.calls += 1
         return await self._handler(kwargs)
+
+    def stream(self, **kwargs):
+        self.calls += 1
+        return self._stream_handler(kwargs)
 
 
 class FakeAnthropicResponse:
@@ -300,6 +333,78 @@ class TestAnthropicChatSync:
         assert result == "bonjour"
         assert client.calls == 2
         assert sleep.delays == [1.0]
+
+class TestAnthropicOnRetryPassthrough:
+    """S2 — anthropic paths forward on_retry into the retry wrapper too."""
+
+    def _make(self, monkeypatch, client):
+        runtime_config = LLMRuntimeConfig(provider="anthropic", model="claude-test")
+        sleep = RecordingSleep()
+        llm = LLMService(clients={"anthropic": client}, sleep=sleep, runtime_config=runtime_config)
+        monkeypatch.setattr(llm, "_get_formatter", lambda: None)
+        return llm, sleep
+
+    @pytest.mark.asyncio
+    async def test_chat_sync_fires_on_retry(self, monkeypatch):
+        client = FakeAnthropicClient()
+
+        async def handler(kwargs):
+            if client.calls == 1:
+                raise FakeHTTPError(429)
+            return FakeAnthropicResponse("bonjour")
+
+        client.set_handler(handler)
+        llm, sleep = self._make(monkeypatch, client)
+        seen: list[tuple[int, int, str]] = []
+
+        result = await llm.chat_sync(
+            [{"role": "user", "content": "hi"}],
+            on_retry=lambda a, m, e: seen.append((a, m, type(e).__name__)),
+        )
+
+        assert result == "bonjour"
+        assert client.calls == 2
+        assert seen == [(1, 5, "FakeHTTPError")]
+        assert sleep.delays == [1.0]
+
+    @pytest.mark.asyncio
+    async def test_stream_establishment_fires_on_retry(self, monkeypatch):
+        client = FakeAnthropicClient()
+        stream_calls = {"n": 0}
+
+        def stream_handler(kwargs):
+            stream_calls["n"] += 1
+            if stream_calls["n"] == 1:
+                raise FakeHTTPError(503)
+            events = [
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text="你好"),
+                )
+            ]
+            final = SimpleNamespace(
+                content=[], usage=SimpleNamespace(input_tokens=1, output_tokens=1)
+            )
+            return FakeAnthropicStreamManager(events, final)
+
+        client.set_stream_handler(stream_handler)
+        llm, sleep = self._make(monkeypatch, client)
+        seen: list[tuple[int, int]] = []
+
+        events = [
+            e
+            async for e in llm.stream_chat(
+                [{"role": "user", "content": "hi"}],
+                on_retry=lambda a, m, e: seen.append((a, m)),
+            )
+        ]
+
+        types = [e["type"] for e in events]
+        assert "token" in types
+        assert "error" not in types
+        assert seen == [(1, 5)]
+        assert sleep.delays == [1.0]
+
 
 class TestRetryOnRetryCallback:
     """S1 — retry() fires on_retry before each backoff attempt."""
