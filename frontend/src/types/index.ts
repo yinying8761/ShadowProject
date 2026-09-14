@@ -100,7 +100,7 @@ export interface MemoryEntry {
 }
 
 export interface WsMessage {
-  type: 'token' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'approval_request' | 'proactive_skip' | 'memory_updated' | 'daily_greeting_skip' | 'message_ack';
+  type: 'token' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'approval_request' | 'proactive_skip' | 'memory_updated' | 'daily_greeting_skip' | 'message_ack' | 'llm_retry';
   content?: string;
   message_id?: string;
   name?: string;
@@ -114,6 +114,10 @@ export interface WsMessage {
   count?: number;
   reason?: string;
   client_message_id?: string;
+  /** llm_retry: 1-based number of the upcoming retry. */
+  attempt?: number;
+  /** llm_retry: total retries configured for this attempt. */
+  max_retries?: number;
 }
 
 export interface TokenUsageEntry {

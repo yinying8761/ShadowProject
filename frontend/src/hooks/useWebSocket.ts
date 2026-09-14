@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../stores/chatStore';
 import { useAppStore } from '../stores/appStore';
+import { getTranslation } from '../i18n/translations';
+import type { Lang } from '../i18n/translations';
+import { friendlyErrorKey } from '../utils/errorMessages';
 import type { WsMessage } from '../types';
 
 const WS_BASE = `ws://${window.location.hostname}:8722/ws/chat`;
@@ -27,6 +30,9 @@ export function useWebSocketBridge(conversationId: string | null) {
   const setWsBridge = useChatStore((s) => s.setWsBridge);
   const addMemoryNotification = useChatStore((s) => s.addMemoryNotification);
   const bumpConversationList = useChatStore((s) => s.bumpConversationList);
+  const setRetryState = useChatStore((s) => s.setRetryState);
+  const clearRetryState = useChatStore((s) => s.clearRetryState);
+  const setErrorBubble = useChatStore((s) => s.setErrorBubble);
   const setConnected = useAppStore((s) => s.setConnected);
   const proactiveSystemNotification = useAppStore(
     (s) => s.config.proactiveSystemNotification
@@ -63,9 +69,12 @@ export function useWebSocketBridge(conversationId: string | null) {
           const data: WsMessage = JSON.parse(event.data);
           switch (data.type) {
             case 'token':
+              // Anything after a retry means the retry resolved (issue #39).
+              clearRetryState();
               if (data.content) appendStreamingToken(data.content, data.proactive);
               break;
             case 'done':
+              clearRetryState();
               if (data.message_id) {
                 const isProactiveLike = !!(data.proactive || data.daily_greeting);
                 const content = useChatStore.getState().streamingContent;
@@ -125,10 +134,29 @@ export function useWebSocketBridge(conversationId: string | null) {
                 replaceMessageId(data.client_message_id, data.message_id);
               }
               break;
-            case 'error':
-              console.error('Server error:', data.message);
-              setStreaming(false);
+            case 'llm_retry':
+              // Transient progress while the server backs off (issue #38/#39).
+              if (data.attempt != null && data.max_retries != null) {
+                setRetryState({
+                  attempt: data.attempt,
+                  maxRetries: data.max_retries,
+                });
+              }
               break;
+            case 'error': {
+              // Persistent, manually dismissed inline bubble (issue #39).
+              // getState() avoids depending on the i18n hook identity, which
+              // would re-run this effect (and reconnect) on every render.
+              console.error('Server error:', data.message);
+              clearRetryState();
+              setStreaming(false);
+              const lang = (useAppStore.getState().config.language as Lang) || 'zh';
+              setErrorBubble({
+                friendly: getTranslation(friendlyErrorKey(data.message), lang),
+                raw: data.message || '',
+              });
+              break;
+            }
           }
         } catch { /* ignore malformed */ }
       };
@@ -208,6 +236,9 @@ export function useWebSocketBridge(conversationId: string | null) {
     setWsBridge,
     proactiveSystemNotification,
     bumpConversationList,
+    setRetryState,
+    clearRetryState,
+    setErrorBubble,
   ]);
 
   return { isConnected };

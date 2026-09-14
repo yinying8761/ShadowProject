@@ -211,6 +211,15 @@ const zh: TranslationDict = {
   'No usage yet': '暂无用量记录',
   'Failed to load usage': '用量加载失败',
   'Select a conversation to see token usage': '选择会话以查看 Token 用量',
+
+  // Error visibility (Workflow I)
+  'Retrying ({attempt}/{max})': '正在重试 ({attempt}/{max})',
+  'Network error. Check your connection or try again later.':
+    '网络连接失败，请检查网络或稍后重试',
+  'Response timed out. Please try again later.': '响应超时，请稍后重试',
+  'Something went wrong. Please try again later.': '出错了，请稍后重试',
+  'Show details': '查看详情',
+  'Hide details': '收起',
 };
 
 const en: TranslationDict = {};

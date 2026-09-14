@@ -9,6 +9,18 @@ export interface ToolActivity {
   startedAt: number;
 }
 
+/** Transient LLM-retry progress (Workflow I). Cleared by any later event. */
+export interface RetryState {
+  attempt: number;
+  maxRetries: number;
+}
+
+/** Persistent, manually dismissed inline error (Workflow I). */
+export interface ErrorBubbleState {
+  friendly: string;
+  raw: string;
+}
+
 type WsSendMessage = (
   content: string,
   characterId: string,
@@ -29,6 +41,8 @@ interface ChatState {
   speakMessage: ((content: string) => void) | null;
   conversationListVersion: number;
   bumpConversationList: () => void;
+  retryState: RetryState | null;
+  errorBubble: ErrorBubbleState | null;
   stopSpeaking: (() => void) | null;
   // WebSocket bridge — populated by the singleton connection in App.
   wsSendMessage: WsSendMessage | null;
@@ -56,6 +70,10 @@ interface ChatState {
   addMemoryNotification: (count: number) => void;
   dismissMemoryNotification: () => void;
   setShowMemoryViewer: (show: boolean) => void;
+  setRetryState: (state: RetryState) => void;
+  clearRetryState: () => void;
+  setErrorBubble: (bubble: ErrorBubbleState) => void;
+  dismissErrorBubble: () => void;
 }
 
 const TOOL_RETENTION_MS = 15000;
@@ -72,6 +90,8 @@ export const useChatStore = create<ChatState>((set) => ({
   showMemoryViewer: false,
   speakMessage: null,
   conversationListVersion: 0,
+  retryState: null,
+  errorBubble: null,
   stopSpeaking: null,
   wsSendMessage: null,
   wsSendApprovalResponse: null,
@@ -135,6 +155,10 @@ export const useChatStore = create<ChatState>((set) => ({
       isStreaming: false,
       streamingIsProactive: false,
       recentTools: [],
+      // Retry progress and error bubbles are in-memory only: switching
+      // conversations must not leak the previous turn's errors (issue #39).
+      retryState: null,
+      errorBubble: null,
     }),
   setPendingApproval: (req) => set({ pendingApproval: req }),
 
@@ -200,4 +224,15 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => ({
       conversationListVersion: state.conversationListVersion + 1,
     })),
+
+  setRetryState: (state) => set({ retryState: state }),
+
+  // Returns the current state when there is nothing to clear so the common
+  // case (every streamed token calls this) skips a store notification.
+  clearRetryState: () =>
+    set((state) => (state.retryState === null ? state : { retryState: null })),
+
+  setErrorBubble: (bubble) => set({ errorBubble: bubble }),
+
+  dismissErrorBubble: () => set({ errorBubble: null }),
 }));
