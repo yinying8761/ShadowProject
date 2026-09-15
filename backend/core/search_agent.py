@@ -1,8 +1,9 @@
 """
 SearchAgent — independent search sub-agent with its own LLM + tools.
 
-Replaces the ``research()`` function in ``tools/search_tools.py``.
-Has a cheaper LLM instance, can do multi-step retrieval: search →
+The app's single search implementation (ADR-0003) — the main Agent's
+``research`` tool is handled here. Has a cheaper LLM instance and can do
+multi-step retrieval: search →
 pick promising results → fetch_url for details → search again if needed.
 """
 
@@ -100,8 +101,8 @@ class SearchAgent(SubAgent):
     # ── Public API ────────────────────────────────────────────────────
 
     async def run(self, query: str) -> str:
-        """Search and summarise.  Returns the same JSON shape as the old
-        ``research()`` function for backward compatibility.
+        """Search and summarise.  Returns the JSON shape the ``research``
+        tool contract promises (answer / sources / confidence).
 
         Parameters
         ----------

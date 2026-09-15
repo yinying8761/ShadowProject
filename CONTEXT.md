@@ -42,7 +42,7 @@ backend/
     sub_agent.py          # SubAgent base (independent LLM + tool loop)
     search_agent.py       # SearchAgent(SubAgent) — implements the `research` tool
     router_agent.py       # RouterAgent — RESERVED placeholder (multi-agent routing)
-    router.py             # search-intent keyword router + 5-min result cache
+    router.py             # search-intent keyword router (advisory; ADR-0003)
     greeting_orchestrator.py  # daily-greeting orchestration
   services/               # IO / external integrations
     llm_service.py        # LLM abstraction (chat_sync + stream_chat, retry-wrapped)

@@ -1,9 +1,7 @@
 """
 Search intent router — decides whether a user message needs web search.
-Uses keyword matching (no LLM call). Search results are cached for 5 min.
+Advisory only: keyword matching, no LLM call (ADR-0003).
 """
-
-import time
 
 # ── Keywords ──────────────────────────────────────────────────────
 
@@ -57,27 +55,3 @@ def need_search(text: str) -> bool:
         if kw in t:
             return True
     return False
-
-
-# ── Simple search result cache ────────────────────────────────────
-
-_cache: dict[str, tuple[float, str]] = {}
-CACHE_TTL = 300  # 5 minutes
-
-
-def cache_get(query: str) -> str | None:
-    entry = _cache.get(query)
-    if entry:
-        ts, result = entry
-        if time.time() - ts < CACHE_TTL:
-            return result
-        del _cache[query]
-    return None
-
-
-def cache_set(query: str, result: str):
-    _cache[query] = (time.time(), result)
-    # Keep cache small
-    if len(_cache) > 50:
-        oldest = min(_cache, key=lambda k: _cache[k][0])
-        del _cache[oldest]

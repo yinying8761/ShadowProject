@@ -1,5 +1,6 @@
 """
-Search tools: fetch_url (read a user-specified URL) and research (web search + LLM summary).
+Web search backends (driven by SearchAgent via _do_search) plus fetch_url
+(read a user-specified URL).
 
 Search backends — tried in order, first success wins:
   - duckduckgo: ddgs>=9 metasearch. Engine list is pinned to China-accessible
@@ -18,11 +19,9 @@ import httpx
 from bs4 import BeautifulSoup
 
 from config import settings
-from services.llm_service import LLMService
 
 _proxy = settings.search_proxy or None
 _client = httpx.AsyncClient(timeout=15.0, follow_redirects=True, proxy=_proxy)
-_llm = LLMService()
 
 MAX_PAGE_TEXT = 6000
 SEARCH_RESULTS = 5
@@ -199,76 +198,3 @@ async def fetch_url(url: str, extract_text: bool = True) -> str:
         return json.dumps({"error": f"HTTP {e.response.status_code}"})
     except Exception as e:
         return json.dumps({"error": f"Fetch failed: {type(e).__name__}: {e}"})
-
-
-async def research(query: str) -> str:
-    """Search the web and return a summarized answer with sources."""
-    results = await _do_search(query)
-
-    if not results:
-        return json.dumps({
-            "answer": None,
-            "error": "没能搜到相关内容，试试换个说法？",
-            "sources": [],
-            "confidence": "low",
-        }, ensure_ascii=False)
-
-    snippets_lines = []
-    for i, r in enumerate(results):
-        snippets_lines.append(
-            f"[{i+1}] {r['title']}\n    链接: {r['url']}\n    摘要: {r['snippet']}"
-        )
-    snippets = "\n\n".join(snippets_lines)
-    sources = [{"title": r["title"], "url": r["url"]} for r in results]
-
-    summary_prompt = (
-        f"用户在聊天中问了这个问题，需要你帮忙查一下：\n{query}\n\n"
-        f"以下是搜索结果：\n{snippets}\n\n"
-        "请用自然、好懂的语言直接回答这个问题。要求：\n"
-        "- 像朋友帮忙查完东西后告诉他一样，口语化，不要百科腔\n"
-        "- 不要太长，说清楚就好\n"
-        "- 哪里看到的信息就在那里顺手标个 [1] [2]\n"
-        "- 如果搜到的东西互相矛盾，诚实说出来\n"
-        "- 广告、垃圾内容直接忽略\n"
-        "- 最后加个置信度: [confidence: high/medium/low]"
-    )
-
-    try:
-        raw = await _llm.chat_sync(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是用户的帮手，正在帮用户查点东西。你的语气应该友好、清晰、直接——"
-                        "就像你帮朋友查完资料后告诉他结果那样。不要说「根据搜索结果」这种话，"
-                        "直接说查到了什么。用户用什么语言问，你就用什么语言答。"
-                    ),
-                },
-                {"role": "user", "content": summary_prompt},
-            ],
-            max_tokens=800,
-            temperature=0.3,
-        )
-    except Exception as e:
-        return json.dumps({
-            "answer": None,
-            "error": f"LLM 总结失败: {e}",
-            "sources": sources,
-            "confidence": "low",
-        }, ensure_ascii=False)
-
-    confidence = "medium"
-    if "confidence: high" in raw.lower() or "置信度：高" in raw:
-        confidence = "high"
-    elif "confidence: low" in raw.lower() or "置信度：低" in raw:
-        confidence = "low"
-
-    answer = _re.sub(r"\[confidence:\s*(high|medium|low)\]", "", raw, flags=_re.IGNORECASE).strip()
-
-    print(f"[Search] query=" + query[:80] + " | confidence=" + confidence + " | summary=" + answer[:200], flush=True)
-
-    return json.dumps({
-        "answer": answer,
-        "sources": sources,
-        "confidence": confidence,
-    }, ensure_ascii=False)
