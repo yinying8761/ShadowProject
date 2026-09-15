@@ -56,7 +56,7 @@ backend/
     embedding_service.py  # embeddings (API or local fastembed)
     vision_service.py     # legacy screen-understanding vision (fallback to MCP)
     screen_capture_gate.py # gate that asks approval before capturing screen
-    message_augmenter.py  # search routing + POI injection before agent.run
+    message_augmenter.py  # search hint + POI injection before agent.run (ADR-0003)
     tts_service.py, weather_service.py, location_service.py
     proactive_watcher.py  # idle/scheduled proactive triggers (TierConfig state machine)
     proactive_session.py  # per-WS proactive companion session

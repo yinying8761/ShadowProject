@@ -2,14 +2,22 @@
 Message augmentation pipeline — enriches user messages before they reach the agent.
 
 Pipeline stages (executed sequentially):
-  1. Search router: detect search intent → cache lookup or research tool
+  1. Search hint: detect search intent → append an advisory hint (no search)
   2. POI injector: detect food/restaurant keywords → query nearby places
 
 All stages are transparent to the caller — just call `augment(content)` and get
 back the augmented string ready to pass to the agent.
 """
 
-from core.router import need_search, cache_get, cache_set
+from core.router import need_search
+
+# Advisory nudge appended when the keyword router fires (ADR-0003). It must read
+# as a suggestion, never as if results had already been gathered — the main LLM
+# holds the search decision and calls the `research` tool when it sees fit.
+SEARCH_HINT = (
+    "[提示：这条消息可能涉及时效性或外部信息，如有必要可调用 research 工具核实；"
+    "若只是日常闲聊，忽略本条即可。]"
+)
 
 FOOD_KEYWORDS = [
     "吃什么", "推荐", "好吃的", "美食", "附近", "餐厅", "饭店",
@@ -28,24 +36,11 @@ async def augment(content: str) -> str:
     """
     augmented = content
 
-    # ── Stage 1: Search routing ────────────────────────────────────
+    # ── Stage 1: Search hint ───────────────────────────────────────
+    # Advisory only — a keyword hit never executes a search (ADR-0003).
     if need_search(content):
-        msg_hash = content.strip()[:60]
-        cached = cache_get(msg_hash)
-        if cached:
-            print(f"[MessageAugmenter] using cached search for: {msg_hash}", flush=True)
-            augmented = _inject_context(augmented, cached)
-        else:
-            print(f"[MessageAugmenter] auto-searching for: {content[:60]}", flush=True)
-            from tools.search_tools import research as do_research
-
-            try:
-                result = await do_research(content.strip()[:200])
-                if result:
-                    cache_set(msg_hash, result)
-                    augmented = _inject_context(augmented, result)
-            except Exception as e:
-                print(f"[MessageAugmenter] search failed: {e}", flush=True)
+        print(f"[MessageAugmenter] search hint for: {content[:60]}", flush=True)
+        augmented = _append_block(augmented, SEARCH_HINT)
 
     # ── Stage 2: POI / food injection ──────────────────────────────
     if any(kw in content for kw in FOOD_KEYWORDS):
@@ -75,9 +70,14 @@ async def augment(content: str) -> str:
     return augmented
 
 
+def _append_block(base: str, block: str) -> str:
+    """Append a block of context to the base message."""
+    return f"{base}\n\n{block}"
+
+
 def _inject_context(base: str, context: str) -> str:
-    """Append a context block to the base message."""
-    return (
-        f"{base}\n\n"
-        f"[帮助AI回答的搜索参考资料，请自然地融入回复，不要照念：\n{context}]"
+    """Append a search-result block to the base message."""
+    return _append_block(
+        base,
+        f"[帮助AI回答的搜索参考资料，请自然地融入回复，不要照念：\n{context}]",
     )

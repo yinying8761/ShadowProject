@@ -457,7 +457,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         last_known_character_id = character_id
         proactive_session.reset_idle()
 
-        # ── Message augmentation: search routing + POI injection ──
+        # ── Message augmentation: search hint + POI injection ─────
         from services.message_augmenter import augment as augment_message
 
         augmented_message = await augment_message(content)
