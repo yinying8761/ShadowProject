@@ -408,6 +408,7 @@ from api.tts import router as tts_router
 from api.user_profile import router as user_profile_router
 from api.tool_logs import router as tool_logs_router
 from api.token_usage import router as token_usage_router
+from api.logs import router as logs_router
 
 app.include_router(chat_router)
 app.include_router(character_router)
@@ -418,6 +419,7 @@ app.include_router(tts_router)
 app.include_router(user_profile_router)
 app.include_router(tool_logs_router)
 app.include_router(token_usage_router)
+app.include_router(logs_router)
 
 
 if __name__ == "__main__":

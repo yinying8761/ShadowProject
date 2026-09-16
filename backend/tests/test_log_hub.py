@@ -13,8 +13,11 @@ import sys
 import uuid
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 import services.log_hub as log_hub
+from api.logs import router as logs_router
 from services.log_hub import FileSink, LogHub, StdoutTee
 
 
@@ -216,3 +219,63 @@ class TestFileSink:
 
         assert (tmp_path / "companion.log").exists()
         assert (tmp_path / "companion.log.1").exists()
+
+def _logs_app(hub: LogHub) -> FastAPI:
+    """Just the logs route — no lifespan, so no process-wide Tee is installed."""
+    app = FastAPI()
+    app.state.log_hub = hub
+    app.include_router(logs_router)
+    return app
+
+
+class TestLogsChannel:
+    def test_connecting_receives_the_history_then_live_lines(self):
+        hub = LogHub()
+        hub.add("history one")
+        hub.add("history two")
+
+        with TestClient(_logs_app(hub)) as client:
+            with client.websocket_connect("/ws/logs") as ws:
+                history = ws.receive_json()
+                assert history["type"] == "logs_history"
+                assert [l["message"] for l in history["lines"]] == [
+                    "history one",
+                    "history two",
+                ]
+
+                hub.add("live line")        # as if a print happened elsewhere
+                pushed = ws.receive_json()
+                assert pushed["type"] == "logs_line"
+                assert pushed["line"]["message"] == "live line"
+
+    def test_renderer_report_comes_back_as_a_live_line(self):
+        hub = LogHub()
+
+        with TestClient(_logs_app(hub)) as client:
+            with client.websocket_connect("/ws/logs") as ws:
+                ws.receive_json()           # history
+                ws.send_json(
+                    {"type": "renderer_log", "level": "error", "message": "boom"}
+                )
+
+                # It entered the hub, so it comes straight back down the wire.
+                pushed = ws.receive_json()
+                assert pushed["line"]["source"] == "renderer"
+                assert pushed["line"]["level"] == "error"
+                assert pushed["line"]["message"] == "boom"
+
+    def test_each_client_gets_its_own_history_snapshot(self):
+        hub = LogHub()
+        hub.add("first")
+
+        with TestClient(_logs_app(hub)) as client:
+            with client.websocket_connect("/ws/logs") as first:
+                assert [l["message"] for l in first.receive_json()["lines"]] == ["first"]
+
+                hub.add("second")
+                with client.websocket_connect("/ws/logs") as second:
+                    snapshot = second.receive_json()["lines"]
+                    assert [l["message"] for l in snapshot] == ["first", "second"]
+                    # the client that was already connected sees it live
+                    assert first.receive_json()["line"]["message"] == "second"
+
