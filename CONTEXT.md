@@ -48,6 +48,7 @@ backend/
     llm_service.py        # LLM abstraction (chat_sync + stream_chat, retry-wrapped)
     retry.py              # pure exponential-backoff retry helper
     log_hub.py            # log bus: ring buffer + stdout tee + rotated file (ADR-0002)
+    command_executor.py   # debug-console whitelist commands (clear/status/mcp/config)
     mcp_manager.py        # MCP client manager (connect/health-check/reconnect/tools)
     memory_service.py     # MemoryService facade → store/retriever/extractor (singleton)
     memory_store.py       # FTS5 + CRUD + prune
@@ -64,6 +65,7 @@ backend/
     formatters/           # provider-specific message formatting (anthropic_formatter)
   api/                    # FastAPI routers
     chat.py               # POST /api/chat/send + WS /ws/chat/{id} (the big one)
+    logs.py               # WS /ws/logs debug channel: history + live tail + commands
     character.py, conversation.py, config.py, user_profile.py, tts.py, tool_logs.py
   models/                 # SQLAlchemy ORM: character, conversation, message, memory,
                           #   user_config, user_profile, tool_run

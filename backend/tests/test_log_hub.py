@@ -278,4 +278,44 @@ class TestLogsChannel:
                     assert [l["message"] for l in snapshot] == ["first", "second"]
                     # the client that was already connected sees it live
                     assert first.receive_json()["line"]["message"] == "second"
+    def test_command_output_comes_back_over_the_channel(self):
+        from services.command_executor import CommandExecutor
+
+        hub = LogHub()
+        app = _logs_app(hub)
+        app.state.command_executor = CommandExecutor(hub)
+
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/logs") as ws:
+                ws.receive_json()                       # history
+                ws.send_json({"type": "command", "command": "help"})
+
+                pushed = ws.receive_json()
+                assert pushed["line"]["source"] == "cmd"
+                assert pushed["line"]["message"].startswith("[cmd] available: ")
+
+
+class TestLogHubMaintenance:
+    """The accessors the panel\'s clear/status commands need."""
+
+    def test_clear_drops_every_buffered_entry(self):
+        hub = LogHub()
+        hub.add("one")
+        hub.add("two")
+
+        hub.clear()
+
+        assert hub.lines() == []
+
+    def test_ring_size_and_subscriber_count_are_reported(self):
+        hub = LogHub(ring_size=7)
+        assert hub.ring_size == 7
+        assert hub.subscriber_count == 0
+
+        unsubscribe = hub.subscribe(lambda entry: None)
+        assert hub.subscriber_count == 1
+
+        unsubscribe()
+        assert hub.subscriber_count == 0
+
 

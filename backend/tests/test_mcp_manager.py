@@ -108,6 +108,41 @@ class TestFormatMcpResult:
 # ── connect_all — config parsing ───────────────────────────────────────────
 
 
+class TestReconnectAll:
+    @pytest.mark.asyncio
+    async def test_missing_config_is_a_no_op(self, manager: McpManager, tmp_path):
+        result = await manager.reconnect_all(tmp_path / "nope.json")
+
+        assert result == {"connected": 0, "failed": 0, "tools": 0}
+
+    @pytest.mark.asyncio
+    async def test_dead_servers_are_revived(self, manager: McpManager, tmp_path):
+        manager._connections["gh"] = {"session": None, "tool_names": [], "cfg": {}}
+        manager._ping = AsyncMock(return_value=False)
+        manager._reconnect = AsyncMock(return_value=True)
+
+        await manager.reconnect_all(tmp_path / "nope.json")
+
+        manager._reconnect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_healthy_servers_are_not_dropped(self, manager: McpManager, tmp_path):
+        """A reconnect must never disconnect: healthy servers stay connected."""
+        manager._connections["gh"] = {"session": None, "tool_names": [], "cfg": {}}
+        manager._ping = AsyncMock(return_value=True)
+        manager.disconnect_all = AsyncMock()
+
+        config = tmp_path / "mcp.json"
+        config.write_text(
+            json.dumps({"servers": [{"name": "gh", "command": "x"}]}), encoding="utf-8"
+        )
+
+        await manager.reconnect_all(config)
+
+        manager.disconnect_all.assert_not_called()
+        assert manager.connected_servers == ["gh"]
+
+
 class TestConnectAllConfig:
     @pytest.mark.asyncio
     async def test_no_config_file(self, manager: McpManager):

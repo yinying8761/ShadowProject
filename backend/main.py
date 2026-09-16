@@ -315,20 +315,39 @@ async def lifespan(app: FastAPI):
     await seed_default_data()
 
     # ── MCP Tool Servers ──
-    from services.mcp_manager import McpManager
+    from services.mcp_manager import McpManager, format_connect_result
     mcp_manager = McpManager(tool_runtime)
     mcp_config = settings.mcp_config_path or str(data_dir / "mcp_servers.json")
     try:
         mcp_result = await mcp_manager.connect_all(mcp_config)
-        print(
-            f"[Startup] MCP: {mcp_result['connected']} connected, "
-            f"{mcp_result['failed']} failed, {mcp_result['tools']} tools",
-            flush=True,
-        )
+        print(f"[Startup] MCP: {format_connect_result(mcp_result)}", flush=True)
     except Exception as e:
         print(f"[Startup] MCP init failed: {e}", flush=True)
 
     mcp_manager.start_health_check(settings.mcp_health_check_interval)
+    app.state.mcp_manager = mcp_manager
+
+    # ── Debug-console commands (ticket 04) ─────────────────────────
+    from services.command_executor import CommandExecutor
+
+    async def _reconnect_mcp() -> str:
+        result = await mcp_manager.reconnect_all(mcp_config)
+        return f"mcp reconnect: {format_connect_result(result)}"
+
+    def _reload_config() -> str:
+        runtime_config.copy_from(config_store.load())
+        return f"config reloaded: model={runtime_config.get_model()}"
+
+    def _describe_model() -> str:
+        sdk_type, _base_url, model = runtime_config.resolve()
+        return f"{model or '?'} ({sdk_type})"
+
+    app.state.command_executor = CommandExecutor(
+        app.state.log_hub,
+        describe_model=_describe_model,
+        reconnect_mcp=_reconnect_mcp,
+        reload_config=_reload_config,
+    )
 
     yield
 

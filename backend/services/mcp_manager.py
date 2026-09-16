@@ -39,6 +39,14 @@ def mcp_tool_name(server_name: str, tool_name: str) -> str:
     return f"mcp__{server_name}__{tool_name}"
 
 
+def format_connect_result(result: dict[str, int]) -> str:
+    """One-line summary of a connect/reconnect result, for logs."""
+    return (
+        f"{result['connected']} connected, "
+        f"{result['failed']} failed, {result['tools']} tools"
+    )
+
+
 def _format_mcp_result(result: CallToolResult) -> str:
     """Convert an MCP ``CallToolResult`` to a string for the LLM.
 
@@ -138,6 +146,18 @@ class McpManager:
                 print(f"[McpManager] '{name}' failed: {exc!r}", flush=True)
 
         return result
+
+    async def reconnect_all(self, config_path: str | Path) -> dict[str, int]:
+        """Revive dead sessions and connect anything missing, dropping nothing.
+
+        ``connect_all`` alone skips servers that are already connected, so the
+        health check has to run first to revive the dead ones.  Healthy
+        servers are never disconnected — a failed reconnect must not leave the
+        app worse off than before the command.
+        """
+        await self.health_check()
+        return await self.connect_all(config_path)
+
 
     async def disconnect_all(self) -> None:
         """Disconnect every server and unregister its tools."""

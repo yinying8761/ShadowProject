@@ -137,6 +137,30 @@ class LogHub:
         with self._lock:
             return list(self._ring)
 
+    @property
+    def ring_size(self) -> int:
+        """Capacity of the ring buffer."""
+        return self._ring.maxlen or 0
+
+    @property
+    def subscriber_count(self) -> int:
+        """How many listeners are currently subscribed."""
+        with self._lock:
+            return len(self._listeners)
+
+    @property
+    def log_file(self) -> Path | None:
+        """Where the established sink writes, or None when nothing persists.
+
+        Only a :class:`FileSink` reports a path; any callable works as a sink.
+        """
+        return getattr(self._sink, "path", None)
+
+    def clear(self) -> None:
+        """Drop every buffered entry (the debug console\'s ``clear`` command)."""
+        with self._lock:
+            self._ring.clear()
+
     def subscribe(self, listener: Listener) -> Callable[[], None]:
         """Register *listener*; returns the callable that unregisters it."""
         with self._lock:
@@ -184,6 +208,7 @@ class FileSink:
     ) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
         self._handler = RotatingFileHandler(
             path,
             maxBytes=max_bytes,

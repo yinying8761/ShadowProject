@@ -15,7 +15,7 @@ import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from services.log_hub import LogHub, RENDERER
+from services.log_hub import CMD, LogHub, RENDERER
 
 router = APIRouter()
 
@@ -59,12 +59,19 @@ async def ws_logs(websocket: WebSocket) -> None:
     async def listen() -> None:
         while True:
             message = await websocket.receive_json()
-            if message.get("type") == "renderer_log":
+            kind = message.get("type")
+            if kind == "renderer_log":
                 hub.add(
                     str(message.get("message", "")),
                     source=RENDERER,
                     level=str(message.get("level", "error")),
                 )
+            elif kind == "command":
+                executor = getattr(websocket.app.state, "command_executor", None)
+                if executor is None:
+                    hub.add("[cmd] commands unavailable", source=CMD)
+                else:
+                    await executor.run(str(message.get("command", "")))
 
     tasks = [asyncio.create_task(pump()), asyncio.create_task(listen())]
     try:
