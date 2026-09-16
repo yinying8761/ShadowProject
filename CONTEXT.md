@@ -47,6 +47,7 @@ backend/
   services/               # IO / external integrations
     llm_service.py        # LLM abstraction (chat_sync + stream_chat, retry-wrapped)
     retry.py              # pure exponential-backoff retry helper
+    log_hub.py            # log bus: ring buffer + stdout tee + rotated file (ADR-0002)
     mcp_manager.py        # MCP client manager (connect/health-check/reconnect/tools)
     memory_service.py     # MemoryService facade → store/retriever/extractor (singleton)
     memory_store.py       # FTS5 + CRUD + prune

@@ -292,6 +292,12 @@ set_mcp_dispatch(tool_runtime.dispatch)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── Log hub: stdout tee + ring buffer + rotated file (ADR-0002) ──
+    # Installed first so every startup print below lands in it too.
+    from services.log_hub import install as install_log_hub
+
+    app.state.log_hub = install_log_hub()
+
     # ── Start GPT-SoVITS TTS API (spawn, don't block startup) ──
     from services.tts_service import start_api
     if settings.tts_ref_base:
