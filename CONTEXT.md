@@ -76,7 +76,7 @@ backend/
 frontend/
   electron/               # main.cjs/main.js, preload.cjs, preload-floating.cjs, floating.html
   src/
-    components/{shell,chat,character,settings}/  # React components
+    components/{shell,chat,character,settings,debug}/  # React components
     hooks/                # useWebSocket, useChat, useCharacters, useTTS, useGeolocation, ...
     stores/               # Zustand: appStore, chatStore
     services/             # api.ts (REST), tts.ts
@@ -223,6 +223,10 @@ pops it and emits `memory_updated`.
 `{type}` is one of: `chat` (`content`, `character_id`, `force_vision?`,
 `client_message_id?`), `approval_response` (`request_id`, `approved`),
 `daily_greeting`, `update_location` (`lat`, `lng`).
+
+The debug channel `/ws/logs` (ADR-0002) is separate from the chat socket and
+takes `renderer_log` (`level`, `message`) and `command` (`command`, one of the
+whitelisted debug commands). See §2 `api/logs.py`.
 
 ### 5.3 Approval flow
 

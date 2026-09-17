@@ -8,6 +8,7 @@ interface AppState {
   isConnected: boolean;
   showSettings: boolean;
   showHistory: boolean;
+  showDebugConsole: boolean;
   showCharacterEditor: boolean;
   editingCharacter: CharacterProfile | null;
   layoutMode: 'compact' | 'full';
@@ -18,6 +19,7 @@ interface AppState {
   setConnected: (connected: boolean) => void;
   setShowSettings: (show: boolean) => void;
   setShowHistory: (show: boolean) => void;
+  setShowDebugConsole: (show: boolean) => void;
   openCharacterEditor: (char?: CharacterProfile | null) => void;
   closeCharacterEditor: () => void;
   setLayoutMode: (mode: 'compact' | 'full') => void;
@@ -49,6 +51,7 @@ export const useAppStore = create<AppState>((set) => ({
   isConnected: false,
   showSettings: false,
   showHistory: false,
+  showDebugConsole: false,
   showCharacterEditor: false,
   editingCharacter: null,
   layoutMode: 'compact',
@@ -76,6 +79,7 @@ export const useAppStore = create<AppState>((set) => ({
   setConnected: (connected) => set({ isConnected: connected }),
   setShowSettings: (show) => set({ showSettings: show }),
   setShowHistory: (show) => set({ showHistory: show }),
+  setShowDebugConsole: (show) => set({ showDebugConsole: show }),
   openCharacterEditor: (char) =>
     set({ showCharacterEditor: true, editingCharacter: char || null }),
   closeCharacterEditor: () =>

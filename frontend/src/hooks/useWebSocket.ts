@@ -5,8 +5,9 @@ import { getTranslation } from '../i18n/translations';
 import type { Lang } from '../i18n/translations';
 import { friendlyErrorKey } from '../utils/errorMessages';
 import type { WsMessage } from '../types';
+import { wsUrl } from '../utils/wsUrl';
 
-const WS_BASE = `ws://${window.location.hostname}:8722/ws/chat`;
+const WS_BASE = wsUrl('/ws/chat');
 
 /**
  * Singleton WebSocket bridge. Must be used exactly once at the App root.

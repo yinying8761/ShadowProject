@@ -14,6 +14,8 @@ export function useKeyboardShortcuts() {
   const setShowSettings = useAppStore((s) => s.setShowSettings);
   const showHistory = useAppStore((s) => s.showHistory);
   const setShowHistory = useAppStore((s) => s.setShowHistory);
+  const showDebugConsole = useAppStore((s) => s.showDebugConsole);
+  const setShowDebugConsole = useAppStore((s) => s.setShowDebugConsole);
   const showMemoryViewer = useChatStore((s) => s.showMemoryViewer);
   const setShowMemoryViewer = useChatStore((s) => s.setShowMemoryViewer);
   const showCharacterEditor = useAppStore((s) => s.showCharacterEditor);
@@ -26,8 +28,17 @@ export function useKeyboardShortcuts() {
       const tag = (e.target as HTMLElement)?.tagName;
       const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
+      // Ctrl+Shift+D: toggle the debug console. Handled before the isInput
+      // guard so it also works from the console's own command line.
+      if (e.key === 'D' && e.ctrlKey && e.shiftKey) {
+        e.preventDefault();
+        setShowDebugConsole(!showDebugConsole);
+        return;
+      }
+
       // Escape: close topmost overlay
       if (e.key === 'Escape') {
+        if (showDebugConsole) { setShowDebugConsole(false); return; }
         if (showMemoryViewer) { setShowMemoryViewer(false); return; }
         if (showCharacterEditor) { closeCharacterEditor(); return; }
         if (showHistory) { setShowHistory(false); return; }
@@ -65,6 +76,7 @@ export function useKeyboardShortcuts() {
     layoutMode, setLayoutMode,
     showSettings, setShowSettings,
     showHistory, setShowHistory,
+    showDebugConsole, setShowDebugConsole,
     showMemoryViewer, setShowMemoryViewer,
     showCharacterEditor, closeCharacterEditor,
     newConversation,

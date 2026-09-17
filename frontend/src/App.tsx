@@ -8,6 +8,7 @@ import { HistoryOverlay } from './components/chat/HistoryOverlay';
 import { ApprovalDialog } from './components/chat/ApprovalDialog';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { MemoryViewer } from './components/settings/MemoryViewer';
+import { DebugConsole } from './components/debug/DebugConsole';
 import { useCharacters } from './hooks/useCharacters';
 import { useAppStore } from './stores/appStore';
 import { useChatStore } from './stores/chatStore';
@@ -17,6 +18,7 @@ import { useGeolocation } from './hooks/useGeolocation';
 import { useTTS } from './hooks/useTTS';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { api } from './services/api';
+import { installRendererErrorCapture } from './utils/rendererErrorCapture';
 
 export default function App() {
   useCharacters();
@@ -43,6 +45,12 @@ export default function App() {
       .catch(console.error);
   }, [setConfig]);
 
+  // Frontend errors are captured for the whole session; the debug console's
+  // socket replays them when it connects.
+  useEffect(() => {
+    installRendererErrorCapture();
+  }, []);
+
   return (
     <LayoutProvider>
       <div className="flex flex-col h-screen w-screen bg-transparent overflow-hidden layout-transition">
@@ -56,6 +64,7 @@ export default function App() {
         <HistoryOverlay />
         <SettingsPanel />
         <MemoryViewer />
+        <DebugConsole />
         {showCharacterEditor && (
           <CharacterEditor
             character={editingCharacter || undefined}

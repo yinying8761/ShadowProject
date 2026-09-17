@@ -139,6 +139,27 @@ export interface WsRetryMessage {
 }
 
 export type WsMessage = WsBaseMessage | WsRetryMessage;
+/** Debug-console log protocol (/ws/logs, ADR-0002). */
+export type LogSource = 'backend' | 'renderer' | 'cmd';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** One log line, exactly as the backend hub stamps it. */
+export interface LogLine {
+  source: LogSource;
+  level: LogLevel;
+  message: string;
+  /** Epoch seconds. */
+  ts: number;
+}
+
+export type LogsInboundMessage =
+  | { type: 'logs_history'; lines: LogLine[] }
+  | { type: 'logs_line'; line: LogLine };
+
+/** What the panel sends up the same channel. */
+export type LogsOutboundMessage =
+  | { type: 'renderer_log'; level: LogLevel; message: string }
+  | { type: 'command'; command: string };
 
 export interface TokenUsageEntry {
   id: string;

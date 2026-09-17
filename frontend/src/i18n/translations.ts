@@ -220,6 +220,13 @@ const zh: TranslationDict = {
   'Something went wrong. Please try again later.': '出错了，请稍后重试',
   'Show details': '查看详情',
   'Hide details': '收起',
+
+  // Debug console (Workflow J)
+  'Debug Console': '调试控制台',
+  'Hide [renderer]': '隐藏 [renderer]',
+  Copy: '复制',
+  Copied: '已复制',
+  'Command (help)': '输入命令（help 查看全部）',
 };
 
 const en: TranslationDict = {};
