@@ -79,7 +79,8 @@ function createWindow() {
   // even if a later activate() reassigns mainWindow.
   const webContents = mainWindow.webContents;
   webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || input.key !== 'F12') return;
+    // isAutoRepeat: holding F12 down must not open/close DevTools in a loop.
+    if (input.type !== 'keyDown' || input.key !== 'F12' || input.isAutoRepeat) return;
     event.preventDefault();
     if (webContents.isDevToolsOpened()) {
       webContents.closeDevTools();

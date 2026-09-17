@@ -69,7 +69,7 @@ async def ws_logs(websocket: WebSocket) -> None:
             elif kind == "command":
                 executor = getattr(websocket.app.state, "command_executor", None)
                 if executor is None:
-                    hub.add("[cmd] commands unavailable", source=CMD)
+                    hub.add("commands unavailable", source=CMD)
                 else:
                     await executor.run(str(message.get("command", "")))
 
@@ -83,4 +83,7 @@ async def ws_logs(websocket: WebSocket) -> None:
     finally:
         unsubscribe()
         for task in tasks:
+            if task.done() and not task.cancelled():
+                task.exception()  # retrieve a stray failure — never awaited, so
+                #                 # it can't fight a handler cancellation in flight
             task.cancel()

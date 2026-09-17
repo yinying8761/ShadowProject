@@ -216,7 +216,9 @@ class FileSink:
             encoding="utf-8",
         )
         self._handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+            # %(name)s is the entry's `source` (backend/renderer/cmd), so the
+            # file keeps the `[cmd]` label without the message itself carrying it.
+            logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
         )
 
     def __call__(self, entry: dict) -> None:

@@ -1,9 +1,9 @@
-﻿"""
-Tests for ProactiveWatcher tick logging 鈥?routine ticks stay quiet unless
+"""
+Tests for ProactiveWatcher tick logging —routine ticks stay quiet unless
 something changed (ticket 02 of the debug-console work).
 
 Seams: should_log_tick() as a pure rule, and ProactiveWatcher.poll_once()
-driven with constructor-injected fakes and a fake clock 鈥?no DB, no timers,
+driven with constructor-injected fakes and a fake clock —no DB, no timers,
 capsys for the log lines.
 """
 

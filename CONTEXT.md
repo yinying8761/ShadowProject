@@ -74,7 +74,7 @@ backend/
   eval/                   # hand-annotated test cases + runner
   tests/                  # pytest suite (mirrors core/services seams)
 frontend/
-  electron/               # main.cjs (entry), main.js (legacy), preload*.cjs, floating.html
+  electron/               # main.cjs (entry), preload*.cjs, floating.html
                           #   F12 → real DevTools (dev + packaged); Ctrl+Shift+D → log panel + [cmd]
   src/
     components/{shell,chat,character,settings,debug}/  # React components

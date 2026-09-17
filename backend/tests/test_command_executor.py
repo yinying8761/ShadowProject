@@ -25,7 +25,7 @@ class TestWhitelist:
         await CommandExecutor(hub).run("help")
 
         assert cmd_lines(hub) == [
-            "[cmd] available: clear, config reload, help, mcp reconnect, status"
+            "available: clear, config reload, help, mcp reconnect, status"
         ]
 
     @pytest.mark.parametrize(
@@ -58,8 +58,8 @@ class TestWhitelist:
         await executor.run(hostile)
 
         assert called == []
-        assert cmd_lines(hub)[0] == f"[cmd] unknown: {hostile}"
-        assert cmd_lines(hub)[1].startswith("[cmd] available: ")
+        assert cmd_lines(hub)[0] == f"unknown: {hostile}"
+        assert cmd_lines(hub)[1].startswith("available: ")
         assert "keep me" in [e["message"] for e in hub.lines()]   # not cleared either
 
     @pytest.mark.asyncio
@@ -68,7 +68,7 @@ class TestWhitelist:
 
         await CommandExecutor(hub).run("  Status ")
 
-        assert cmd_lines(hub)[0].startswith("[cmd] log buffer: ")
+        assert cmd_lines(hub)[0].startswith("log buffer: ")
 
 
 class TestCommands:
@@ -79,8 +79,8 @@ class TestCommands:
 
         await CommandExecutor(hub).run("clear")
 
-        assert cmd_lines(hub) == ["[cmd] log buffer cleared"]
-        assert [e["message"] for e in hub.lines()] == ["[cmd] log buffer cleared"]
+        assert cmd_lines(hub) == ["log buffer cleared"]
+        assert [e["message"] for e in hub.lines()] == ["log buffer cleared"]
 
     @pytest.mark.asyncio
     async def test_status_reports_hub_stats_and_process_info(self, tmp_path):
@@ -92,9 +92,9 @@ class TestCommands:
         await CommandExecutor(hub, describe_model=lambda: "test-model (openai)").run("status")
 
         lines = cmd_lines(hub)
-        assert lines[0] == "[cmd] log buffer: 2/10 lines, 0 subscriber(s)"
-        assert lines[1] == f"[cmd] log file: {log_file}"
-        assert lines[2] == "[cmd] model: test-model (openai)"
+        assert lines[0] == "log buffer: 2/10 lines, 0 subscriber(s)"
+        assert lines[1] == f"log file: {log_file}"
+        assert lines[2] == "model: test-model (openai)"
         assert "pid=" in lines[3] and "python=" in lines[3]
 
     @pytest.mark.asyncio
@@ -106,7 +106,7 @@ class TestCommands:
 
         await CommandExecutor(hub, describe_model=boom).run("status")
 
-        assert cmd_lines(hub)[2] == "[cmd] model: unknown (AttributeError)"
+        assert cmd_lines(hub)[2] == "model: unknown (AttributeError)"
 
     @pytest.mark.asyncio
     async def test_mcp_reconnect_reports_the_callback_result(self):
@@ -117,7 +117,7 @@ class TestCommands:
 
         await CommandExecutor(hub, reconnect_mcp=reconnect).run("mcp reconnect")
 
-        assert cmd_lines(hub) == ["[cmd] mcp reconnect: 2 connected, 0 failed, 7 tools"]
+        assert cmd_lines(hub) == ["mcp reconnect: 2 connected, 0 failed, 7 tools"]
 
     @pytest.mark.asyncio
     async def test_config_reload_reports_the_callback_result(self):
@@ -127,7 +127,7 @@ class TestCommands:
             "config reload"
         )
 
-        assert cmd_lines(hub) == ["[cmd] config reloaded: model=x"]
+        assert cmd_lines(hub) == ["config reloaded: model=x"]
 
     @pytest.mark.asyncio
     async def test_missing_callbacks_are_reported_not_crashed(self):
@@ -138,8 +138,8 @@ class TestCommands:
         await executor.run("config reload")
 
         assert cmd_lines(hub) == [
-            "[cmd] mcp reconnect unavailable: no MCP manager",
-            "[cmd] config reload unavailable: no config store",
+            "mcp reconnect unavailable: no MCP manager",
+            "config reload unavailable: no config store",
         ]
 
     @pytest.mark.asyncio
@@ -151,7 +151,7 @@ class TestCommands:
 
         await CommandExecutor(hub, reconnect_mcp=boom).run("mcp reconnect")
 
-        assert cmd_lines(hub) == ["[cmd] mcp reconnect failed: mcp down"]
+        assert cmd_lines(hub) == ["mcp reconnect failed: mcp down"]
 
     @pytest.mark.asyncio
     async def test_output_is_tagged_as_cmd_source(self):

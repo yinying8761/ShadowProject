@@ -292,7 +292,7 @@ class TestLogsChannel:
 
                 pushed = ws.receive_json()
                 assert pushed["line"]["source"] == "cmd"
-                assert pushed["line"]["message"].startswith("[cmd] available: ")
+                assert pushed["line"]["message"].startswith("available: ")
 
 
 class TestLogHubMaintenance:

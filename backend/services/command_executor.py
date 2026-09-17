@@ -51,7 +51,10 @@ class CommandExecutor:
         await handler()
 
     def _emit(self, text: str) -> None:
-        self._hub.add(f"[cmd] {text}", source=CMD)
+        # Plain text only: the label lives in the entry's `source` field (the
+        # panel renders `[cmd]`, the log file prints it via %(name)s), so
+        # embedding it here too would double-label (ADR-0002).
+        self._hub.add(text, source=CMD)
 
     async def _clear(self) -> None:
         self._hub.clear()
