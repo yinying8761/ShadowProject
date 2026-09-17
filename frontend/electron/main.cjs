@@ -71,6 +71,23 @@ function createWindow() {
 
   mainWindow.setAlwaysOnTop(true, 'floating');
 
+  // F12 → the real Chrome DevTools, in dev and packaged builds alike
+  // (ticket 06). The window is small, frameless and transparent, so DevTools
+  // open in their own window rather than being docked into it; pressing F12
+  // again closes them, like a browser. No other key is touched.
+  // Bound once, so the handler always targets the window it was registered on,
+  // even if a later activate() reassigns mainWindow.
+  const webContents = mainWindow.webContents;
+  webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'F12') return;
+    event.preventDefault();
+    if (webContents.isDevToolsOpened()) {
+      webContents.closeDevTools();
+    } else {
+      webContents.openDevTools({ mode: 'detach' });
+    }
+  });
+
   // Exclude this window from screen capture (Windows WDA_EXCLUDEFROMCAPTURE).
   // Uses Electron's native wrapper around SetWindowDisplayAffinity.
   // This prevents the AI from seeing its own UI in screen captures.
