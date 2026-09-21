@@ -188,6 +188,27 @@ pops it and emits `memory_updated`.
   `tool_call_id`, `token_count`), `Memory`, `UserProfile`, `UserConfig`,
   `ToolRun` (tracing, has `retry_count`).
 
+### 3.7 Group chat (spec'd, pending implementation)
+
+`docs/specs/group-chat.md` defines a **群** (fixed character set + shared
+transcript) whose conversations hold multiple speakers. Shape:
+
+- **Serial** turn orchestration: members reply in order; each may **skip**
+  (emits `<silent>`, dropped) or continue. A **chain budget** (6 role messages
+  per user turn) caps runaway chatter; all-skip ends the turn silently.
+- User interjections never interrupt an in-flight reply — they queue and become
+  a **new turn** (budget reset); several interjections merge into one turn.
+- Daily greeting + proactive are **disabled** for group conversations; group TTS
+  is disabled behind a reserved switch.
+- Opening a group conversation runs a background **extract → compact** (order
+  fixed), anchored on the conversation's last extract time, so days away are
+  caught up in one pass and memories carry the message's real date.
+- Memory stays per-character; one extraction batch is stored once per member
+  (prompt limited to user facts, never a character's opinions).
+- Schema: new `Group` / `GroupMember`, `Conversation.group_id` +
+  `last_extract_at`, `Message.speaker_id`, and `Conversation.character_id`
+  becomes **nullable** (one-time rebuild migration, not additive).
+
 ## 4. Frontend shape
 
 - **Zustand stores**: `appStore` (characters, config, layout mode compact/full,
@@ -263,6 +284,9 @@ or circuit-breaker failures).
   implementation detail. See `backend/tests/test_tool_runtime.py`,
   `test_agent_tools.py`, `test_circuit_breaker.py`, `test_tool_retry.py` for
   the canonical patterns.
+- **One transcript renderer**: the LLM context and the history view must render
+  messages through the *same* timestamped-transcript formatter (§7 时间戳对话记录)
+  — never a second copy of the formatting rules.
 - **Specs & tickets**: a spec (`docs/specs/<name>.md`) describes the PRD; tickets
   (`docs/Tickets/<name>/issues/NN-*.md`) are the ready-for-agent checklists
   (state `Blocked by:` explicitly). The `(done)` filename suffix marks a
@@ -295,3 +319,8 @@ or circuit-breaker failures).
 | 接口地址 | Base URL | OpenAI 兼容 endpoint 根地址（形如 `…/v1`） |
 | 生效配置 | Effective config | `data/config.yaml` 里的当前供应商 + 模型选择 |
 | LLM 运行时配置 | Runtime LLM config | 内存中的可变配置对象；UI 写 yaml/.env 后刷新，立即生效 |
+| 群 | Group | 固定角色集合 + 共享对话流；一个群可开多条「群对话」（spec: `group-chat`） |
+| 群聊 | Group chat | 群内的多角色对话：成员按顺序依次发言，可跳过、可续说，每轮受链预算约束 |
+| 发言者 | Speaker | 消息的说话人（用户或某角色）。群聊消息必带；1:1 由会话角色派生 |
+| 链预算 | Chain budget | 每「用户轮」内角色消息总量上限（默认 6 条），到顶或全体跳过即静默 |
+| 时间戳对话记录 | Timestamped transcript | 喂 LLM 与历史记录共用的统一格式：`YYYY/M/D HH:MM [说话人]: 内容`（系统本地时区） |
