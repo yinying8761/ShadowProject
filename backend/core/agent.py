@@ -240,7 +240,9 @@ class Agent:
                 }
 
         history = await self.conversation_manager.get_context_messages(
-            session, conversation_id
+            session, conversation_id,
+            user_name=(user_profile or {}).get("user_name"),
+            character_name=character.name,
         )
 
         if location_context:

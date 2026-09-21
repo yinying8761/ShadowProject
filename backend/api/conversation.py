@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc
 
+from core.transcript import render_transcript, resolve_speaker
 from database import get_session
+from models.character import CharacterProfile
 from models.conversation import Conversation
 from models.message import Message
+from models.user_profile import UserProfile
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -80,6 +83,37 @@ async def get_messages(
     )
     result = await session.execute(query)
     messages = result.scalars().all()
+
+    # Speaker resolution for the shared transcript renderer — the ONE
+    # transcript formatter serves both the LLM context and this history view
+    # (CONTEXT.md §6 / spec: group-chat Phase 1). Never format locally.
+    character_name = None
+    user_name = None
+    conv = await session.get(Conversation, conversation_id)
+    if conv:
+        char = await session.get(CharacterProfile, conv.character_id)
+        character_name = char.name if char else None
+        profile = (await session.execute(
+            select(UserProfile)
+            .where(UserProfile.character_id == conv.character_id)
+            .order_by(desc(UserProfile.updated_at))
+            .limit(1)
+        )).scalar_one_or_none()
+        if profile is None:
+            profile = (await session.execute(
+                select(UserProfile)
+                .where(UserProfile.character_id.is_(None))
+                .order_by(desc(UserProfile.updated_at))
+                .limit(1)
+            )).scalar_one_or_none()
+        user_name = profile.user_name if profile else None
+
+    speakers = [
+        resolve_speaker(m, user_name=user_name, character_name=character_name)
+        for m in messages
+    ]
+    lines = render_transcript(messages, user_name=user_name, character_name=character_name)
+
     return [
         {
             "id": m.id,
@@ -88,8 +122,11 @@ async def get_messages(
             "tool_calls": m.tool_calls,
             "token_count": m.token_count,
             "created_at": m.created_at.isoformat() if m.created_at else None,
+            "speaker_id": m.speaker_id,
+            "speaker": speaker,
+            "transcript": line,
         }
-        for m in messages
+        for m, speaker, line in zip(messages, speakers, lines)
     ]
 
 

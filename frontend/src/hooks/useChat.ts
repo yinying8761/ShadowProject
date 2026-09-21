@@ -56,6 +56,7 @@ export function useChat() {
               role: m.role,
               content: m.content,
               createdAt: m.created_at,
+              transcript: m.transcript ?? null,
             }))
           );
         } else {
@@ -143,6 +144,7 @@ export function useChat() {
             role: m.role,
             content: m.content,
             createdAt: m.created_at,
+            transcript: m.transcript ?? null,
           }))
         );
       } catch (e) {

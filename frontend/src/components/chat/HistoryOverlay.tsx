@@ -33,6 +33,34 @@ export function HistoryOverlay() {
     }
   }, [showHistory, messages.length, streamingContent]);
 
+  // 打开历史视图时从历史接口补齐 transcript（时间戳对话记录行）。
+  // WS 在途/流式消息没有 transcript——REST 是渲染的唯一来源（共享渲染器，
+  // 前端绝不自己拼格式）；补齐失败保持原样。
+  useEffect(() => {
+    if (!showHistory || !currentConversationId) return;
+    // transcript 一旦生成不再变化——全部已有则跳过补齐请求
+    if (useChatStore.getState().messages.every((m) => m.transcript)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const fresh = await api.fetchMessages(currentConversationId);
+        if (cancelled) return;
+        const byId = new Map(fresh.map((m) => [m.id, m]));
+        useChatStore.setState((s) => ({
+          messages: s.messages.map((m) => {
+            const f = byId.get(m.id);
+            return f?.transcript ? { ...m, transcript: f.transcript } : m;
+          }),
+        }));
+      } catch {
+        // 历史接口不可达时维持现状
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showHistory, currentConversationId]);
+
   const handleDeleteMsg = async (msgId: string) => {
     if (!currentConversationId) return;
     if (confirmingDelete === msgId) {
@@ -148,10 +176,10 @@ export function HistoryOverlay() {
                   }`}
                 >
                   {msg.role === 'user' ? (
-                    <p className="whitespace-pre-wrap pr-4">{msg.content}</p>
+                    <p className="whitespace-pre-wrap pr-4">{msg.transcript ?? msg.content}</p>
                   ) : (
                     <div className="prose prose-invert prose-sm max-w-none pr-4">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <ReactMarkdown>{msg.transcript ?? msg.content}</ReactMarkdown>
                     </div>
                   )}
                 </div>

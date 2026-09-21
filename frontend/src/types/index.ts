@@ -20,6 +20,8 @@ export interface Message {
   toolCalls?: ToolCall[];
   createdAt: string;
   isProactive?: boolean;
+  /** 时间戳对话记录行（历史视图展示；WS 在途/流式消息没有，由历史接口补齐） */
+  transcript?: string | null;
 }
 
 export interface ApiMessage {
@@ -28,6 +30,12 @@ export interface ApiMessage {
   content: string;
   tool_calls?: ToolCall[];
   created_at: string;
+  /** 该条消息的发言角色（群聊用；1:1 为空） */
+  speaker_id?: string | null;
+  /** 解析后的说话人名（用户名/角色名） */
+  speaker?: string | null;
+  /** 共享渲染器输出的 `时间 [说话人]: 内容` 行（tool 消息为 null） */
+  transcript?: string | null;
 }
 
 export interface ToolCall {

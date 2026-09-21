@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
+from core.transcript import render_transcript
 from models.message import Message
 from models.conversation import Conversation
 from services.retry import retry
@@ -21,9 +22,21 @@ class ConversationManager:
         return int(cjk_chars * 0.6 + other_chars * 0.25) or 1
 
     async def get_context_messages(
-        self, session: AsyncSession, conversation_id: str, max_tokens: int | None = None
+        self,
+        session: AsyncSession,
+        conversation_id: str,
+        max_tokens: int | None = None,
+        *,
+        user_name: str | None = None,
+        character_name: str | None = None,
     ) -> list[dict]:
-        """Load recent messages, trim oldest to fit within token limit."""
+        """Load recent messages, trim oldest to fit within token limit.
+
+        User/assistant TEXT messages carry the shared timestamped-transcript
+        prefix (core.transcript — the one renderer, also used by the history
+        API); tool messages and tool-call carriers keep their raw content and
+        roles, so provider formatters and 1:1 semantics are untouched.
+        """
         limit = max_tokens or self.max_tokens
 
         query = (
@@ -37,13 +50,21 @@ class ConversationManager:
         context: list[dict] = []
         total_tokens = 0
 
-        for msg in reversed(messages):
-            tokens = self.estimate_tokens(msg.content)
+        # One shared-renderer pass (oldest→newest); tool plumbing keeps raw
+        # content. Token estimation counts the rendered prefix, so trimming is
+        # marginally more conservative than raw-content estimation.
+        ordered = list(reversed(messages))
+        lines = render_transcript(
+            ordered, user_name=user_name, character_name=character_name,
+        )
+        for msg, line in zip(ordered, lines):
+            content = line if line is not None else msg.content
+            tokens = self.estimate_tokens(content)
             if total_tokens + tokens > limit and context:
                 break
             context.append({
                 "role": msg.role,
-                "content": msg.content,
+                "content": content,
             })
             total_tokens += tokens
 

@@ -20,6 +20,13 @@ class Message(Base):
     tool_calls: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 发言角色（群聊用）：该条消息由哪个角色说出。1:1 保持空——
+    # 说话人由会话角色派生（见 core/transcript.py）。可空列，走增量迁移。
+    speaker_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("character_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
