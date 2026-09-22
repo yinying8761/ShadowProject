@@ -3,7 +3,7 @@
 > Living, agent-facing context document. Read this before working on the code.
 > It is the canonical summary of the current architecture; specs and tickets live
 > in `docs/specs/` and `docs/Tickets/`. Non-trivial design decisions go to
-> `docs/adr/` (currently empty — create an ADR when you make one).
+> `docs/adr/` (see `docs/agents/domain.md`; ADR-0001…0004 so far).
 
 ## 1. What this is
 
@@ -67,7 +67,7 @@ backend/
     chat.py               # POST /api/chat/send + WS /ws/chat/{id} (the big one)
     logs.py               # WS /ws/logs debug channel: history + live tail + commands
     character.py, conversation.py, config.py, user_profile.py, tts.py, tool_logs.py
-  models/                 # SQLAlchemy ORM: character, conversation, message, memory,
+  models/                 # SQLAlchemy ORM: character, conversation, group, message, memory,
                           #   user_config, user_profile, tool_run
   tools/                  # tool handlers: file_tools, search_tools, memory_tools,
                           #   screen_tools, time_tools
@@ -87,7 +87,7 @@ docs/
   specs/                  # PRDs (mark `(done)` once tickets are written)
   Tickets/                # implementation tickets (see §6)
   agents/                 # issue-tracker.md, domain.md (this doc's consumers)
-  adr/                    # (empty — create ADRs here)
+  adr/                    # architecture decision records (0001–0004)
 ```
 
 ## 3. Backend: the runtime shape
@@ -184,9 +184,11 @@ pops it and emits `memory_updated`.
   `ADDITIVE_MIGRATIONS`** in `database.py` — a list of `(table, column, decl)`
   probed with `PRAGMA table_info` and `ALTER TABLE ADD COLUMN` on miss. Add new
   columns there, never assume `create_all` alters existing tables.
-- Models: `CharacterProfile`, `Conversation`, `Message` (has `tool_calls`,
-  `tool_call_id`, `token_count`), `Memory`, `UserProfile`, `UserConfig`,
-  `ToolRun` (tracing, has `retry_count`).
+- Models: `CharacterProfile`, `Conversation` (`character_id` nullable since
+  ADR-0004; group conversations carry `group_id` + `last_extract_at` instead),
+  `Group`/`GroupMember` (fixed member set, `position` = speaking order),
+  `Message` (has `tool_calls`, `tool_call_id`, `token_count`, `speaker_id`),
+  `Memory`, `UserProfile`, `UserConfig`, `ToolRun` (tracing, has `retry_count`).
 
 ### 3.7 Group chat (spec'd, pending implementation)
 

@@ -11,10 +11,18 @@ class Conversation(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    character_id: Mapped[str] = mapped_column(
+    # 1:1 会话指向其角色；群对话没有单一角色（NULL，见 ADR-0004）。
+    character_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("character_profiles.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
+    # 群对话归属：有值即群对话（1:1 为 NULL，行为不变）。
+    group_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # "打开时补账"锚点：群记忆提取最后覆盖到的消息时间。
+    last_extract_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     title: Mapped[str] = mapped_column(String(200), default="New Conversation")
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
