@@ -421,6 +421,7 @@ app.mount("/data", StaticFiles(directory=str(data_dir)), name="data")
 from api.chat import router as chat_router
 from api.character import router as character_router
 from api.conversation import router as conversation_router
+from api.group import router as group_router
 from api.config import router as config_router
 from api.llm_config import router as llm_config_router
 from api.tts import router as tts_router
@@ -432,6 +433,7 @@ from api.logs import router as logs_router
 app.include_router(chat_router)
 app.include_router(character_router)
 app.include_router(conversation_router)
+app.include_router(group_router)
 app.include_router(config_router)
 app.include_router(llm_config_router)
 app.include_router(tts_router)
