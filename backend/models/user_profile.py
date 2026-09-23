@@ -13,9 +13,10 @@ class UserProfile(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
+    # 无 ondelete=（ADR-0005）：删角色时由 api/character.py 显式删掉它的专属画像。
     character_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("character_profiles.id", ondelete="CASCADE"),
+        ForeignKey("character_profiles.id"),
         nullable=True,
     )  # NULL = default profile (fallback)
     user_name: Mapped[str] = mapped_column(String(50), nullable=False, default="User")

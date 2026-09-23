@@ -35,12 +35,14 @@ class GroupMember(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
+    # 无 ondelete=（ADR-0005）：删角色时由 api/character.py 显式删掉成员资格；
+    # 因此变成 0 成员的群会保留下来（可再编辑加人）。删群端点尚未实现。
     group_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("groups.id", ondelete="CASCADE"),
+        String(36), ForeignKey("groups.id"),
         nullable=False,
     )
     character_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("character_profiles.id", ondelete="CASCADE"),
+        String(36), ForeignKey("character_profiles.id"),
         nullable=False,
     )
     # 发言顺序必填：顺序即群轮发言次序，不允许隐式的全 0 并列默认值。

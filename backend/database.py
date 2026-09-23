@@ -59,10 +59,12 @@ ADDITIVE_MIGRATIONS = [
     ("memories", "source", "VARCHAR(20) DEFAULT 'ai_summarized'"),
     ("tool_runs", "retry_count", "INTEGER DEFAULT 0"),
     # 群聊（spec: group-chat Phase 1）：该条消息的发言角色；1:1 保持 NULL。
-    ("messages", "speaker_id", "VARCHAR(36) REFERENCES character_profiles(id) ON DELETE SET NULL"),
+    # 不写 ON DELETE：SQLite 上 FK 强制从不开启（ADR-0005），声明级联只是装饰；
+    # 置空/删除由服务层显式完成（api/character.py）。
+    ("messages", "speaker_id", "VARCHAR(36) REFERENCES character_profiles(id)"),
     # 群聊（spec: group-chat Phase 2）：会话的群归属与"打开时补账"锚点。
     # groups 表由 create_all 先建，故此处的 REFERENCES 成立。
-    ("conversations", "group_id", "VARCHAR(36) REFERENCES groups(id) ON DELETE CASCADE"),
+    ("conversations", "group_id", "VARCHAR(36) REFERENCES groups(id)"),
     ("conversations", "last_extract_at", "DATETIME"),
 ]
 
@@ -127,8 +129,8 @@ async def ensure_group_schema(conn) -> bool:
     await conn.execute(text(
         "CREATE TABLE conversations_new ("
         " id VARCHAR(36) NOT NULL PRIMARY KEY,"
-        " character_id VARCHAR(36) REFERENCES character_profiles(id) ON DELETE CASCADE,"
-        " group_id VARCHAR(36) REFERENCES groups(id) ON DELETE CASCADE,"
+        " character_id VARCHAR(36) REFERENCES character_profiles(id),"
+        " group_id VARCHAR(36) REFERENCES groups(id),"
         " last_extract_at DATETIME,"
         " title VARCHAR(200) NOT NULL,"
         " summary TEXT,"

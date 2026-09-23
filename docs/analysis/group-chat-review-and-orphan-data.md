@@ -21,6 +21,9 @@
 | 5 | 存量孤儿数据未清理（2 条孤儿会话 / 39 条消息 / 6 条孤儿消息 / 11 条悬空 memories） | `data/companion.db` | 低（不影响运行） | **未清理** |
 | 6 | `_FALLBACK_AI_SPEAKER = "AI"` 的语义（spec 未定义该情形） | `backend/core/transcript.py:25` | 低 | 仅补文档，未改文案 |
 
+> **2026-09-23 更新**：上表 1–5 已实施，6 保持文档化。决策与后果见
+> `docs/adr/0005-service-layer-owns-referential-integrity.md`，实施记录见本文 **§C**。
+
 ---
 
 # A. 已修复项（本轮已改，未提交）
@@ -369,3 +372,41 @@ DELETE FROM memories WHERE character_id IS NOT NULL
    查孤儿会话/消息、`PRAGMA foreign_key_check`、`llm_usage` 的 distinct conversation_id。
    Windows 控制台注意设 `sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")`
    （消息内容含 emoji，GBK 会 `UnicodeEncodeError`）。
+
+---
+
+# C. 本批修复（已实施）
+
+> 2026-09-23。§B 的未修项按 §B3 的建议落地；三处决策：chat 接口 404 拒绝（前端自动新建会话）、
+> 删除角色连 memories 一起删、**不开启 FK 强制**而是把无效声明删掉并让服务层显式承担 —— 见 ADR-0005。
+
+| 项 | 实施 | 落点 |
+|---|---|---|
+| B2.3 / B3a 聊天接口不校验 `conversation_id` | HTTP → 404；WS 连接时**与每轮各查一次** → `error{code:"conversation_not_found"}` + close 4404；前端自动新建会话并重发 | `api/chat.py`、`services/conversationRecovery.ts`、`hooks/useWebSocket.ts`、`hooks/useChat.ts` |
+| B2.4 / B3b 删除角色不级联 | `_delete_character_dependents`：会话+消息、该角色的 memories、`speaker_id`→NULL、群成员资格、专属画像；变成 0 成员的群保留 | `api/character.py` |
+| B3c FK 二选一 | **不开启**：模型 / `ADDITIVE_MIGRATIONS` / 重建 DDL 里无效的 `ondelete=` 全部删除，引用完整性改由服务层显式完成 | ADR-0005、`models/*.py`、`database.py` |
+| 删会话留下悬空 `memories.source_conversation_id` | 显式置 NULL（记忆按角色保留） | `api/conversation.py` |
+| B1.1 角色名无非空校验 | strip 后非空 → 400（创建与更新共用 `_clean_character_name`） | `api/character.py` |
+| B4 存量清理 | `scripts/cleanup_orphan_data.py`：备份 → 单事务 → `foreign_key_check` 自证（`--dry-run` 可预演） | `scripts/` |
+
+**真实库结果**（`data/companion.db`；先 `init_db` 迁移，备份 `companion.db.bak-group-20260923-093546` 与 `companion.db.bak-orphans-*`）：
+
+| 指标 | 迁移前 | 清理前 | 清理后 |
+|---|---|---|---|
+| conversations | 4 | 4 | **2** |
+| messages | 77 | 77 | **32** |
+| memories | 994 | 994 | **984** |
+| `PRAGMA foreign_key_check` | 18 | 18 | **0** |
+| `conversations.character_id` NOT NULL | 1 | 0（重建迁移） | 0 |
+| `memory_fts` 残留 rowid | 1 | 1 | **0** |
+
+> `memories` 984 而非 B4 预估的 983：悬空 `memories.character_id` 实测 **10** 条（B2.1 记 11）。
+> 两条真实会话（19 + 13 条消息）与两个存活角色的 939 / 43 条记忆全数保留。
+> `llm_usage` 仍留 62 个已删会话 id —— 按 ADR-0005 属**有意保留**的记账日志，脚本刻意不动。
+
+**验证**：新增 15 个测试（`test_character_api.py` 9、`test_chat_conversation_guard.py` 4、`test_conversation_delete.py` 2），
+全量 `python -m pytest tests/ -q` → **442 passed**；前端 `npx tsc -b` exit 0；
+`scripts/check_group_migration.py` 在已迁移的真实库上 PASS（`rebuild ran: False`，幂等）。
+
+**有意未做**：B1.2 改 `"AI"` 兜底文案（spec 未定义该情形）；角色名长度上限（`Group` 名有 100 上限，
+角色名没有，DB 也不强制）—— 都留给后续决定。

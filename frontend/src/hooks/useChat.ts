@@ -3,6 +3,10 @@ import { useChatStore } from '../stores/chatStore';
 import { useAppStore } from '../stores/appStore';
 import { api } from '../services/api';
 import { toStoreMessage } from '../services/messageMapper';
+import { recoverMissingConversation } from '../services/conversationRecovery';
+import { getTranslation } from '../i18n/translations';
+import type { Lang } from '../i18n/translations';
+import { friendlyErrorKey } from '../utils/errorMessages';
 import type { ApiMessage } from '../types';
 
 // Module-level guard: prevents re-initialization when useChat is called
@@ -24,6 +28,7 @@ export function useChat() {
   const addMessage = useChatStore((s) => s.addMessage);
   const replaceMessageId = useChatStore((s) => s.replaceMessageId);
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const setErrorBubble = useChatStore((s) => s.setErrorBubble);
   const activeCharacter = useAppStore((s) => s.activeCharacter);
   const isConnected = useAppStore((s) => s.isConnected);
   const epoch = useRef(0);
@@ -81,34 +86,67 @@ export function useChat() {
       // (WS path, ticket #12) or user_message_id (HTTP fallback, ticket #13).
       const sent = wsSendMessage?.(text, activeCharacter.id, opts, userMsg.id) ?? false;
       if (!sent) {
-        try {
-          const res = await fetch('/api/chat/send', {
+        const post = (conversationId: string) =>
+          fetch('/api/chat/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               message: text,
-              conversation_id: currentConversationId,
+              conversation_id: conversationId,
               character_id: activeCharacter.id,
               client_message_id: userMsg.id,
             }),
           });
+        try {
+          let conversationId = currentConversationId;
+          let res = await post(conversationId);
+          if (res.status === 404) {
+            // The server no longer has this conversation and now refuses to
+            // persist against it (services/conversationRecovery). Open a fresh
+            // conversation and retry the same message once — nothing the user
+            // typed is lost to a stale id.
+            const recovered = await recoverMissingConversation(conversationId);
+            if (recovered) {
+              conversationId = recovered;
+              res = await post(recovered);
+            }
+          }
+          if (!res.ok) {
+            const detail = await res.json().catch(() => null);
+            throw new Error(detail?.detail || `HTTP ${res.status}`);
+          }
           const data = await res.json();
           if (data.user_message_id) {
             replaceMessageId(userMsg.id, data.user_message_id);
           }
           addMessage({
             id: data.message_id || `resp-${Date.now()}`,
-            conversationId: currentConversationId,
+            conversationId,
             role: 'assistant',
             content: data.content || '',
             createdAt: new Date().toISOString(),
           });
         } catch (e) {
           console.error('Failed to send message:', e);
+          // Same inline bubble as the WS path (issue #39). The HTTP fallback
+          // used to fall through to an empty assistant bubble on failure.
+          const message = e instanceof Error ? e.message : String(e);
+          const lang = (useAppStore.getState().config.language as Lang) || 'zh';
+          setErrorBubble({
+            friendly: getTranslation(friendlyErrorKey(message), lang),
+            raw: message,
+          });
         }
       }
     },
-    [activeCharacter, currentConversationId, addMessage, replaceMessageId, wsSendMessage]
+    [
+      activeCharacter,
+      currentConversationId,
+      addMessage,
+      replaceMessageId,
+      wsSendMessage,
+      setErrorBubble,
+    ]
   );
 
   const newConversation = useCallback(async () => {

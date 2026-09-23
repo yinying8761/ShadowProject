@@ -194,6 +194,19 @@ pops it and emits `memory_updated`.
   `Group`/`GroupMember` (fixed member set, `position` = speaking order),
   `Message` (has `tool_calls`, `tool_call_id`, `token_count`, `speaker_id`),
   `Memory`, `UserProfile`, `UserConfig`, `ToolRun` (tracing, has `retry_count`).
+- **Referential integrity is service-layer, not DB-enforced** (ADR-0005): FK
+  enforcement is off, so models carry **no `ondelete=`** — the declaration would
+  be a lie. Deleting a parent is an explicit multi-table operation
+  (`api/character.py::_delete_character_dependents`,
+  `api/conversation.py::delete_conversation`); a new table referencing a
+  character or conversation must be added there. `PRAGMA foreign_key_check` is
+  the audit; `scripts/cleanup_orphan_data.py` is the one-shot cleanup.
+- **A turn needs an existing conversation**: chat HTTP → 404,
+  `/ws/chat/{id}` → `error{code:"conversation_not_found"}` + close 4404,
+  re-checked every turn (a socket can outlive the conversation it was opened
+  for). The frontend then creates a fresh conversation and resends
+  (`services/conversationRecovery.ts`) — nothing is ever persisted against a
+  conversation that does not exist.
 
 ### 3.7 Group chat (Phase 1 + entity API shipped; turn orchestration pending)
 
@@ -219,6 +232,10 @@ list / create group conversation). Still pending: tickets #53–#55. Shape:
 - Schema: new `Group` / `GroupMember`, `Conversation.group_id` +
   `last_extract_at`, `Message.speaker_id`, and `Conversation.character_id`
   becomes **nullable** (one-time rebuild migration, not additive).
+- Refusing work for a conversation that no longer exists, and cleaning up after
+  a deleted character (orphan conversations/messages/memories), landed with the
+  review fixes — see ADR-0005 and
+  `docs/analysis/group-chat-review-and-orphan-data.md`.
 - Speaker resolution (Phase 1, already live): user → that conversation's
   `UserProfile.user_name` (else the `character_id=NULL` default, else 用户);
   1:1 assistant → the conversation's character; group assistant →

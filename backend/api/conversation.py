@@ -186,9 +186,20 @@ async def delete_conversation(
     conversation_id: str, session: AsyncSession = Depends(get_session)
 ):
     """Delete a conversation and its messages (memories persist per character)."""
+    from sqlalchemy import update
+
+    from models.memory import Memory
+
     conv = await session.get(Conversation, conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    # 记忆按角色保留，但不再指向已删除的会话：模型声明的语义是 SET NULL，
+    # 而 SQLite 不强制 FK（ADR-0005）—— 服务层显式补上，不给悬空引用留口子。
+    await session.execute(
+        update(Memory)
+        .where(Memory.source_conversation_id == conversation_id)
+        .values(source_conversation_id=None)
+    )
     await session.delete(conv)
     await session.commit()
     return {"status": "deleted"}

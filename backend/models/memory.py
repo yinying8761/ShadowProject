@@ -21,11 +21,13 @@ class Memory(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     importance: Mapped[int] = mapped_column(Integer, default=5)
+    # 两处都不写 ondelete=（ADR-0005）：SQLite 不强制 FK，语义由服务层补齐 ——
+    # 删会话 → source_conversation_id 置 NULL；删角色 → 该角色的记忆整体删除。
     source_conversation_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+        String(36), ForeignKey("conversations.id"), nullable=True
     )
     character_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("character_profiles.id", ondelete="SET NULL"), nullable=True
+        String(36), ForeignKey("character_profiles.id"), nullable=True
     )
     source: Mapped[str] = mapped_column(
         String(20), default=SOURCE_AI_SUMMARIZED

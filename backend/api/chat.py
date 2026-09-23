@@ -17,6 +17,14 @@ router = APIRouter()
 agent = Agent()
 conv_manager = ConversationManager()
 
+#: 会话不存在的统一拒绝载荷（HTTP 走 404，WS 发这个再关连接，code 4404）。
+#: 成因与复现见 docs/analysis/group-chat-review-and-orphan-data.md §B2.3。
+CONVERSATION_NOT_FOUND_EVENT = {
+    "type": "error",
+    "code": "conversation_not_found",
+    "message": "Conversation not found",
+}
+
 
 from services.screen_capture_gate import detects_screen_intent
 
@@ -32,7 +40,14 @@ class ChatRequest(BaseModel):
 @router.post("/api/chat/send")
 async def send_chat(req: ChatRequest, session: AsyncSession = Depends(get_session)):
     conv_id = req.conversation_id
-    if not conv_id:
+    if conv_id:
+        # 会话必须真实存在：不存在就 404 拒绝。否则 agent.run 会宽容地继续、
+        # 往一个没人拥有的 conversation_id 里落库 —— 那正是孤儿消息的来源。
+        from models.conversation import Conversation
+
+        if await session.get(Conversation, conv_id) is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
         conv = await conv_manager.get_or_create_conversation(session, req.character_id)
         conv_id = conv.id
 
@@ -93,20 +108,35 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         except Exception:
             return None
 
+    async def refuse_missing_conversation() -> None:
+        """会话不存在：拒绝并关掉这条连接（调用方随即 return）。"""
+        print(f"[WS] conversation {conversation_id} does not exist — refusing", flush=True)
+        await websocket.send_json(CONVERSATION_NOT_FOUND_EVENT)
+        await websocket.close(code=4404)
+
+    conv = None
+    lookup_failed = False
     try:
         from database import async_session
         from models.conversation import Conversation
 
         async with async_session() as session:
             conv = await session.get(Conversation, conversation_id)
-            if conv:
-                last_known_character_id = conv.character_id
-                print(
-                    f"[WS] resolved character_id={last_known_character_id} from conversation",
-                    flush=True,
-                )
     except Exception as e:
-        print(f"[WS] character_id lookup failed: {e}", flush=True)
+        # 查询本身出错（DB 抖动）时保持原有的宽容行为：只有"行确实不存在"
+        # 才拒绝 —— 否则一次瞬时故障会把用户踢进新会话、平白丢掉上下文。
+        lookup_failed = True
+        print(f"[WS] conversation lookup failed: {e}", flush=True)
+
+    if conv is None and not lookup_failed:
+        await refuse_missing_conversation()
+        return
+    if conv is not None:
+        last_known_character_id = conv.character_id
+        print(
+            f"[WS] resolved character_id={last_known_character_id} from conversation",
+            flush=True,
+        )
 
     def _char_id_getter() -> str | None:
         return last_known_character_id
@@ -453,6 +483,16 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             )
             return
 
+        # 会话可能在连接期间被删掉（多窗口挂着一个已删除的会话 id 继续聊，
+        # 或后端换了数据目录）：每一轮再确认一次，绝不往不存在/已删除的会话落库。
+        from database import async_session
+        from models.conversation import Conversation
+
+        async with async_session() as session:
+            if await session.get(Conversation, conversation_id) is None:
+                await refuse_missing_conversation()
+                return
+
         nonlocal last_known_character_id
         last_known_character_id = character_id
         proactive_session.reset_idle()
@@ -506,8 +546,6 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             task = asyncio.create_task(_send_llm_retry(attempt, max_retries))
             _retry_send_tasks.add(task)
             task.add_done_callback(_retry_send_tasks.discard)
-
-        from database import async_session
 
         try:
             async with async_session() as session:

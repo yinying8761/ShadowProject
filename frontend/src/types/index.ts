@@ -132,6 +132,8 @@ export interface WsBaseMessage {
   count?: number;
   reason?: string;
   client_message_id?: string;
+  /** Machine-readable error kind, e.g. `conversation_not_found` (api/chat.py). */
+  code?: string;
 }
 
 /**

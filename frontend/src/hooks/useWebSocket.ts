@@ -4,6 +4,7 @@ import { useAppStore } from '../stores/appStore';
 import { getTranslation } from '../i18n/translations';
 import type { Lang } from '../i18n/translations';
 import { friendlyErrorKey } from '../utils/errorMessages';
+import { recoverMissingConversation } from '../services/conversationRecovery';
 import type { WsMessage } from '../types';
 import { wsUrl } from '../utils/wsUrl';
 
@@ -150,6 +151,24 @@ export function useWebSocketBridge(conversationId: string | null) {
               console.error('Server error:', data.message);
               clearRetryState();
               setStreaming(false);
+
+              // The server no longer has this conversation and refuses to
+              // persist against it. Recover by opening a fresh conversation;
+              // the effect re-runs and reconnects to it. This socket is done:
+              // reconnecting would only hit the same dead id again.
+              if (data.code === 'conversation_not_found') {
+                closingOnPurpose.current = true;
+                void recoverMissingConversation(conversationId ?? '').then((recovered) => {
+                  if (recovered) return;
+                  const l = (useAppStore.getState().config.language as Lang) || 'zh';
+                  setErrorBubble({
+                    friendly: getTranslation(friendlyErrorKey(data.message), l),
+                    raw: data.message || '',
+                  });
+                });
+                break;
+              }
+
               const lang = (useAppStore.getState().config.language as Lang) || 'zh';
               setErrorBubble({
                 friendly: getTranslation(friendlyErrorKey(data.message), lang),
