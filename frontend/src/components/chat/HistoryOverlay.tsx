@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/appStore';
 import { useChat } from '../../hooks/useChat';
 import { useTranslation } from '../../i18n/useTranslation';
 import { api } from '../../services/api';
+import { withTranscript } from '../../services/messageMapper';
 
 export function HistoryOverlay() {
   const showHistory = useAppStore((s) => s.showHistory);
@@ -47,10 +48,7 @@ export function HistoryOverlay() {
         if (cancelled) return;
         const byId = new Map(fresh.map((m) => [m.id, m]));
         useChatStore.setState((s) => ({
-          messages: s.messages.map((m) => {
-            const f = byId.get(m.id);
-            return f?.transcript ? { ...m, transcript: f.transcript } : m;
-          }),
+          messages: s.messages.map((m) => withTranscript(m, byId.get(m.id))),
         }));
       } catch {
         // 历史接口不可达时维持现状

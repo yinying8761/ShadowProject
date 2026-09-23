@@ -3,73 +3,68 @@
 Seam: GET /api/conversations/{id}/messages — each message carries
 `transcript` (shared-renderer line, null for tool plumbing) and
 `speaker` (resolved name). Also covers the additive `messages.speaker_id`
-migration (nullable, data preserved).
+migration (nullable, data preserved) through the authoritative migration
+sequence (ADR-0004).
+
+Fixtures `engine` / `session_factory` / `client` and the pre-group DDL
+constants live in `conftest.py`.
 """
 
-import pytest
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+import warnings
+from datetime import datetime
 
-from database import Base, get_session
+import pytest
+from sqlalchemy import delete, text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from conftest import OLD_MESSAGES_DDL
+from database import Base
 from models.character import CharacterProfile
 from models.conversation import Conversation
+from models.group import Group, GroupMember
 from models.message import Message
 from models.user_profile import UserProfile
 
-
-@pytest.fixture
-async def engine():
-    e = create_async_engine("sqlite+aiosqlite://", echo=False)
-    async with e.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield e
-    await e.dispose()
-
-
-@pytest.fixture
-async def session_factory(engine):
-    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-@pytest.fixture
-async def client(engine, session_factory):
-    from main import app
-
-    async def override_get_session():
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_session] = override_get_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.clear()
+BASE_TIME = datetime(2026, 9, 20, 6, 25, 0)  # naive UTC → 14:25 in +8
 
 
 async def _seed(factory, *, profile_user_name="小明"):
     """Character + conversation + one exchange (+ tool plumbing)."""
-    from datetime import datetime
-
     async with factory() as s:
         s.add(CharacterProfile(id="char-h", name="小柔", personality="", role="companion", archetype="friend"))
         s.add(Conversation(id="conv-h", character_id="char-h"))
         if profile_user_name is not None:
             s.add(UserProfile(character_id="char-h", user_name=profile_user_name))
-        base = datetime(2026, 9, 20, 6, 25, 0)
-        s.add(Message(id="hm1", conversation_id="conv-h", role="user", content="现在几点了", created_at=base))
+        s.add(Message(id="hm1", conversation_id="conv-h", role="user", content="现在几点了", created_at=BASE_TIME))
         s.add(Message(
             id="hm2", conversation_id="conv-h", role="assistant", content="",
-            created_at=datetime(2026, 9, 20, 6, 25, 1),
+            created_at=BASE_TIME.replace(second=1),
             tool_calls=[{"id": "c1", "name": "get_current_time", "arguments": {}}],
         ))
         s.add(Message(
             id="hm3", conversation_id="conv-h", role="tool",
             content='{"local_time": "2026-09-20 14:25:00"}',
-            created_at=datetime(2026, 9, 20, 6, 25, 2), tool_call_id="c1",
+            created_at=BASE_TIME.replace(second=2), tool_call_id="c1",
         ))
         s.add(Message(id="hm4", conversation_id="conv-h", role="assistant", content="现在是下午两点半哦",
-                      created_at=datetime(2026, 9, 20, 6, 25, 3)))
+                      created_at=BASE_TIME.replace(second=3)))
+        await s.commit()
+
+
+async def _seed_group(factory):
+    """Group with two members + one group conversation carrying a speaker."""
+    async with factory() as s:
+        s.add(CharacterProfile(id="char-a", name="小柔", personality="", role="companion", archetype="friend"))
+        s.add(CharacterProfile(id="char-b", name="阿B", personality="", role="companion", archetype="friend"))
+        s.add(Group(id="grp-1", name="周末火锅群"))
+        s.add(GroupMember(group_id="grp-1", character_id="char-a", position=0))
+        s.add(GroupMember(group_id="grp-1", character_id="char-b", position=1))
+        s.add(Conversation(id="conv-g", character_id=None, group_id="grp-1"))
+        s.add(UserProfile(character_id=None, user_name="小明"))
+        s.add(Message(id="gm1", conversation_id="conv-g", role="user", content="你们怎么看",
+                      created_at=BASE_TIME))
+        s.add(Message(id="gm2", conversation_id="conv-g", role="assistant", content="我不同意",
+                      speaker_id="char-b", created_at=BASE_TIME.replace(second=1)))
         await s.commit()
 
 
@@ -119,14 +114,12 @@ class TestHistoryTranscript:
     @pytest.mark.asyncio
     async def test_speaker_id_exposed(self, client, session_factory):
         """Group-ready: a message with speaker_id returns it verbatim (nullable)."""
-        from datetime import datetime
-
         await _seed(session_factory)
         async with session_factory() as s:
             s.add(Message(
                 id="hm5", conversation_id="conv-h", role="assistant",
                 content="我不同意", speaker_id="char-b",
-                created_at=datetime(2026, 9, 20, 6, 25, 4),
+                created_at=BASE_TIME.replace(second=4),
             ))
             await s.commit()
 
@@ -136,43 +129,85 @@ class TestHistoryTranscript:
         assert by_id["hm5"]["speaker_id"] == "char-b"
 
 
+class TestGroupHistoryTranscript:
+    """群聊 Phase 1: 群 AI 消息 → 该条消息的发言角色名（spec L24/L76）。"""
+
+    @pytest.mark.asyncio
+    async def test_group_message_speaks_as_its_member(self, client, session_factory):
+        """speaker_id picks the speaking member, not the (absent) conversation character."""
+        await _seed_group(session_factory)
+
+        r = await client.get("/api/conversations/conv-g/messages")
+        assert r.status_code == 200
+        by_id = {m["id"]: m for m in r.json()}
+        assert by_id["gm1"]["speaker"] == "小明"
+        assert by_id["gm1"]["transcript"] == "2026/9/20 14:25 [小明]: 你们怎么看"
+        assert by_id["gm2"]["speaker"] == "阿B"
+        assert by_id["gm2"]["transcript"] == "2026/9/20 14:25 [阿B]: 我不同意"
+
+    @pytest.mark.asyncio
+    async def test_removed_member_keeps_their_name(self, client, session_factory):
+        """成员被移出群后，他此前说的话仍显示自己的角色名，而不是 AI。
+
+        speaker_id 是「这条消息是谁说的」的权威来源；成员资格是可变的
+        （「编辑群」是覆盖式管理操作），所以说话人按消息的 speaker_id 解析，
+        而不是按当前成员列表。
+        """
+        await _seed_group(session_factory)
+        async with session_factory() as s:
+            # 「编辑群」把 char-b 移出成员列表——他那条 gm2 仍在历史里
+            await s.execute(delete(GroupMember).where(GroupMember.character_id == "char-b"))
+            await s.commit()
+
+        r = await client.get("/api/conversations/conv-g/messages")
+        assert r.status_code == 200
+        by_id = {m["id"]: m for m in r.json()}
+        assert by_id["gm2"]["speaker"] == "阿B"
+        assert by_id["gm2"]["transcript"] == "2026/9/20 14:25 [阿B]: 我不同意"
+
+    @pytest.mark.asyncio
+    async def test_group_history_never_looks_up_a_null_primary_key(self, client, session_factory):
+        """群对话没有单一角色：不得拿 character_id=None 去查角色。
+
+        SQLAlchemy 会为此发 `SAWarning: fully NULL primary key identity…`
+        并预告将来报错——所以这里把"没有该警告"锁成行为。
+        """
+        await _seed_group(session_factory)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            r = await client.get("/api/conversations/conv-g/messages")
+
+        assert r.status_code == 200
+        null_pk = [str(w.message) for w in caught if "NULL primary key" in str(w.message)]
+        assert null_pk == []
+
+
 class TestSpeakerIdMigration:
     @pytest.mark.asyncio
-    async def test_additive_migration_adds_nullable_speaker_id(self, session_factory):
-        """Old DB without messages.speaker_id → ADDITIVE_MIGRATIONS adds it; data intact."""
-        from database import _apply_additive_migrations
-
+    async def test_sequence_adds_nullable_speaker_id_preserving_data(self):
+        """Old DB without messages.speaker_id → the authoritative sequence adds it
+        (nullable, existing rows intact)."""
         engine = create_async_engine("sqlite+aiosqlite://", echo=False)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Simulate a pre-ticket DB: rebuild messages without speaker_id
             # (SQLite cannot DROP a FOREIGN KEY column).
             await conn.execute(text("DROP TABLE messages"))
-            await conn.execute(text(
-                "CREATE TABLE messages ("
-                " id VARCHAR(36) PRIMARY KEY,"
-                " conversation_id VARCHAR(36) NOT NULL"
-                "   REFERENCES conversations(id) ON DELETE CASCADE,"
-                " role VARCHAR(20) NOT NULL,"
-                " content TEXT,"
-                " tool_calls JSON,"
-                " tool_call_id VARCHAR(100),"
-                " token_count INTEGER,"
-                " created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
-            ))
+            await conn.execute(text(OLD_MESSAGES_DDL))
             # Seed a row the old way (no speaker_id).
             await conn.execute(text(
                 "INSERT INTO messages (id, conversation_id, role, content) "
                 "VALUES ('old-1', 'conv-x', 'user', '旧数据')"
             ))
 
+        from database import run_migration_sequence
         async with engine.begin() as conn:
-            await _apply_additive_migrations(conn)
+            await run_migration_sequence(conn)
 
         async with engine.begin() as conn:
             info = await conn.execute(text("PRAGMA table_info(messages)"))
-            cols = {row[1] for row in info.fetchall()}
-            assert "speaker_id" in cols
+            assert "speaker_id" in {row[1] for row in info.fetchall()}
             rows = (await conn.execute(text("SELECT id, speaker_id FROM messages"))).fetchall()
             assert rows == [("old-1", None)]  # nullable + data preserved
         await engine.dispose()

@@ -12,12 +12,28 @@ Pure functions: no DB, no IO, no clock. Message inputs are duck-typed
 """
 
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, NamedTuple
 
 #: Speaker shown for user messages when no profile name is available.
 DEFAULT_USER_SPEAKER = "\u7528\u6237"  # 用户
 
+#: Last resort for an assistant message whose character cannot be named — a
+#: deleted character, or a group message whose `speaker_id` resolves to no
+#: member. The spec defines no name for this case; it exists so that a line
+#: always renders rather than blowing up. Callers should prefer to pass
+#: `character_name` / `speaker_names` so this never shows.
 _FALLBACK_AI_SPEAKER = "AI"
+
+
+class RenderedLine(NamedTuple):
+    """One rendered transcript line — speaker and text resolved together.
+
+    Consumers that need both fields (the history API returns `speaker` *and*
+    `transcript` per message) take this instead of calling the renderer twice.
+    """
+
+    speaker: str
+    text: str  # `YYYY/M/D HH:MM [说话人]: 内容`
 
 
 def _to_local(dt: datetime, tz) -> datetime:
@@ -75,22 +91,23 @@ def resolve_speaker(
     return character_name or _FALLBACK_AI_SPEAKER
 
 
-def render_transcript(
+def render_lines(
     messages: Iterable[Any],
     *,
     user_name: str | None = None,
     character_name: str | None = None,
     speaker_names: Mapping[str, str] | None = None,
     tz=None,
-) -> list[str | None]:
-    """Render each message as `YYYY/M/D HH:MM [说话人]: 内容`.
+) -> list[RenderedLine | None]:
+    """Render each message once as `YYYY/M/D HH:MM [说话人]: 内容`.
 
-    Returns one entry per input message (alignment preserved). Tool-role
-    messages and tool-call carriers render as None \u2014 callers keep them in
+    Returns one `RenderedLine` per message, or None for tool-role messages and
+    tool-call carriers (alignment preserved) — callers keep that plumbing in
     their own pass-through form (LLM context: raw content; history API:
-    transcript=null).
+    transcript=null). Consumers needing both the speaker and the text (the
+    history API) take this and never render twice.
     """
-    lines: list[str | None] = []
+    rendered: list[RenderedLine | None] = []
     for msg in messages:
         speaker = resolve_speaker(
             msg,
@@ -99,8 +116,33 @@ def render_transcript(
             speaker_names=speaker_names,
         )
         if speaker is None:
-            lines.append(None)
+            rendered.append(None)
             continue
         ts = format_message_time(msg.created_at, tz=tz)
-        lines.append(f"{ts} [{speaker}]: {msg.content}")
-    return lines
+        rendered.append(RenderedLine(speaker, f"{ts} [{speaker}]: {msg.content}"))
+    return rendered
+
+
+def render_transcript(
+    messages: Iterable[Any],
+    *,
+    user_name: str | None = None,
+    character_name: str | None = None,
+    speaker_names: Mapping[str, str] | None = None,
+    tz=None,
+) -> list[str | None]:
+    """Text-only projection of `render_lines` — one `str | None` per message.
+
+    For consumers that need just the line (LLM context assembly). The
+    formatting rules live in `render_lines`, never here.
+    """
+    return [
+        line.text if line is not None else None
+        for line in render_lines(
+            messages,
+            user_name=user_name,
+            character_name=character_name,
+            speaker_names=speaker_names,
+            tz=tz,
+        )
+    ]

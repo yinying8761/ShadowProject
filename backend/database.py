@@ -1,5 +1,6 @@
 import asyncio
-import inspect
+import shutil
+from datetime import datetime
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -77,12 +78,9 @@ async def _apply_additive_migrations(conn) -> None:
 
 def _backup_db_before_group_migration() -> None:
     """重建迁移是破坏性的：先对 DB 文件做一次快照备份；备份失败则中止迁移。"""
-    import shutil
-    from datetime import datetime as _dt
-
     if not DB_PATH.exists():
         return  # 内存库或尚无文件，无需备份
-    stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = DB_PATH.with_name(f"{DB_PATH.name}.bak-group-{stamp}")
     shutil.copy2(DB_PATH, backup)
     print(f"[DB] backup before group migration -> {backup}", flush=True)
@@ -98,7 +96,7 @@ async def conversations_need_group_rebuild(conn) -> bool:
     return char is not None and bool(char[3])
 
 
-async def ensure_group_schema(conn, *, before_rebuild=None) -> bool:
+async def ensure_group_schema(conn) -> bool:
     """conversations.character_id NOT NULL → nullable 的一次性重建迁移（群聊，#51）。
 
     偏离"只加列"惯例：SQLite 无法去掉 NOT NULL 约束，必须重建表
@@ -109,8 +107,9 @@ async def ensure_group_schema(conn, *, before_rebuild=None) -> bool:
       依赖 additive 已补齐 group_id / last_extract_at。
     - 前置条件：PRAGMA foreign_keys=OFF（FK=ON 时 DROP TABLE 退化为隐式 DELETE，
       触发 messages 的 ON DELETE CASCADE）——检测到开启则拒绝执行。
-    - 破坏性步骤（DROP 旧表）前调用 before_rebuild()（同步或异步可调用均可）。
     - 整个重建在调用方事务里执行，任何一步失败即整体回滚。
+    - 备份是 init_db 的职责，且在迁移事务**之外**完成（快照必须是未被本事务
+      触碰的干净文件）——这里不提供回调钩子。
     """
     if not await conversations_need_group_rebuild(conn):
         return False
@@ -122,11 +121,6 @@ async def ensure_group_schema(conn, *, before_rebuild=None) -> bool:
             "enforcement DROP TABLE degrades to a cascading implicit DELETE on "
             "messages (see docs/adr/0004-conversations-character-id-nullable.md)"
         )
-
-    if before_rebuild is not None:
-        outcome = before_rebuild()
-        if inspect.isawaitable(outcome):
-            await outcome
 
     # 新表 DDL 与 models.conversation 逐列一致（列序、NOT NULL、默认值）——
     # test_group_migration 的 parity 测试锁定这一点，改模型必须同步改这里。
@@ -157,7 +151,7 @@ async def ensure_group_schema(conn, *, before_rebuild=None) -> bool:
     return True
 
 
-async def run_migration_sequence(conn, *, before_rebuild=None) -> bool:
+async def run_migration_sequence(conn) -> bool:
     """唯一权威的迁移顺序：create_all → additive → 群重建（ADR-0004）。
 
     init_db、测试与 scripts/check_group_migration.py 都走这里，
@@ -165,7 +159,7 @@ async def run_migration_sequence(conn, *, before_rebuild=None) -> bool:
     """
     await conn.run_sync(Base.metadata.create_all)
     await _apply_additive_migrations(conn)
-    return await ensure_group_schema(conn, before_rebuild=before_rebuild)
+    return await ensure_group_schema(conn)
 
 
 async def init_db():

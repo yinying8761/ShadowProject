@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useChatStore } from '../stores/chatStore';
 import { useAppStore } from '../stores/appStore';
 import { api } from '../services/api';
+import { toStoreMessage } from '../services/messageMapper';
 import type { ApiMessage } from '../types';
 
 // Module-level guard: prevents re-initialization when useChat is called
@@ -49,16 +50,7 @@ export function useChat() {
           if (gen !== epoch.current) return; // stale
 
           setConversationId(convId);
-          setMessages(
-            msgs.map((m: ApiMessage) => ({
-              id: m.id,
-              conversationId: convId,
-              role: m.role,
-              content: m.content,
-              createdAt: m.created_at,
-              transcript: m.transcript ?? null,
-            }))
-          );
+          setMessages(msgs.map((m: ApiMessage) => toStoreMessage(m, convId)));
         } else {
           const conv = await api.createConversation(activeCharacter.id);
           if (gen !== epoch.current) return; // stale
@@ -137,16 +129,7 @@ export function useChat() {
       try {
         const msgs = await api.fetchMessages(convId);
         setConversationId(convId);
-        setMessages(
-          msgs.map((m: ApiMessage) => ({
-            id: m.id,
-            conversationId: convId,
-            role: m.role,
-            content: m.content,
-            createdAt: m.created_at,
-            transcript: m.transcript ?? null,
-          }))
-        );
+        setMessages(msgs.map((m: ApiMessage) => toStoreMessage(m, convId)));
       } catch (e) {
         console.error('Failed to switch conversation:', e);
       }

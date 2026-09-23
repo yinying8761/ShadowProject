@@ -76,3 +76,33 @@ class TestGetContextMessagesTranscript:
             ctx = await mgr.get_context_messages(s, "conv-ctx")
         assert ctx[0]["content"] == "2026/9/20 14:25 [用户]: 现在几点了"
         assert ctx[3]["content"] == "2026/9/20 14:25 [AI]: 现在是下午两点半哦"
+
+
+class TestPrefixDoesNotChangeTheWindow:
+    @pytest.mark.asyncio
+    async def test_trim_boundary_is_unchanged_by_the_prefix(self, factory):
+        """spec: 前缀是**纯增量**——滑动窗口装下哪些消息必须和加前缀之前一致。
+
+        3 条消息内容各 40 个 ASCII 字符（原始估算 40 × 0.25 = 10 token/条）。
+        max_tokens=30 时按原始内容估算刚好装下 3 条；若把前缀（约 +6 token/条）
+        也算进预算，就只能装下 1 条。这里锁住前者。
+        """
+        from core.conversation_manager import ConversationManager
+
+        async with factory() as s:
+            s.add(Conversation(id="conv-win", character_id="char-ctx"))
+            for i in range(3):
+                s.add(Message(
+                    id=f"w{i}", conversation_id="conv-win", role="user",
+                    content="a" * 40, created_at=datetime(2026, 9, 20, 6, 25, i),
+                ))
+            await s.commit()
+
+        mgr = ConversationManager()
+        async with factory() as s:
+            ctx = await mgr.get_context_messages(
+                s, "conv-win", max_tokens=30, user_name="小明", character_name="小柔",
+            )
+
+        assert len(ctx) == 3
+        assert all(m["content"].startswith("2026/9/20 14:25 [小明]: ") for m in ctx)

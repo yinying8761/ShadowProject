@@ -66,7 +66,7 @@ backend/
   api/                    # FastAPI routers
     chat.py               # POST /api/chat/send + WS /ws/chat/{id} (the big one)
     logs.py               # WS /ws/logs debug channel: history + live tail + commands
-    character.py, conversation.py, config.py, user_profile.py, tts.py, tool_logs.py
+    character.py, conversation.py, group.py, config.py, user_profile.py, tts.py, tool_logs.py
   models/                 # SQLAlchemy ORM: character, conversation, group, message, memory,
                           #   user_config, user_profile, tool_run
   tools/                  # tool handlers: file_tools, search_tools, memory_tools,
@@ -183,17 +183,26 @@ pops it and emits `memory_updated`.
 - `Base.metadata.create_all` creates missing tables only. **Schema evolution uses
   `ADDITIVE_MIGRATIONS`** in `database.py` — a list of `(table, column, decl)`
   probed with `PRAGMA table_info` and `ALTER TABLE ADD COLUMN` on miss. Add new
-  columns there, never assume `create_all` alters existing tables.
+  columns there, never assume `create_all` alters existing tables. For a
+  **constraint** change SQLite cannot do additively, there is a second,
+  explicitly non-additive path: `database.ensure_group_schema` (probe → backup →
+  rebuild → rename, one transaction — ADR-0004). `run_migration_sequence` is the
+  single authoritative order (`create_all` → additive → rebuild); `init_db`,
+  tests and `scripts/check_group_migration.py` all go through it.
 - Models: `CharacterProfile`, `Conversation` (`character_id` nullable since
   ADR-0004; group conversations carry `group_id` + `last_extract_at` instead),
   `Group`/`GroupMember` (fixed member set, `position` = speaking order),
   `Message` (has `tool_calls`, `tool_call_id`, `token_count`, `speaker_id`),
   `Memory`, `UserProfile`, `UserConfig`, `ToolRun` (tracing, has `retry_count`).
 
-### 3.7 Group chat (spec'd, pending implementation)
+### 3.7 Group chat (Phase 1 + entity API shipped; turn orchestration pending)
 
 `docs/specs/group-chat.md` defines a **群** (fixed character set + shared
-transcript) whose conversations hold multiple speakers. Shape:
+transcript) whose conversations hold multiple speakers. Delivered so far: the
+shared timestamped-transcript renderer (Phase 1 — `core/transcript.py`, feeding
+both LLM context and the history API), the group data model + rebuild migration
+(ticket #51/ADR-0004), and the group entity API (`api/group.py`: create / edit /
+list / create group conversation). Still pending: tickets #53–#55. Shape:
 
 - **Serial** turn orchestration: members reply in order; each may **skip**
   (emits `<silent>`, dropped) or continue. A **chain budget** (6 role messages
@@ -210,6 +219,12 @@ transcript) whose conversations hold multiple speakers. Shape:
 - Schema: new `Group` / `GroupMember`, `Conversation.group_id` +
   `last_extract_at`, `Message.speaker_id`, and `Conversation.character_id`
   becomes **nullable** (one-time rebuild migration, not additive).
+- Speaker resolution (Phase 1, already live): user → that conversation's
+  `UserProfile.user_name` (else the `character_id=NULL` default, else 用户);
+  1:1 assistant → the conversation's character; group assistant →
+  `Message.speaker_id` looked up as a character name (by the message's own
+  speaker, **not** by current group membership — membership is editable). Tool-role
+  messages and tool-call carriers never carry a prefix.
 
 ## 4. Frontend shape
 
@@ -286,9 +301,12 @@ or circuit-breaker failures).
   implementation detail. See `backend/tests/test_tool_runtime.py`,
   `test_agent_tools.py`, `test_circuit_breaker.py`, `test_tool_retry.py` for
   the canonical patterns.
-- **One transcript renderer**: the LLM context and the history view must render
+- **One transcript renderer**: `core/transcript.py` — the LLM context and the
+  history view must render
   messages through the *same* timestamped-transcript formatter (§7 时间戳对话记录)
-  — never a second copy of the formatting rules.
+  — never a second copy of the formatting rules. `render_transcript` returns the
+  text lines (LLM context); `render_lines` returns speaker + text together (the
+  history API needs both, and renders once).
 - **Specs & tickets**: a spec (`docs/specs/<name>.md`) describes the PRD; tickets
   (`docs/Tickets/<name>/issues/NN-*.md`) are the ready-for-agent checklists
   (state `Blocked by:` explicitly). The `(done)` filename suffix marks a
@@ -312,7 +330,7 @@ or circuit-breaker failures).
 | 主动陪伴 | Proactive | idle/scheduled triggers from `ProactiveWatcher`/`ProactiveSession` |
 | 每日问候 | Daily greeting | first-open contextual greeting via `GreetingOrchestrator` |
 | 熔断 | Circuit breaker | per-tool CLOSED/OPEN/HALF_OPEN fault isolation |
-| 增量迁移 | Additive migration | `database.ADDITIVE_MIGRATIONS` column additions |
+| 增量迁移 | Additive migration | `database.ADDITIVE_MIGRATIONS` column additions（约束变更走非增量重建路径，见 ADR-0004） |
 | 供应商 | Provider | 官方 API 渠道 + 中转站（如 opencode-go、AIcodeMirror）；内置预设硬编码，自定义的可增删。_Avoid_: 提供方、服务商 |
 | 自定义供应商 | Custom provider | 用户自建的供应商条目：名字 + base_url，存于 `config.yaml` 的 `providers:` |
 | 模型 | Model | 实际调用的模型 id 字符串（如 `deepseek-chat`） |

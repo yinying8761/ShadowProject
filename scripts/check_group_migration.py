@@ -43,7 +43,7 @@ async def migrate(copy: Path) -> bool:
     try:
         async with engine.begin() as conn:
             # The copy itself is the backup — no extra file snapshot needed.
-            return await run_migration_sequence(conn, before_rebuild=lambda: None)
+            return await run_migration_sequence(conn)
     finally:
         await engine.dispose()
 

@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select
 
-from core.transcript import render_transcript, resolve_speaker
+from api.user_profile import resolve_user_profile
+from core.transcript import render_lines
 from database import get_session
 from models.character import CharacterProfile
 from models.conversation import Conversation
 from models.message import Message
-from models.user_profile import UserProfile
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -69,6 +69,25 @@ async def get_conversation(
     }
 
 
+async def _speaker_names_for(session: AsyncSession, messages) -> dict[str, str]:
+    """`speaker_id` → 角色名 for the speakers that actually appear in `messages`.
+
+    Resolved from the messages' own `speaker_id`s, **not** from current group
+    membership: membership is editable, so a member removed after speaking must
+    still render under their own name rather than falling back to "AI"
+    (spec: group-chat Phase 1 — "群聊的 AI 消息 → 该条消息的发言角色名").
+    The FK on `Message.speaker_id` is what makes this a name lookup at all.
+    """
+    speaker_ids = {m.speaker_id for m in messages if m.speaker_id}
+    if not speaker_ids:
+        return {}
+    rows = (await session.execute(
+        select(CharacterProfile.id, CharacterProfile.name)
+        .where(CharacterProfile.id.in_(speaker_ids))
+    )).all()
+    return {character_id: name for character_id, name in rows}
+
+
 @router.get("/{conversation_id}/messages")
 async def get_messages(
     conversation_id: str,
@@ -84,35 +103,29 @@ async def get_messages(
     result = await session.execute(query)
     messages = result.scalars().all()
 
-    # Speaker resolution for the shared transcript renderer — the ONE
-    # transcript formatter serves both the LLM context and this history view
-    # (CONTEXT.md §6 / spec: group-chat Phase 1). Never format locally.
+    # Speaker inputs for the shared transcript renderer — the ONE transcript
+    # formatter serves both the LLM context and this history view (CONTEXT.md
+    # §6 / spec: group-chat Phase 1). Never format locally.
     character_name = None
     user_name = None
     conv = await session.get(Conversation, conversation_id)
     if conv:
-        char = await session.get(CharacterProfile, conv.character_id)
-        character_name = char.name if char else None
-        profile = (await session.execute(
-            select(UserProfile)
-            .where(UserProfile.character_id == conv.character_id)
-            .order_by(desc(UserProfile.updated_at))
-            .limit(1)
-        )).scalar_one_or_none()
-        if profile is None:
-            profile = (await session.execute(
-                select(UserProfile)
-                .where(UserProfile.character_id.is_(None))
-                .order_by(desc(UserProfile.updated_at))
-                .limit(1)
-            )).scalar_one_or_none()
+        # A group conversation has no single character: skip the lookup
+        # entirely rather than asking for a NULL primary key.
+        if conv.character_id:
+            char = await session.get(CharacterProfile, conv.character_id)
+            character_name = char.name if char else None
+        profile = await resolve_user_profile(session, conv.character_id)
         user_name = profile.user_name if profile else None
 
-    speakers = [
-        resolve_speaker(m, user_name=user_name, character_name=character_name)
-        for m in messages
-    ]
-    lines = render_transcript(messages, user_name=user_name, character_name=character_name)
+    speaker_names = await _speaker_names_for(session, messages)
+
+    rendered = render_lines(
+        messages,
+        user_name=user_name,
+        character_name=character_name,
+        speaker_names=speaker_names,
+    )
 
     return [
         {
@@ -123,10 +136,10 @@ async def get_messages(
             "token_count": m.token_count,
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "speaker_id": m.speaker_id,
-            "speaker": speaker,
-            "transcript": line,
+            "speaker": line.speaker if line else None,
+            "transcript": line.text if line else None,
         }
-        for m, speaker, line in zip(messages, speakers, lines)
+        for m, line in zip(messages, rendered)
     ]
 
 

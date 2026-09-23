@@ -51,20 +51,21 @@ class ConversationManager:
         total_tokens = 0
 
         # One shared-renderer pass (oldest→newest); tool plumbing keeps raw
-        # content. Token estimation counts the rendered prefix, so trimming is
-        # marginally more conservative than raw-content estimation.
+        # content. Trimming is estimated on the RAW content, so the transcript
+        # prefix is a pure content addition: the sliding window keeps exactly
+        # the messages it kept before (spec: group-chat — 1:1 behaviour change
+        # must be "纯增量", never a different set of messages).
         ordered = list(reversed(messages))
         lines = render_transcript(
             ordered, user_name=user_name, character_name=character_name,
         )
         for msg, line in zip(ordered, lines):
-            content = line if line is not None else msg.content
-            tokens = self.estimate_tokens(content)
+            tokens = self.estimate_tokens(msg.content)
             if total_tokens + tokens > limit and context:
                 break
             context.append({
                 "role": msg.role,
-                "content": content,
+                "content": line if line is not None else msg.content,
             })
             total_tokens += tokens
 

@@ -2,15 +2,19 @@
 
 Seams:
 - models.Group / models.GroupMember (fixed member set + speaking order) via create_all
-- Conversation.group_id / last_extract_at: fresh-DB shape + additive migration on an old DB
 - A group conversation exists WITHOUT a single character (character_id NULL) —
   the modeling decision ADR-0004 records.
+
+The old-DB migration behaviour (character_id becomes nullable, group_id /
+last_extract_at arrive) is covered by `test_group_migration.py` through the
+authoritative sequence `database.run_migration_sequence` — the only supported
+way to exercise migration order (ADR-0004).
 """
 
 from datetime import datetime
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -93,26 +97,3 @@ class TestGroupModels:
                 select(Message).where(Message.conversation_id == "conv-g")
             )).scalar_one()
             assert msg.speaker_id == "c2"
-
-
-class TestConversationGroupColumnsMigration:
-    @pytest.mark.asyncio
-    async def test_additive_migration_adds_group_columns(self, old_conversations_ddl):
-        """Old DB (pre-group conversations table) → ADDITIVE_MIGRATIONS adds both
-        columns; character_id stays NOT NULL (the rebuild migration owns that)."""
-        engine = create_async_engine("sqlite+aiosqlite://", echo=False)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            # Simulate a pre-group DB (FK columns cannot be DROPped in SQLite).
-            await conn.execute(text("DROP TABLE conversations"))
-            await conn.execute(text(old_conversations_ddl))
-
-        from database import _apply_additive_migrations
-        async with engine.begin() as conn:
-            await _apply_additive_migrations(conn)
-            info = await conn.execute(text("PRAGMA table_info(conversations)"))
-            rows = info.fetchall()
-            cols = {row[1]: row[3] for row in rows}  # name → notnull
-            assert {"group_id", "last_extract_at"} <= set(cols)
-            assert cols["character_id"] == 1  # additive 不改约束，交给重建迁移
-        await engine.dispose()

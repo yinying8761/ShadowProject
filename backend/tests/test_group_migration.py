@@ -12,16 +12,17 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from conftest import OLD_CONVERSATIONS_DDL
 from database import Base
 
 
-async def _make_old_db(old_conversations_ddl: str):
+async def _make_old_db():
     """Fresh engine whose conversations table is the PRE-GROUP shape (NOT NULL)."""
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text("DROP TABLE conversations"))
-        await conn.execute(text(old_conversations_ddl))
+        await conn.execute(text(OLD_CONVERSATIONS_DDL))
         await conn.execute(text(
             "INSERT INTO conversations (id, character_id, title, summary, created_at, updated_at) VALUES "
             "('conv-1', 'c1', '旧的会话', '旧的摘要', '2026-09-20 06:25:00', '2026-09-20 07:00:00'),"
@@ -34,11 +35,11 @@ async def _make_old_db(old_conversations_ddl: str):
     return engine
 
 
-async def _run_migration(engine, *, before_rebuild=None):
+async def _run_migration(engine):
     """init_db 的迁移序列（单一权威实现：database.run_migration_sequence）。"""
     from database import run_migration_sequence
     async with engine.begin() as conn:
-        return await run_migration_sequence(conn, before_rebuild=before_rebuild)
+        return await run_migration_sequence(conn)
 
 
 async def _conversations_schema(conn):
@@ -48,13 +49,11 @@ async def _conversations_schema(conn):
 
 class TestConversationsRebuildMigration:
     @pytest.mark.asyncio
-    async def test_rebuild_makes_character_id_nullable_and_preserves_data(self, old_conversations_ddl):
+    async def test_rebuild_makes_character_id_nullable_and_preserves_data(self):
         """老库重建：character_id 可空、数据逐字段保留、新列就位、消息外键仍指向 conversations。"""
-        engine = await _make_old_db(old_conversations_ddl)
-        backups = []
-        ran = await _run_migration(engine, before_rebuild=lambda: backups.append(True))
+        engine = await _make_old_db()
+        ran = await _run_migration(engine)
         assert ran is True
-        assert backups == [True]  # 破坏性步骤前确实备份了
 
         async with engine.begin() as conn:
             schema = await _conversations_schema(conn)
@@ -78,13 +77,11 @@ class TestConversationsRebuildMigration:
         await engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_idempotent_second_run_is_noop(self, old_conversations_ddl):
-        """重复执行安全：第二次不再重建、不再备份、数据不动。"""
-        engine = await _make_old_db(old_conversations_ddl)
-        backups = []
-        assert await _run_migration(engine, before_rebuild=lambda: backups.append(True)) is True
-        assert await _run_migration(engine, before_rebuild=lambda: backups.append(True)) is False
-        assert backups == [True]
+    async def test_idempotent_second_run_is_noop(self):
+        """重复执行安全：第二次不再重建、数据不动。"""
+        engine = await _make_old_db()
+        assert await _run_migration(engine) is True
+        assert await _run_migration(engine) is False
 
         async with engine.begin() as conn:
             schema = await _conversations_schema(conn)
@@ -95,20 +92,17 @@ class TestConversationsRebuildMigration:
 
     @pytest.mark.asyncio
     async def test_fresh_schema_skips_rebuild(self):
-        """新库（create_all 直接建出新形状）→ 不触发重建、不备份。"""
+        """新库（create_all 直接建出新形状）→ 不触发重建。"""
         engine = create_async_engine("sqlite+aiosqlite://", echo=False)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        backups = []
-        ran = await _run_migration(engine, before_rebuild=lambda: backups.append(True))
-        assert ran is False
-        assert backups == []
+        assert await _run_migration(engine) is False
         await engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_group_conversation_row_survives_after_rebuild(self, old_conversations_ddl):
+    async def test_group_conversation_row_survives_after_rebuild(self):
         """重建后可以写入群对话（character_id NULL + group_id）——迁移的最终目的。"""
-        engine = await _make_old_db(old_conversations_ddl)
+        engine = await _make_old_db()
         await _run_migration(engine)
 
         from models.character import CharacterProfile
@@ -129,7 +123,7 @@ class TestConversationsRebuildMigration:
 
 class TestRebuiltSchemaParity:
     @pytest.mark.asyncio
-    async def test_rebuilt_table_matches_create_all_shape(self, old_conversations_ddl):
+    async def test_rebuilt_table_matches_create_all_shape(self):
         """重建表与模型 create_all 的形状逐列一致（列序/类型/NOT NULL/默认值/PK/外键）。
 
         ensure_group_schema 手写 DDL 复刻 models.conversation——此测试把
@@ -141,7 +135,7 @@ class TestRebuiltSchemaParity:
         async with fresh.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-        old = await _make_old_db(old_conversations_ddl)
+        old = await _make_old_db()
         await _run_migration(old)
 
         async def shape(engine):

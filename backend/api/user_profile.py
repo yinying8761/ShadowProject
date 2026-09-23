@@ -32,11 +32,17 @@ def _profile_to_dict(profile: UserProfile) -> dict:
     }
 
 
-async def _get_profile(
+async def resolve_user_profile(
     session: AsyncSession, character_id: str | None, *, fallback: bool = True
 ) -> UserProfile | None:
-    """Load the latest UserProfile for a character_id, optionally falling
-    back to the default (character_id=NULL) when fallback is True."""
+    """The ONE user-profile resolution rule: latest profile for a character_id,
+    falling back to the default (character_id=NULL) row when `fallback` is True.
+
+    `character_id=None` (a group conversation has no single character) resolves
+    the default row directly and never double-queries. Callers that need the
+    user's display name for the transcript renderer pass a conversation's
+    `character_id` and use this rather than re-implementing the fallback.
+    """
     result = await session.execute(
         select(UserProfile)
         .where(UserProfile.character_id == character_id)
@@ -61,7 +67,7 @@ async def get_user_profile(
     session: AsyncSession = Depends(get_session),
 ):
     """Get user profile for a character. Falls back to default (character_id=NULL)."""
-    profile = await _get_profile(session, character_id)
+    profile = await resolve_user_profile(session, character_id)
     if not profile:
         raise HTTPException(status_code=404, detail="No user profile found")
     return _profile_to_dict(profile)
@@ -74,7 +80,7 @@ async def update_user_profile(
     session: AsyncSession = Depends(get_session),
 ):
     """Create or update the user profile for a character."""
-    profile = await _get_profile(session, character_id, fallback=False)
+    profile = await resolve_user_profile(session, character_id, fallback=False)
 
     if profile:
         profile.user_name = data.user_name

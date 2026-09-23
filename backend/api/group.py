@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_session
 from models.character import CharacterProfile
@@ -69,46 +70,78 @@ async def _write_members(session: AsyncSession, group_id: str, members: list[Gro
         session.add(GroupMember(group_id=group_id, character_id=m.character_id, position=position))
 
 
-async def _group_payload(group: Group, session: AsyncSession) -> dict:
-    members = (await session.execute(
-        select(GroupMember)
-        .where(GroupMember.group_id == group.id)
-        .order_by(GroupMember.position)
-    )).scalars().all()
+def _group_query():
+    """Group query with members eagerly loaded in the model's declared order.
+
+    Member order lives on `Group.members` (`order_by=GroupMember.position`) —
+    the speaker order of a group turn. Loading it eagerly is required under
+    async sessions (a lazy load would raise) and keeps that order declared in
+    exactly one place.
+    """
+    return select(Group).options(selectinload(Group.members))
+
+
+async def _load_group(group_id: str, session: AsyncSession) -> Group | None:
+    """Load one group with its members, or None."""
+    return (await session.execute(
+        _group_query().where(Group.id == group_id)
+    )).scalar_one_or_none()
+
+
+async def _group_payloads(groups: list[Group], session: AsyncSession) -> list[dict]:
+    """Serialize groups in a fixed number of queries regardless of group count.
+
+    Members come from the eagerly-loaded relationship; character names and
+    conversation summaries are fetched in one bulk query each (no N+1).
+    """
+    if not groups:
+        return []
+
+    member_ids = {m.character_id for g in groups for m in g.members}
     names: dict[str, str] = {}
-    if members:
-        chars = (await session.execute(
-            select(CharacterProfile).where(
-                CharacterProfile.id.in_([m.character_id for m in members])
-            )
-        )).scalars().all()
-        names = {c.id: c.name for c in chars}
-    conversations = (await session.execute(
+    if member_ids:
+        names = {c.id: c.name for c in (await session.execute(
+            select(CharacterProfile).where(CharacterProfile.id.in_(member_ids))
+        )).scalars().all()}
+
+    conversations: dict[str, list[Conversation]] = {}
+    for conv in (await session.execute(
         select(Conversation)
-        .where(Conversation.group_id == group.id)
+        .where(Conversation.group_id.in_([g.id for g in groups]))
         .order_by(Conversation.updated_at.desc())
-    )).scalars().all()
-    return {
-        "id": group.id,
-        "name": group.name,
-        "created_at": group.created_at.isoformat() if group.created_at else None,
-        "members": [
-            {
-                "character_id": m.character_id,
-                "character_name": names.get(m.character_id),
-                "position": m.position,
-            }
-            for m in members
-        ],
-        "conversations": [
-            {
-                "id": c.id,
-                "title": c.title,
-                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
-            }
-            for c in conversations
-        ],
-    }
+    )).scalars().all():
+        conversations.setdefault(conv.group_id, []).append(conv)
+
+    return [
+        {
+            "id": group.id,
+            "name": group.name,
+            "created_at": group.created_at.isoformat() if group.created_at else None,
+            "members": [
+                {
+                    "character_id": m.character_id,
+                    "character_name": names.get(m.character_id),
+                    "position": m.position,
+                }
+                for m in group.members
+            ],
+            "conversations": [
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                }
+                for c in conversations.get(group.id, [])
+            ],
+        }
+        for group in groups
+    ]
+
+
+async def _serialize_one(group_id: str, session: AsyncSession) -> dict:
+    """Payload for a single group, re-read so members reflect what we just wrote."""
+    group = await _load_group(group_id, session)
+    return (await _group_payloads([group], session))[0]
 
 
 async def _get_group_or_404(group_id: str, session: AsyncSession) -> Group:
@@ -129,23 +162,24 @@ async def create_group(data: GroupCreate, session: AsyncSession = Depends(get_se
     await session.flush()  # 先拿 group.id 再写成员
     await _write_members(session, group.id, data.members)
     await session.commit()
-    await session.refresh(group)
-    return await _group_payload(group, session)
+    return await _serialize_one(group.id, session)
 
 
 @router.get("")
 async def list_groups(session: AsyncSession = Depends(get_session)):
     """群列表：含成员（带角色名与顺序）与对话概要。"""
     groups = (await session.execute(
-        select(Group).order_by(Group.created_at.desc())
+        _group_query().order_by(Group.created_at.desc())
     )).scalars().all()
-    return [await _group_payload(g, session) for g in groups]
+    return await _group_payloads(list(groups), session)
 
 
 @router.get("/{group_id}")
 async def get_group(group_id: str, session: AsyncSession = Depends(get_session)):
-    group = await _get_group_or_404(group_id, session)
-    return await _group_payload(group, session)
+    group = await _load_group(group_id, session)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return (await _group_payloads([group], session))[0]
 
 
 @router.put("/{group_id}")
@@ -160,8 +194,7 @@ async def update_group(
         await _validate_members(session, data.members)
         await _write_members(session, group.id, data.members)
     await session.commit()
-    await session.refresh(group)
-    return await _group_payload(group, session)
+    return await _serialize_one(group.id, session)
 
 
 @router.post("/{group_id}/conversations")

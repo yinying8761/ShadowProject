@@ -4,46 +4,16 @@ Seam: REST /api/groups —— 建群（名称+成员顺序）、编辑群（改�
 替换式管理操作）、群列表与详情（含成员与对话概要）、为群创建对话
 （一群多条、归属 group_id、character_id NULL）。错误语义与现有 REST 一致：
 对象不存在 → 404；非法输入 → 400 带明确 detail。
+
+Fixtures `engine` / `session_factory` / `client` live in `conftest.py`.
 """
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from database import Base, get_session
 from models.character import CharacterProfile
 from models.conversation import Conversation
 from models.group import Group, GroupMember
-
-
-@pytest.fixture
-async def engine():
-    e = create_async_engine("sqlite+aiosqlite://", echo=False)
-    async with e.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield e
-    await e.dispose()
-
-
-@pytest.fixture
-async def session_factory(engine):
-    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-@pytest.fixture
-async def client(engine, session_factory):
-    from main import app
-
-    async def override_get_session():
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_session] = override_get_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.clear()
 
 
 async def _seed_characters(session_factory):
@@ -139,6 +109,26 @@ class TestListAndGetGroups:
         assert g["id"] == "g1"
         assert g["members"] == [{"character_id": "c1", "character_name": "小柔", "position": 0}]
         assert [c["id"] for c in g["conversations"]] == ["conv-g1a"]
+
+    @pytest.mark.asyncio
+    async def test_list_keeps_each_groups_own_members_and_conversations(self, client, session_factory):
+        """多个群一次列出：成员与对话按 group_id 归属，不串群（批量查询正确性）。"""
+        await _seed_characters(session_factory)
+        async with session_factory() as s:
+            s.add(Group(id="g1", name="群一"))
+            s.add(Group(id="g2", name="群二"))
+            s.add(GroupMember(group_id="g1", character_id="c1", position=0))
+            s.add(GroupMember(group_id="g2", character_id="c2", position=0))
+            s.add(GroupMember(group_id="g2", character_id="c3", position=1))
+            s.add(Conversation(id="conv-g1", character_id=None, group_id="g1"))
+            s.add(Conversation(id="conv-g2", character_id=None, group_id="g2"))
+            await s.commit()
+
+        groups = {g["id"]: g for g in (await client.get("/api/groups")).json()}
+        assert [m["character_id"] for m in groups["g1"]["members"]] == ["c1"]
+        assert [m["character_id"] for m in groups["g2"]["members"]] == ["c2", "c3"]
+        assert [c["id"] for c in groups["g1"]["conversations"]] == ["conv-g1"]
+        assert [c["id"] for c in groups["g2"]["conversations"]] == ["conv-g2"]
 
     @pytest.mark.asyncio
     async def test_get_group_detail(self, client, session_factory):
