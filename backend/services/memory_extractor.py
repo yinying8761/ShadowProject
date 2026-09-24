@@ -344,7 +344,6 @@ class MemoryExtractor:
             from sqlalchemy import desc as _desc
 
             from models.user_profile import UserProfile
-            from services.memory_service import EXTRACTION_MIN_MESSAGES  # noqa: F401  (keep import shape)
 
             async with async_session() as session:
                 result = await session.execute(
