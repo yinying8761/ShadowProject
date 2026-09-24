@@ -111,6 +111,9 @@ def _client(monkeypatch, factory, llm, *, proactive=None) -> TestClient:
     async def fake_search(session, query, top_k=3, character_id=None):
         return []
 
+    # 后台补账单独测：这里禁掉，免得群对话测试去构造真的 LLMService
+    monkeypatch.setattr("services.group_chat.schedule_catch_up", lambda *_a, **_k: None)
+
     monkeypatch.setattr("core.agent.memory_service.search", fake_search)
 
     from api.chat import router as chat_router
@@ -207,6 +210,20 @@ class TestGroupTurnOverTheWebSocket:
         assert llm.max_concurrent == 1, "群轮必须串行：一次只有一个 LLM 流"
         rows = client.get("/api/conversations/conv-g/messages").json()
         assert [r["content"] for r in rows if r["role"] == "user"] == ["第一句", "第二句"]
+
+    def test_opening_a_group_conversation_schedules_the_catch_up(self, ws_env, monkeypatch):
+        """打开群对话 → 排上后台补账（补账本身在 tests/services/test_group_memory.py）。"""
+        _engine, factory = ws_env
+        asyncio.run(_seed_group(factory))
+        scheduled: list[str] = []
+        client = _client(monkeypatch, factory, FakeGroupLLM({}))
+        monkeypatch.setattr("services.group_chat.schedule_catch_up", scheduled.append)
+
+        with client.websocket_connect("/ws/chat/conv-g") as ws:
+            ws.send_json({"type": "daily_greeting"})
+            ws.receive_json()
+
+        assert scheduled == ["conv-g"]
 
     def test_a_group_turn_needs_an_existing_conversation(self, ws_env, monkeypatch):
         """群聊也守"会话必须存在"：会话在连接期间被删掉 → 拒绝，且一条都不落库。"""

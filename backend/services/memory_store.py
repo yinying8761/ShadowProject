@@ -143,6 +143,7 @@ class MemoryStore:
         character_id: str | None = None,
         source: str = SOURCE_AI_SUMMARIZED,
         created_at: datetime | None = None,
+        notify: bool = True,
     ) -> Memory:
         """Insert a memory, deduplicating against existing similar content.
 
@@ -153,8 +154,8 @@ class MemoryStore:
         """
         from services.memory_service import push_memory_notification
 
-        # Check for near-duplicate before inserting
-        existing = await self.find_similar(session, content)
+        # Check for near-duplicate before inserting (同一角色范围内)
+        existing = await self.find_similar(session, content, character_id=character_id)
         if existing:
             old_content = existing.content
             existing.importance = max(existing.importance, importance)
@@ -166,7 +167,7 @@ class MemoryStore:
             await self.sync_fts5_update(
                 existing.id, old_content, content, existing.memory_type,
             )
-            if source_conversation_id:
+            if source_conversation_id and notify:
                 push_memory_notification(source_conversation_id, 1)
             return existing
 
@@ -185,7 +186,7 @@ class MemoryStore:
         session.add(mem)
         await session.commit()
         await session.refresh(mem)
-        if source_conversation_id:
+        if source_conversation_id and notify:
             push_memory_notification(source_conversation_id, 1)
         return mem
 
@@ -237,16 +238,24 @@ class MemoryStore:
         session: AsyncSession,
         content: str,
         threshold: float = 0.85,
+        character_id: str | None = None,
     ) -> Memory | None:
-        """FTS5 search for near-duplicate content. Returns best match or None."""
+        """FTS5 search for near-duplicate content. Returns best match or None.
+
+        `character_id` 给了就只在**这个角色的**记忆里找重复：记忆本来就是按角色
+        一份，跨角色去重会让 A 记过的事进不了 B 的记忆（ticket #55 的"提取一次 →
+        每人一份"就靠它）。
+        """
         try:
             result = await session.execute(
                 text(
                     "SELECT m.id, m.content FROM memory_fts "
                     "JOIN memories m ON memory_fts.rowid = m.rowid "
-                    "WHERE memory_fts MATCH :query ORDER BY rank LIMIT 5"
+                    "WHERE memory_fts MATCH :query "
+                    "AND (m.character_id IS :character_id) "
+                    "ORDER BY rank LIMIT 5"
                 ),
-                {"query": content},
+                {"query": content, "character_id": character_id},
             )
             matches = [(row[0], row[1]) for row in result.fetchall()]
         except Exception:

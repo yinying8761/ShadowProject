@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 
 from core.conversation_manager import ConversationManager
 from core.group_turn import SILENT_MARKER, GroupTurnOrchestrator, GroupUtterance
+from services.group_memory import schedule_catch_up
 from models.conversation import Conversation
 from models.group import Group
 
@@ -73,6 +74,13 @@ class GroupChatSession:
         self._persisting: list[asyncio.Task] = []
         self._scenario = ""
         self._member_names: dict[str, str] = {}
+
+    def start(self) -> None:
+        """打开群对话：排上后台补账（先提取 → 后 compact；同一对话在途去重）。
+
+        任务不绑在这条连接上 —— 用户走开也照样补完（ticket #55）。
+        """
+        schedule_catch_up(self._conversation_id)
 
     @property
     def in_flight(self) -> bool:

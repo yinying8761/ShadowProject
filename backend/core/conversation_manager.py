@@ -1,6 +1,8 @@
+from datetime import datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
-from core.transcript import render_transcript
+from core.transcript import render_role_labels, render_transcript
 from models.character import CharacterProfile
 from models.message import Message
 from models.conversation import Conversation
@@ -156,6 +158,16 @@ class ConversationManager:
 
         return conv
 
+    async def mark_extracted(
+        self, session: AsyncSession, conversation_id: str, when: datetime
+    ) -> None:
+        """记下"这条对话补账锚点走到这里了"（群聊补账用的 `last_extract_at`）。"""
+        conv = await session.get(Conversation, conversation_id)
+        if conv is None:
+            return
+        conv.last_extract_at = when
+        await session.commit()
+
     async def count_messages(
         self, session: AsyncSession, conversation_id: str
     ) -> int:
@@ -275,15 +287,24 @@ class ConversationManager:
         if not old_messages:
             return {"deleted": 0, "summary": ""}
 
-        # Build transcript
-        lines = []
-        for msg in old_messages:
-            role_label = "用户" if msg.role == "user" else "角色"
-            lines.append(f"[{role_label}]: {msg.content or '(tool)'}")
-        transcript = "\n".join(lines)
+        # Build transcript.
+        # 群对话走共享时间戳渲染器（保留"谁说了什么"，spec group-chat Phase 2）；
+        # 1:1 用简单的角色标签行（core.transcript 里同一份实现）。
+        # 判断依据是**会话种类**，不是"有没有解析出名字"：名字查不到（角色被删）时
+        # 也不能退回 1:1 的格式丢掉说话人。
+        conv = await session.get(Conversation, conversation_id)
+        is_group = conv is not None and conv.group_id is not None
+        if is_group:
+            speaker_names = await self.resolve_speaker_names(session, old_messages)
+            transcript = "\n".join(
+                line
+                for line in render_transcript(old_messages, speaker_names=speaker_names)
+                if line
+            )
+        else:
+            transcript = render_role_labels(old_messages)
 
         # Load existing summary
-        conv = await session.get(Conversation, conversation_id)
         existing_summary = conv.summary or "" if conv else ""
 
         # Call LLM for summarization (if available)

@@ -23,6 +23,110 @@ class FakeSummarizationLLM:
         return self._summary
 
 
+# ── 群对话的摘要输入（ticket #55） ───────────────────────────────────────
+
+
+class TestGroupSummaryInput:
+    """群对话的摘要输入走共享时间戳渲染，保留"谁说了什么"。"""
+
+    @pytest.mark.asyncio
+    async def test_summary_input_names_each_speaker(self):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from core.conversation_manager import ConversationManager
+        from models.character import CharacterProfile
+        from models.conversation import Conversation
+        from models.message import Message
+
+        engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        captured: dict[str, str] = {}
+
+        class CaptureLLM:
+            async def chat_sync(self, messages, max_tokens=512, temperature=0.3):
+                captured["prompt"] = messages[-1]["content"]
+                return "摘要内容"
+
+        async with factory() as s:
+            from models.group import Group
+
+            s.add(CharacterProfile(id="c1", name="小柔"))
+            s.add(CharacterProfile(id="c2", name="阿B"))
+            s.add(Group(id="g1", name="深夜食堂"))
+            s.add(Conversation(id="conv-g", character_id=None, group_id="g1"))
+            for i in range(6):
+                s.add(Message(
+                    conversation_id="conv-g", role="user", content=f"用户第{i}句",
+                ))
+                s.add(Message(
+                    conversation_id="conv-g", role="assistant", content=f"第{i}句回应",
+                    speaker_id="c1" if i % 2 == 0 else "c2",
+                ))
+            await s.commit()
+
+            result = await ConversationManager().summarize_and_trim(
+                s, "conv-g", keep_count=2, llm_service=CaptureLLM()
+            )
+
+        assert result["deleted"] == 10
+        prompt = captured["prompt"]
+        # 谁说了什么：角色自己的名字，而不是笼统的「角色」
+        assert "小柔" in prompt and "阿B" in prompt
+        assert "[角色]:" not in prompt
+        # 时间戳也在（共享渲染器）
+        assert "[用户]:" in prompt
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_group_with_only_user_messages_still_uses_the_timestamped_format(self):
+        """判断依据是会话种类，不是"解析出了几个名字"。
+
+        窗口里只有用户消息时解析结果为空 —— 但这是群对话，摘要输入仍要走共享渲染器，
+        否则会悄悄退回 1:1 的 `[用户]/[角色]` 格式、丢掉时间戳。
+        """
+        import re
+        from datetime import datetime
+
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from core.conversation_manager import ConversationManager
+        from models.conversation import Conversation
+        from models.group import Group
+        from models.message import Message
+
+        engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        captured: dict[str, str] = {}
+
+        class CaptureLLM:
+            async def chat_sync(self, messages, max_tokens=512, temperature=0.3):
+                captured["prompt"] = messages[-1]["content"]
+                return "摘要内容"
+
+        async with factory() as s:
+            s.add(Group(id="g1", name="深夜食堂"))
+            s.add(Conversation(id="conv-g", character_id=None, group_id="g1"))
+            for i in range(6):
+                s.add(Message(
+                    conversation_id="conv-g", role="user", content=f"用户第{i}句",
+                    created_at=datetime(2026, 9, 20, 6, 25, i),
+                ))
+            await s.commit()
+
+            await ConversationManager().summarize_and_trim(
+                s, "conv-g", keep_count=2, llm_service=CaptureLLM()
+            )
+
+        assert re.search(r"\d{4}/\d{1,2}/\d{1,2} \d{2}:\d{2} \[用户\]:", captured["prompt"])
+        await engine.dispose()
+
+
 # ── Seam 1: ConversationManager.summarize_and_trim ─────────────────────
 
 

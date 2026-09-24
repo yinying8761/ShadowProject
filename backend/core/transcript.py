@@ -36,6 +36,23 @@ class RenderedLine(NamedTuple):
     text: str  # `YYYY/M/D HH:MM [说话人]: 内容`
 
 
+def ensure_utc(dt: datetime) -> datetime:
+    """Naive datetimes in this project's DB are UTC (see `_to_local`)."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def render_role_labels(messages: Iterable[Any]) -> str:
+    """1:1 内部提示词用的行格式：`[用户]/[角色]: 内容`（工具消息记成 `(tool)`）。
+
+    这是**唯一**一份这个格式的实现：记忆提取与对话摘要都调它。
+    （用户看的历史走上面的时间戳渲染器；这份是给 1:1 的内部提示词用的简版。）
+    """
+    return "\n".join(
+        f"[{'用户' if msg.role == 'user' else '角色'}]: {msg.content or '(tool)'}"
+        for msg in messages
+    )
+
+
 def _to_local(dt: datetime, tz) -> datetime:
     """Normalize a stored datetime for display.
 
@@ -43,9 +60,7 @@ def _to_local(dt: datetime, tz) -> datetime:
     (see PromptManager.format_relative_date, api/chat.py greeting guard).
     Render in the system-local timezone; \u00a7tz overrides for tests.
     """
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(tz)
+    return ensure_utc(dt).astimezone(tz)
 
 
 def format_message_time(dt: datetime, tz=None) -> str:

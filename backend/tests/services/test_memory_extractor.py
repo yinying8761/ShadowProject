@@ -7,6 +7,8 @@ so tests monkeypatch it to use an in-memory SQLite engine.
 """
 
 import json
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy import text
@@ -328,6 +330,145 @@ class TestMemoryExtractor:
         assert "pizza" in results[0].content
         await engine.dispose()
 
+# ── 群聊：提取一次 → 每个成员各存一份（ticket #55） ──────────────────────
+
+
+class TestGroupExtractionAndStorage:
+    """群聊口径的提取与存储。
+
+    编排（窗口/锚点/顺序）在 `services/group_memory.py`；这里只钉两件事：
+    同一个角色的记忆才互相去重；群聊提示词不许提取角色的观点。
+    """
+
+    @pytest.mark.asyncio
+    async def test_one_batch_is_stored_once_per_character(self, monkeypatch):
+        engine, factory = await _setup_db()
+        import services.memory_extractor as me
+
+        monkeypatch.setattr(me, "async_session", factory)
+
+        from services.memory_extractor import ExtractedMemory
+
+        extractor = MemoryExtractor(MemoryStore())
+        batch = [ExtractedMemory("用户喜欢在深夜写代码", "user_preference", 7)]
+
+        a = await extractor.store(
+            batch, conversation_id="conv-g", character_id="c1", notify=False
+        )
+        b = await extractor.store(
+            batch, conversation_id="conv-g", character_id="c2", notify=False
+        )
+
+        assert len(a) == 1 and len(b) == 1
+        assert a[0].id != b[0].id  # 每人一份，不是同一行被改来改去
+        assert {a[0].character_id, b[0].character_id} == {"c1", "c2"}
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_dedup_still_applies_within_one_character(self, monkeypatch):
+        engine, factory = await _setup_db()
+        import services.memory_extractor as me
+
+        monkeypatch.setattr(me, "async_session", factory)
+
+        from services.memory_extractor import ExtractedMemory
+
+        extractor = MemoryExtractor(MemoryStore())
+        first = await extractor.store(
+            [ExtractedMemory("用户喜欢在深夜写代码", "user_preference", 5)],
+            conversation_id="conv-g",
+            character_id="c1",
+            notify=False,
+        )
+        second = await extractor.store(
+            [ExtractedMemory("用户喜欢在深夜写代码", "user_preference", 9)],
+            conversation_id="conv-g",
+            character_id="c1",
+            notify=False,
+        )
+
+        assert second[0].id == first[0].id
+        assert second[0].importance == 9
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_store_keeps_the_real_date_of_the_window(self, monkeypatch):
+        engine, factory = await _setup_db()
+        import services.memory_extractor as me
+
+        monkeypatch.setattr(me, "async_session", factory)
+
+        from services.memory_extractor import ExtractedMemory
+
+        extractor = MemoryExtractor(MemoryStore())
+        three_days_ago = datetime(2026, 9, 17, tzinfo=timezone.utc)
+        stored = await extractor.store(
+            [ExtractedMemory("用户那天在赶一个项目", "important_event", 6)],
+            conversation_id="conv-g",
+            character_id="c1",
+            created_at=three_days_ago,
+            notify=False,
+        )
+
+        assert stored[0].created_at.replace(tzinfo=timezone.utc).date() == three_days_ago.date()
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_each_memory_keeps_the_day_it_happened(self, monkeypatch):
+        """合并批里每条记忆也带自己那天（跨日补账不能把三天前说成今天）。"""
+        engine, factory = await _setup_db()
+        import services.memory_extractor as me
+
+        monkeypatch.setattr(me, "async_session", factory)
+
+        from services.memory_extractor import ExtractedMemory
+
+        extractor = MemoryExtractor(MemoryStore())
+        stored = await extractor.store(
+            [
+                ExtractedMemory("用户上周在赶项目", "important_event", 6, occurred_on="2026-09-17"),
+                ExtractedMemory("用户昨天说要去看牙", "important_event", 5, occurred_on="09-19 说错了格式"),
+            ],
+            conversation_id="conv-g",
+            character_id="c1",
+            created_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
+            notify=False,
+        )
+
+        # 有日期的用它自己那天；格式不对的退回窗口那天
+        assert [m.created_at.date().isoformat() for m in stored] == ["2026-09-17", "2026-09-10"]
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_group_scope_prompt_forbids_character_opinions(self, monkeypatch):
+        engine, factory = await _setup_db()
+        import services.memory_extractor as me
+
+        monkeypatch.setattr(me, "async_session", factory)
+
+        prompts: list[str] = []
+
+        class PromptCapture:
+            async def chat_sync(self, messages, max_tokens=1024, temperature=0.3):
+                prompts.append(messages[-1]["content"])
+                return "[]"
+
+        extractor = MemoryExtractor(MemoryStore())
+        llm = PromptCapture()
+
+        await extractor.extract(
+            "[用户]: 我最近在学 Rust", llm, prompt_scope=me.PROMPT_SCOPE_GROUP_USER_FACTS
+        )
+        await extractor.extract("[用户]: 我最近在学 Rust", llm)  # 1:1/日记口径
+
+        group_prompt, diary_prompt = prompts
+        assert "只提取**关于用户的持久事实**" in group_prompt
+        assert "不要**提取任何角色的观点" in group_prompt
+        assert "不要**提取任何角色的观点" not in diary_prompt
+        await engine.dispose()
+
+
+class TestBeforeWindow:
     @pytest.mark.asyncio
     async def test_before_without_since_date(self, monkeypatch):
         """`before` also works without `since_date`, using the count-based branch."""

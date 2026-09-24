@@ -159,9 +159,16 @@ modules sharing one `MemoryStore`:
 - **MemoryStore** — FTS5 virtual table setup, embedding pack/unpack, CRUD, prune.
 - **MemoryRetriever** — hybrid search: FTS5 → embedding cosine → RRF merge →
   importance/recency weighting → character filter.
-- **MemoryExtractor** — LLM extraction from recent messages + dedup + store.
+- **MemoryExtractor** — LLM extraction, split into `load_window` (messages in a
+  time window) → `extract` (**one** LLM call → candidate items, no storage) →
+  `store` (dedup, embed, persist). `extract_and_store` is still the 1:1 / daily
+  entry point (all three in a row); group chat calls `extract` once and `store`s
+  the same batch **once per member** (ticket #55).
 
-Memories are per-`character_id`. Sources: `user_stated` / `ai_summarized`.
+Memories are per-`character_id`, and dedup is scoped the same way
+(`MemoryStore.find_similar(..., character_id=)`): the same fact recorded for A
+must still be recorded for B — cross-character dedup is memory pollution.
+Sources: `user_stated` / `ai_summarized`.
 Background extraction pushes to a module-level notification queue; `Agent.run`
 pops it and emits `memory_updated`.
 
@@ -208,14 +215,16 @@ pops it and emits `memory_updated`.
   (`services/conversationRecovery.ts`) — nothing is ever persisted against a
   conversation that does not exist.
 
-### 3.7 Group chat (Phase 1 + entity API + turn orchestration shipped; UI + memory pending)
+### 3.7 Group chat (spec shipped: Phase 1 + entities + turns + UI + memory catch-up)
 
 `docs/specs/group-chat.md` defines a **群** (fixed character set + shared
 transcript) whose conversations hold multiple speakers. Delivered so far: the
 shared timestamped-transcript renderer (Phase 1 — `core/transcript.py`, feeding
 both LLM context and the history API), the group data model + rebuild migration
 (ticket #51/ADR-0004), and the group entity API (`api/group.py`: create / edit /
-list / create group conversation). Still pending: tickets #53–#55. Shape:
+list / create group conversation), the turn orchestration (ticket #53), the UI
+(ticket #54: `activeGroup` session kind — ADR-0007), and the memory catch-up
+(ticket #55, below). Shape:
 
 - **Serial** turn orchestration (shipped, ticket #53): `core/group_turn.py`
   decides who speaks when — member order, `<silent>` skips (dropped, never stored
@@ -231,9 +240,19 @@ list / create group conversation). Still pending: tickets #53–#55. Shape:
   a **new turn** (budget reset); several interjections merge into one turn.
 - Daily greeting + proactive are **disabled** for group conversations; group TTS
   is disabled behind a reserved switch.
-- Opening a group conversation runs a background **extract → compact** (order
-  fixed), anchored on the conversation's last extract time, so days away are
-  caught up in one pass and memories carry the message's real date.
+- Opening a group conversation schedules a background **extract → compact**
+  (`services/group_memory.py`, ticket #55): `batch_windows` splits
+  `[last_extract_at, now)` into at most `MAX_BATCHES` day-windows (a long
+  absence merges its oldest days), each extracted **once** with the
+  `group_user_facts` prompt (user facts only — never a character's opinions),
+  then `store`d once per member with `created_at` = that day. The anchor only
+  advances past windows that really succeeded, and compact runs **after**
+  extraction — a failed extraction must not delete unextracted messages.
+  `schedule_catch_up` dedups in flight per conversation (reconnect / several
+  windows do not redo it), and the task is not tied to the socket. Each memory carries
+  its own `occurred_on` (parsed off the transcript) so a merged window still dates
+  correctly; the anchor only advances past windows that succeeded, and compact runs only
+  when nothing failed. ADR-0008 records the trade-offs.
 - Memory stays per-character; one extraction batch is stored once per member
   (prompt limited to user facts, never a character's opinions).
 - Schema: new `Group` / `GroupMember`, `Conversation.group_id` +
