@@ -15,9 +15,15 @@ export function HistoryOverlay() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const currentConversationId = useChatStore((s) => s.currentConversationId);
   const activeCharacter = useAppStore((s) => s.activeCharacter);
+  const activeGroup = useAppStore((s) => s.activeGroup);
   const { newConversation } = useChat();
   const { t } = useTranslation();
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 群里显示群名（历史记录本身沿用时间戳格式，说话人由后端解析）
+  const dialogTitle = activeGroup
+    ? t('Group chat: {name}', { name: activeGroup.name })
+    : t('Chat with {name}', { name: activeCharacter?.name || 'AI' });
   const removeMessage = useChatStore((s) => s.removeMessage);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -117,12 +123,12 @@ export function HistoryOverlay() {
         className="bg-companion-overlay-strong border border-white/10 rounded-xl w-[90%] h-[85%] flex flex-col overflow-hidden shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label={t('Chat with {name}', { name: activeCharacter?.name || 'AI' })}
+        aria-label={dialogTitle}
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/10 flex-shrink-0">
           <div className="flex items-center gap-3">
             <h3 className="text-sm font-medium text-white/90">
-              {t('Chat with {name}', { name: activeCharacter?.name || 'AI' })}
+              {dialogTitle}
             </h3>
             <span className="text-[10px] text-white/40">
               {messages.length} {t('messages')} · ~{estimatedTokens} tokens

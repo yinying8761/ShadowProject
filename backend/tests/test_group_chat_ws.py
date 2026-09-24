@@ -151,7 +151,10 @@ class TestGroupTurnOverTheWebSocket:
 
         assert "message_ack" in [e["type"] for e in events]
         group_messages = [e for e in events if e["type"] == "group_message"]
-        assert [(e["character_id"], e["content"]) for e in group_messages] == [("c1", "在的呀")]
+        # 说话人名字由后端给（与历史接口同一规则），前端不必再解析一遍
+        assert [(e["character_id"], e["speaker"], e["content"]) for e in group_messages] == [
+            ("c1", "小柔", "在的呀")
+        ]
         assert events[-1] == {"type": "done", "group": True}
 
         # 历史接口（公开面）：用户的 + 小柔那一句（带 speaker_id/说话人名）；跳过的人没有痕迹

@@ -27,6 +27,7 @@ export function useWebSocketBridge(conversationId: string | null) {
   const replaceMessageId = useChatStore((s) => s.replaceMessageId);
   const setStreaming = useChatStore((s) => s.setStreaming);
   const setPendingApproval = useChatStore((s) => s.setPendingApproval);
+  const addMessage = useChatStore((s) => s.addMessage);
   const pushToolRunning = useChatStore((s) => s.pushToolRunning);
   const finishTool = useChatStore((s) => s.finishTool);
   const setWsBridge = useChatStore((s) => s.setWsBridge);
@@ -77,6 +78,13 @@ export function useWebSocketBridge(conversationId: string | null) {
               break;
             case 'done':
               clearRetryState();
+              if (!data.message_id && data.group) {
+                // 群轮一批跑完：没有 message_id（每条 group_message 各自落库），
+                // 只把"正在回应"的状态收掉，否则输入框会一直卡在 disabled。
+                setStreaming(false);
+                bumpConversationList();
+                break;
+              }
               if (data.message_id) {
                 const isProactiveLike = !!(data.proactive || data.daily_greeting);
                 const content = useChatStore.getState().streamingContent;
@@ -127,6 +135,23 @@ export function useWebSocketBridge(conversationId: string | null) {
             case 'memory_updated':
               if (data.count && data.count > 0) {
                 addMemoryNotification(data.count);
+              }
+              break;
+            case 'group_message':
+              // 群聊里某个角色的一条消息。群轮不流式（"跳过"绝不推送），
+              // 所以整条一起到：落进消息列表并标上说话人。
+              if (data.message_id) {
+                addMessage({
+                  id: data.message_id,
+                  // 落回这条 socket 自己的会话：用户中途切了对话，消息也不能串到别的列表里
+                  conversationId: conversationId ?? '',
+                  role: 'assistant',
+                  content: data.content || '',
+                  createdAt: new Date().toISOString(),
+                  speakerId: data.character_id ?? null,
+                  speakerName: data.speaker ?? null,
+                });
+                bumpConversationList();
               }
               break;
             case 'message_ack':
@@ -244,6 +269,7 @@ export function useWebSocketBridge(conversationId: string | null) {
     };
   }, [
     conversationId,
+    addMessage,
     appendStreamingToken,
     finalizeStreamingMessage,
     replaceMessageId,

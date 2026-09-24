@@ -8,6 +8,7 @@ export function TitleBar() {
   const config = useAppStore((s) => s.config);
   const setConfig = useAppStore((s) => s.setConfig);
   const layoutMode = useAppStore((s) => s.layoutMode);
+  const inGroup = useAppStore((s) => s.activeGroup !== null);
   const setLayoutMode = useAppStore((s) => s.setLayoutMode);
   const { t } = useTranslation();
 
@@ -24,6 +25,8 @@ export function TitleBar() {
         <span className="truncate max-w-[140px]">{activeCharacter?.name || t('AI Companion')}</span>
       </div>
       <div className="no-drag flex items-center gap-1">
+        {/* 群聊强制完整模式，模式开关在群里没有意义（store 也会拒绝 compact） */}
+        {!inGroup && (
         <IconBtn
           title={layoutMode === 'compact' ? t('Expand') : t('Collapse')}
           onClick={() => setLayoutMode(layoutMode === 'compact' ? 'full' : 'compact')}
@@ -46,6 +49,7 @@ export function TitleBar() {
             </svg>
           )}
         </IconBtn>
+        )}
         <IconBtn title={t('History')} onClick={() => setShowHistory(true)}>
           {/* clock-rewind icon (svg) */}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

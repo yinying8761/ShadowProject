@@ -263,6 +263,19 @@ list / create group conversation). Still pending: tickets #53–#55. Shape:
   vs `FullView` (chat panel + sidebar), toggled by `appStore.layoutMode`.
 - **Overlays** shared across modes: `ApprovalDialog`, `HistoryOverlay`,
   `SettingsPanel`, `MemoryViewer`, `CharacterEditor`.
+- **Group chat UI** (`docs/Tickets/group-chat/issues/05-group-chat-ui.md`):
+  `appStore.activeGroup` is a third session kind next to "active character".
+  `enterGroup` closes settings, remembers the current layout mode and forces `full`;
+  `leaveGroup` restores it — and `setLayoutMode` refuses `compact` while a group is
+  active, because compact has no group view. `FullView` swaps `ConversationSidebar`
+  for `GroupSidebar` (member list in speaking order, the group's conversations, 退出)
+  and both sidebars share `ConversationList` (select / rename / delete / 新对话) —
+  only the loader differs. Group messages carry `speaker_id`: the history path resolves
+  names server-side, live `group_message` events are labelled client-side, and
+  `MessageBubble` renders a per-speaker name + stable colour (`utils/speakerStyle.ts`).
+  Group turns are not token-streamed, so the group `done` event (no `message_id`)
+  is what clears the "thinking" state. TTS stays off in groups behind `useTTS`'s
+  reserved `GROUP_TTS_ENABLED` switch.
 - **i18n** via `i18n/translations.ts` + `useTranslation` (zh default).
 
 ## 5. Protocols (the contracts you must not break)

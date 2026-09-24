@@ -6,6 +6,7 @@ import { api } from '../../services/api';
 import { SettingsNav } from './SettingsNav';
 import { GeneralSettings } from './GeneralSettings';
 import { CharacterSettings } from './CharacterSettings';
+import { GroupSettings } from './GroupSettings';
 import { UserProfileSettings } from './UserProfileSettings';
 import { ModelSettings } from './ModelSettings';
 import { ProactiveSettings } from './ProactiveSettings';
@@ -13,7 +14,7 @@ import { VoiceSettings } from './VoiceSettings';
 import { MemoryPanel } from './MemoryPanel';
 import { UsagePanel } from './UsagePanel';
 
-type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory' | 'usage';
+type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory' | 'usage' | 'group';
 
 export function SettingsPanel() {
   const showSettings = useAppStore((s) => s.showSettings);
@@ -58,6 +59,7 @@ export function SettingsPanel() {
     switch (activeNav) {
       case 'general':   return <GeneralSettings />;
       case 'character': return <CharacterSettings />;
+      case 'group':     return <GroupSettings />;
       case 'profile':   return <UserProfileSettings />;
       case 'model':     return <ModelSettings />;
       case 'proactive': return <ProactiveSettings />;

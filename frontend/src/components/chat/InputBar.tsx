@@ -9,8 +9,15 @@ export function InputBar() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { isStreaming, isConnected, send, newConversation } = useChat();
   const activeCharacter = useAppStore((s) => s.activeCharacter);
+  const activeGroup = useAppStore((s) => s.activeGroup);
   const config = useAppStore((s) => s.config);
   const { t } = useTranslation();
+
+  // 群聊没有"当前角色"：在群里就能输入（发言对象是整群人）
+  const canChat = !!activeCharacter || !!activeGroup;
+  // 群聊在角色回应期间**照样能发**：后端不打断在途回复，本轮收尾后开新轮接力
+  // （spec：用户可在角色思考时继续发言）。1:1 仍然等这一轮说完。
+  const canSend = canChat && (!isStreaming || !!activeGroup);
 
   useEffect(() => {
     if (inputRef.current) {
@@ -21,7 +28,7 @@ export function InputBar() {
 
   const handleSend = () => {
     const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
+    if (!trimmed || !canSend) return;
     setInput('');
     useChatStore.getState().stopSpeaking?.();
     send(trimmed);
@@ -43,7 +50,11 @@ export function InputBar() {
     }
   };
 
-  const placeholder = isStreaming
+  const placeholder = activeGroup
+    ? isStreaming
+      ? t('You can jump in — they will answer after this turn')
+      : t('Say something in {name}…', { name: activeGroup.name })
+    : isStreaming
     ? t('{name} is thinking…', { name: activeCharacter?.name || '' })
     : activeCharacter
     ? t('Say something to {name}…', { name: activeCharacter.name })
@@ -52,17 +63,20 @@ export function InputBar() {
   return (
     <div className="no-drag mx-3 mb-3 mt-2 holo-input-area px-3 py-2">
       <div className="flex items-end gap-2">
-        <button
-          onClick={handleSeeScreen}
-          disabled={isStreaming || !activeCharacter}
-          title={t('Let her see your screen')}
-          className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-md bg-white/8 hover:bg-white/15 disabled:opacity-30 disabled:cursor-not-allowed text-white/70 hover:text-white transition-all"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-            <circle cx="12" cy="13" r="4" />
-          </svg>
-        </button>
+        {/* 截屏增强是 1:1 的便利：群聊不注入屏幕上下文，所以不显示这个按钮 */}
+        {!activeGroup && (
+          <button
+            onClick={handleSeeScreen}
+            disabled={isStreaming || !activeCharacter}
+            title={t('Let her see your screen')}
+            className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-md bg-white/8 hover:bg-white/15 disabled:opacity-30 disabled:cursor-not-allowed text-white/70 hover:text-white transition-all"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+          </button>
+        )}
         <textarea
           ref={inputRef}
           value={input}
@@ -72,11 +86,11 @@ export function InputBar() {
           rows={1}
           className="flex-1 bg-transparent text-white placeholder-white/35 resize-none outline-none holo-input-glow rounded-md px-1 py-1.5 leading-relaxed"
           style={{ fontSize: config.fontSize, maxHeight: 100 }}
-          disabled={isStreaming || !activeCharacter}
+          disabled={!canSend}
         />
         <button
           onClick={handleSend}
-          disabled={isStreaming || !input.trim() || !activeCharacter}
+          disabled={!input.trim() || !canSend}
           title="发送 (Enter)"
           className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-md bg-companion-accent hover:bg-companion-accent-hover disabled:opacity-30 disabled:cursor-not-allowed text-white transition-all"
         >

@@ -24,12 +24,15 @@ let lastAttemptedId = '';
 
 export async function recoverMissingConversation(failedId: string): Promise<string | null> {
   if (!failedId || lastAttemptedId === failedId) return null;
-  const activeCharacter = useAppStore.getState().activeCharacter;
-  if (!activeCharacter) return null;
+  const { activeCharacter, activeGroup } = useAppStore.getState();
+  if (!activeGroup && !activeCharacter) return null;
 
   lastAttemptedId = failedId;
   try {
-    const conv = await api.createConversation(activeCharacter.id);
+    // 在群里就再开一条群对话，否则开该角色的单聊（同一个恢复动作，两种会话）。
+    const conv = activeGroup
+      ? await api.createGroupConversation(activeGroup.id)
+      : await api.createConversation(activeCharacter!.id);
     useChatStore.getState().setConversationId(conv.id);
     return conv.id;
   } catch (e) {

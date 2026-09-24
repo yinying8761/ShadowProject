@@ -1,10 +1,11 @@
 import { useTranslation } from '../../i18n/useTranslation';
 
-type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory' | 'usage';
+type NavKey = 'general' | 'character' | 'profile' | 'model' | 'proactive' | 'voice' | 'memory' | 'usage' | 'group';
 
 const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: 'general',   label: 'General' },
   { key: 'character', label: 'Characters' },
+  { key: 'group',     label: 'Groups' },
   { key: 'profile',   label: 'Your Profile' },
   { key: 'model',     label: 'Model' },
   { key: 'proactive', label: 'Proactive Chat' },

@@ -22,6 +22,10 @@ export interface Message {
   isProactive?: boolean;
   /** 时间戳对话记录行（历史视图展示；WS 在途/流式消息没有，由历史接口补齐） */
   transcript?: string | null;
+  /** 群聊：这条消息由哪个角色说出（1:1 为 null —— 说话人由会话角色派生） */
+  speakerId?: string | null;
+  /** 群聊：说话人显示名（历史接口已按消息自己的 speaker_id 解析好） */
+  speakerName?: string | null;
 }
 
 export interface ApiMessage {
@@ -51,6 +55,31 @@ export interface Conversation {
   title: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 布局模式：compact = 桌面陪伴窗口，full = 完整聊天面板。 */
+export type LayoutMode = 'compact' | 'full';
+
+/** 群：固定成员集合 + 共享对话流（api/group.py 的返回形状）。 */
+export interface GroupMemberInfo {
+  character_id: string;
+  character_name: string | null;
+  position: number;
+}
+
+export interface GroupConversationInfo {
+  id: string;
+  title: string;
+  updated_at: string | null;
+}
+
+export interface GroupInfo {
+  id: string;
+  name: string;
+  created_at: string | null;
+  /** 数组成员顺序 = 发言顺序 */
+  members: GroupMemberInfo[];
+  conversations: GroupConversationInfo[];
 }
 
 export type ProactiveLevel = 'off' | 'low' | 'medium' | 'high';
@@ -137,6 +166,8 @@ export interface WsBaseMessage {
   code?: string;
   /** Group chat: which member said it (services/group_chat.py `group_message`). */
   character_id?: string;
+  /** Group chat: that member's display name, resolved server-side. */
+  speaker?: string;
   /** Group chat: marks the turn-burst boundary (every group reply carries none). */
   group?: boolean;
 }

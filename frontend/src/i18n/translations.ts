@@ -227,6 +227,29 @@ const zh: TranslationDict = {
   Copy: '复制',
   Copied: '已复制',
   'Command (help)': '输入命令（help 查看全部）',
+
+  // 群聊 (ticket #05)
+  Groups: '群聊',
+  'Create Group': '创建群聊',
+  'Group name': '群名',
+  Members: '成员',
+  Create: '创建',
+  'Pick at least one member': '至少选一个成员',
+  'Group name cannot be empty': '群名不能为空',
+  'No groups yet': '还没有群聊',
+  'Leave Group': '退出群聊',
+  Leave: '退出',
+  'Speaking order': '发言顺序',
+  'Click order is the speaking order': '点击顺序就是发言顺序',
+  'Group Chat': '群聊',
+  'Say hi to the group～': '和大家打个招呼吧～',
+  'Say something in {name}…': '在「{name}」里说点什么…',
+  'Loading…': '加载中…',
+  'Group chat: {name}': '群聊：{name}',
+  'You can jump in — they will answer after this turn':
+    '可以插话：本轮结束后接着回你',
+  'Reconnecting — group replies need the connection':
+    '正在重连：群聊的回复要走 WebSocket',
 };
 
 const en: TranslationDict = {};

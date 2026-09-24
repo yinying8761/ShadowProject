@@ -1,5 +1,6 @@
 import { useAppStore } from '../../stores/appStore';
 import { useTranslation } from '../../i18n/useTranslation';
+import { characterAvatarUrl } from '../../utils/avatarUrl';
 
 export function CharacterDisplay() {
   const activeCharacter = useAppStore((s) => s.activeCharacter);
@@ -13,9 +14,7 @@ export function CharacterDisplay() {
     );
   }
 
-  const portrait = activeCharacter.avatar_path
-    ? `http://localhost:8722/data/${activeCharacter.avatar_path}`
-    : null;
+  const portrait = characterAvatarUrl(activeCharacter.avatar_path);
 
   return (
     <div className="flex-1 relative overflow-hidden drag-region pointer-events-auto">

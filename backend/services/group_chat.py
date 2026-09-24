@@ -72,6 +72,7 @@ class GroupChatSession:
         self._turn_task: asyncio.Task | None = None
         self._persisting: list[asyncio.Task] = []
         self._scenario = ""
+        self._member_names: dict[str, str] = {}
 
     @property
     def in_flight(self) -> bool:
@@ -107,7 +108,7 @@ class GroupChatSession:
     async def _run_turns(self) -> None:
         cancelled = False
         try:
-            member_ids, self._scenario = await self._roster()
+            member_ids, self._scenario, self._member_names = await self._roster()
             if member_ids:
                 await self._orchestrator.run(member_ids)
         except asyncio.CancelledError:
@@ -172,6 +173,9 @@ class GroupChatSession:
             "type": "group_message",
             "message_id": msg.id,
             "character_id": utterance.character_id,
+            # 名字在后端解析（与历史接口同一规则：按消息自己的 speaker_id），
+            # 前端不必再维护第二套说话人规则。
+            "speaker": self._member_names.get(utterance.character_id),
             "content": utterance.content,
         })
 
@@ -196,22 +200,22 @@ class GroupChatSession:
         pending, self._persisting = self._persisting, []
         await asyncio.gather(*pending)
 
-    async def _roster(self) -> tuple[list[str], str]:
-        """一次查询备好：成员 id（按发言顺序）+ 给 LLM 的场景说明。"""
+    async def _roster(self) -> tuple[list[str], str, dict[str, str]]:
+        """一次查询备好：成员 id（按发言顺序）+ 场景说明 + id→名字。"""
         from database import async_session
         from models.character import CharacterProfile
 
         async with async_session() as session:
             conv = await session.get(Conversation, self._conversation_id)
             if conv is None or conv.group_id is None:
-                return [], ""
+                return [], "", {}
             group = (await session.execute(
                 select(Group)
                 .options(selectinload(Group.members))
                 .where(Group.id == conv.group_id)
             )).scalar_one_or_none()
             if group is None:
-                return [], ""
+                return [], "", {}
             member_ids = [m.character_id for m in group.members]  # 顺序 = model 声明的 position
             by_id: dict[str, str] = {}
             if member_ids:
@@ -220,11 +224,12 @@ class GroupChatSession:
                     .where(CharacterProfile.id.in_(member_ids))
                 )).all()
                 by_id = {cid: name for cid, name in rows}
-            return member_ids, GROUP_SCENARIO.format(
+            scenario = GROUP_SCENARIO.format(
                 group_name=group.name,
                 member_names="、".join(by_id[i] for i in member_ids if i in by_id),
                 silent=SILENT_MARKER,
             )
+            return member_ids, scenario, by_id
 
     async def _safe_send(self, payload: dict) -> None:
         """推送失败（连接已断）不该毁掉这一轮：落库优先于推送。"""

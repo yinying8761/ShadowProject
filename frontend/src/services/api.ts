@@ -6,6 +6,7 @@ import type {
   ApiMessage,
   MemoryEntry,
   UserProfile,
+  GroupInfo,
   TokenUsageResponse,
   ProviderPreset,
   LlmModelsResponse,
@@ -41,6 +42,25 @@ export const api = {
     }),
   deleteCharacter: (id: string) =>
     request<{ status: string }>(`/characters/${id}`, { method: 'DELETE' }),
+  fetchGroups: () => request<GroupInfo[]>('/groups'),
+  fetchGroup: (groupId: string) => request<GroupInfo>(`/groups/${groupId}`),
+  createGroup: (name: string, memberIds: string[]) =>
+    request<GroupInfo>('/groups', {
+      method: 'POST',
+      body: JSON.stringify({ name, members: memberIds.map((id) => ({ character_id: id })) }),
+    }),
+  updateGroup: (groupId: string, data: { name?: string; memberIds?: string[] }) =>
+    request<GroupInfo>(`/groups/${groupId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        ...(data.name !== undefined ? { name: data.name } : {}),
+        ...(data.memberIds !== undefined
+          ? { members: data.memberIds.map((id) => ({ character_id: id })) }
+          : {}),
+      }),
+    }),
+  createGroupConversation: (groupId: string) =>
+    request<Conversation>(`/groups/${groupId}/conversations`, { method: 'POST' }),
   fetchConversations: (characterId?: string) =>
     request<Conversation[]>(
       `/conversations${characterId ? `?character_id=${characterId}` : ''}`
