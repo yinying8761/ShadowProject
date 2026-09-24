@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from core.transcript import render_transcript
+from models.character import CharacterProfile
 from models.message import Message
 from models.conversation import Conversation
 from services.retry import retry
@@ -20,6 +21,25 @@ class ConversationManager:
         cjk_chars = sum(1 for c in text if '一' <= c <= '鿿' or '　' <= c <= '〿')
         other_chars = len(text) - cjk_chars
         return int(cjk_chars * 0.6 + other_chars * 0.25) or 1
+
+    @staticmethod
+    async def resolve_speaker_names(
+        session: AsyncSession, messages
+    ) -> dict[str, str]:
+        """`speaker_id` → 角色名，只查这些消息里真正出现过的发言者（一条 SQL）。
+
+        名字取消息自己的 `speaker_id`，**不是**当前群成员资格：成员资格可编辑，
+        被移出群的人此前说过的话仍应报自己的名字（spec group-chat Phase 2）。
+        1:1 消息没有 `speaker_id` → 空字典，零额外查询。
+        """
+        speaker_ids = {m.speaker_id for m in messages if m.speaker_id}
+        if not speaker_ids:
+            return {}
+        rows = (await session.execute(
+            select(CharacterProfile.id, CharacterProfile.name)
+            .where(CharacterProfile.id.in_(speaker_ids))
+        )).all()
+        return {character_id: name for character_id, name in rows}
 
     async def get_context_messages(
         self,
@@ -56,8 +76,13 @@ class ConversationManager:
         # the messages it kept before (spec: group-chat — 1:1 behaviour change
         # must be "纯增量", never a different set of messages).
         ordered = list(reversed(messages))
+        # 群对话里每条消息由自己的 speaker_id 决定说话人；1:1 为空字典（纯增量）。
+        speaker_names = await self.resolve_speaker_names(session, ordered)
         lines = render_transcript(
-            ordered, user_name=user_name, character_name=character_name,
+            ordered,
+            user_name=user_name,
+            character_name=character_name,
+            speaker_names=speaker_names,
         )
         for msg, line in zip(ordered, lines):
             tokens = self.estimate_tokens(msg.content)
@@ -79,8 +104,13 @@ class ConversationManager:
         content: str,
         tool_calls: dict | None = None,
         tool_call_id: str | None = None,
+        speaker_id: str | None = None,
     ) -> Message:
-        """Persist a message and update conversation timestamp."""
+        """Persist a message and update conversation timestamp.
+
+        `speaker_id` 只由群聊填写：那条消息是哪个角色说的（1:1 留空，说话人由
+        会话的角色派生 —— 见 core/transcript.py）。
+        """
         msg = Message(
             conversation_id=conversation_id,
             role=role,
@@ -88,6 +118,7 @@ class ConversationManager:
             token_count=self.estimate_tokens(content),
             tool_calls=tool_calls,
             tool_call_id=tool_call_id,
+            speaker_id=speaker_id,
         )
         session.add(msg)
 

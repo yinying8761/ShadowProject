@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from api.user_profile import resolve_user_profile
+from core.conversation_manager import ConversationManager
 from core.transcript import render_lines
 from database import get_session
 from models.character import CharacterProfile
@@ -11,6 +12,9 @@ from models.conversation import Conversation
 from models.message import Message
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
+
+#: 说话人解析与压缩共用一个实例（无状态，只带窗口大小）。
+conv_manager = ConversationManager()
 
 
 class ConversationCreate(BaseModel):
@@ -69,25 +73,6 @@ async def get_conversation(
     }
 
 
-async def _speaker_names_for(session: AsyncSession, messages) -> dict[str, str]:
-    """`speaker_id` → 角色名 for the speakers that actually appear in `messages`.
-
-    Resolved from the messages' own `speaker_id`s, **not** from current group
-    membership: membership is editable, so a member removed after speaking must
-    still render under their own name rather than falling back to "AI"
-    (spec: group-chat Phase 1 — "群聊的 AI 消息 → 该条消息的发言角色名").
-    The FK on `Message.speaker_id` is what makes this a name lookup at all.
-    """
-    speaker_ids = {m.speaker_id for m in messages if m.speaker_id}
-    if not speaker_ids:
-        return {}
-    rows = (await session.execute(
-        select(CharacterProfile.id, CharacterProfile.name)
-        .where(CharacterProfile.id.in_(speaker_ids))
-    )).all()
-    return {character_id: name for character_id, name in rows}
-
-
 @router.get("/{conversation_id}/messages")
 async def get_messages(
     conversation_id: str,
@@ -118,7 +103,9 @@ async def get_messages(
         profile = await resolve_user_profile(session, conv.character_id)
         user_name = profile.user_name if profile else None
 
-    speaker_names = await _speaker_names_for(session, messages)
+    # 说话人解析只有一处实现（ConversationManager）：LLM 上下文与历史记录共用同一
+    # 份规则 —— 按消息自己的 speaker_id 查名字，而不是按当前群成员资格。
+    speaker_names = await conv_manager.resolve_speaker_names(session, messages)
 
     rendered = render_lines(
         messages,
@@ -247,12 +234,10 @@ async def compact_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    from core.conversation_manager import ConversationManager
     from services.llm_service import LLMService
 
-    manager = ConversationManager()
     llm = LLMService()
-    result = await manager.summarize_and_trim(
+    result = await conv_manager.summarize_and_trim(
         session, conversation_id,
         keep_count=keep_count,
         llm_service=llm,

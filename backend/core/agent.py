@@ -45,6 +45,9 @@ class Agent:
         extra_context: dict | None = None,
         client_message_id: str | None = None,
         on_llm_retry: RetryCallback | None = None,
+        persist_reply: bool = True,
+        system_suffix: str | None = None,
+        memory_query: str | None = None,
     ) -> AsyncIterator[dict]:
         """
         Execute the agent loop, yielding events.
@@ -71,6 +74,20 @@ class Agent:
             Called with ``(attempt, max_retries, exc)`` just before each
             backoff retry.  ``None`` (default) keeps the previous silent
             retry behaviour.
+        persist_reply:
+            ``False`` (group chat, ticket #53) hands the generated text back in
+            the ``done`` event instead of persisting it, so the caller can first
+            decide whether the character actually spoke — a skip must never be
+            stored or pushed. The caller then persists it, with its
+            ``speaker_id``, itself.
+        system_suffix:
+            Extra block appended to the end of the system prompt. Group turns
+            use it for the scenario brief (who is in the room, when to stay
+            silent); 1:1 never sets it.
+        memory_query:
+            What to retrieve memories for. Defaults to ``user_message``; a group
+            turn passes the user messages of the current turn, because the user
+            message itself is persisted by the caller (``user_message=None``).
         """
         character = await session.get(CharacterProfile, character_id)
         if not character:
@@ -157,7 +174,7 @@ class Agent:
         # Retrieve relevant memories
         retrieved_memories = await memory_service.search(
             session,
-            query=user_message or "",
+            query=memory_query if memory_query is not None else (user_message or ""),
             top_k=3,
             character_id=character_id,
         )
@@ -248,6 +265,10 @@ class Agent:
         if location_context:
             system_prompt += f"\n\n## 位置与环境\n{location_context}"
 
+        if system_suffix:
+            # 场景说明放最后：system prompt 的尾部对模型最显眼。
+            system_prompt += f"\n\n{system_suffix}"
+
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
 
@@ -269,6 +290,19 @@ class Agent:
 
         max_tool_rounds = 5 if not is_proactive else 1
         full_response = ""
+
+        async def _finish(reply_text: str, **extra) -> dict:
+            """收尾：落库 + done 事件；`persist_reply=False` 时把文本交回调用方。
+
+            群聊走后者：编排器要先判"跳过"（`<silent>`）再决定落不落库，
+            所以落库与推送由调用方负责（ticket #53）。
+            """
+            if not persist_reply:
+                return {"type": "done", "content": reply_text, "deferred": True, **extra}
+            msg = await self.conversation_manager.add_message(
+                session, conversation_id, "assistant", reply_text
+            )
+            return {"type": "done", "message_id": msg.id, **extra}
 
         for round_num in range(max_tool_rounds):
             tool_use_blocks: list[dict] = []
@@ -301,13 +335,18 @@ class Agent:
                     # Stream error — save partial response so the frontend
                     # can finalize the streaming message, then surface the error.
                     if round_text.strip():
-                        msg = await self.conversation_manager.add_message(
-                            session, conversation_id, "assistant", round_text
-                        )
-                        done = {"type": "done", "message_id": msg.id, "partial_error": True}
                         if is_proactive:
-                            done["proactive"] = True
-                        yield done
+                            msg = await self.conversation_manager.add_message(
+                                session, conversation_id, "assistant", round_text
+                            )
+                            yield {
+                                "type": "done",
+                                "message_id": msg.id,
+                                "partial_error": True,
+                                "proactive": True,
+                            }
+                        else:
+                            yield await _finish(round_text, partial_error=True)
                     yield event
                     return
 
@@ -342,10 +381,7 @@ class Agent:
                     yield {"type": "done", "message_id": msg.id, "proactive": True}
                     return
 
-                msg = await self.conversation_manager.add_message(
-                    session, conversation_id, "assistant", full_response
-                )
-                yield {"type": "done", "message_id": msg.id}
+                yield await _finish(full_response)
                 return
 
             messages.append({
@@ -373,11 +409,9 @@ class Agent:
                 if tr_event.get("name") == "save_memory" and not tr_event.get("is_error"):
                     yield {"type": "memory_updated", "count": 1}
 
-        msg = await self.conversation_manager.add_message(
-            session, conversation_id, "assistant",
+        yield await _finish(
             full_response or "I've used several tools but reached the limit."
         )
-        yield {"type": "done", "message_id": msg.id}
 
     async def _summarize_background(self, conversation_id: str):
         """Summarize old messages in background — avoids blocking the user."""

@@ -208,7 +208,7 @@ pops it and emits `memory_updated`.
   (`services/conversationRecovery.ts`) — nothing is ever persisted against a
   conversation that does not exist.
 
-### 3.7 Group chat (Phase 1 + entity API shipped; turn orchestration pending)
+### 3.7 Group chat (Phase 1 + entity API + turn orchestration shipped; UI + memory pending)
 
 `docs/specs/group-chat.md` defines a **群** (fixed character set + shared
 transcript) whose conversations hold multiple speakers. Delivered so far: the
@@ -217,9 +217,16 @@ both LLM context and the history API), the group data model + rebuild migration
 (ticket #51/ADR-0004), and the group entity API (`api/group.py`: create / edit /
 list / create group conversation). Still pending: tickets #53–#55. Shape:
 
-- **Serial** turn orchestration: members reply in order; each may **skip**
-  (emits `<silent>`, dropped) or continue. A **chain budget** (6 role messages
-  per user turn) caps runaway chatter; all-skip ends the turn silently.
+- **Serial** turn orchestration (shipped, ticket #53): `core/group_turn.py`
+  decides who speaks when — member order, `<silent>` skips (dropped, never stored
+  or pushed), a **chain budget** (6 role messages per user turn), and interjection
+  handling (a new user message queues, the in-flight stream finishes, the old turn
+  winds down, queued messages merge into one new turn with a fresh budget). It is
+  pure logic: the "run one member's turn" callable is injected.
+  `services/group_chat.py` is the wiring — one character's turn goes through the
+  shared `Agent` (`persist_reply=False`, so a skip is never stored; the driver
+  persists with `speaker_id` and pushes `group_message`), user messages are
+  persisted/acked by the driver, and one conversation never runs two turns at once.
 - User interjections never interrupt an in-flight reply — they queue and become
   a **new turn** (budget reset); several interjections merge into one turn.
 - Daily greeting + proactive are **disabled** for group conversations; group TTS
@@ -268,6 +275,8 @@ list / create group conversation). Still pending: tickets #53–#55. Shape:
 | `tool_use` | `id`, `name`, `arguments` | LLM requested a tool call |
 | `tool_result` | `name`, `result`, `is_error`, `denied?` | tool finished (or was denied) |
 | `done` | `message_id`, `partial_error?`, `proactive?`, `daily_greeting?` | assistant message persisted |
+| `done` (group) | `group: true` | group turn burst finished (`persist_reply=False` replies carry `content` + `deferred: true`, no `message_id`) |
+| `group_message` | `message_id`, `character_id`, `content` | one group member's message was persisted |
 | `error` | `message` | unrecoverable error |
 | `message_ack` | `client_message_id`, `message_id` | user message persisted (id swap) |
 | `memory_updated` | `count` | background memory extraction finished |
@@ -279,6 +288,12 @@ list / create group conversation). Still pending: tickets #53–#55. Shape:
 `{type}` is one of: `chat` (`content`, `character_id`, `force_vision?`,
 `client_message_id?`), `approval_response` (`request_id`, `approved`),
 `daily_greeting`, `update_location` (`lat`, `lng`).
+
+For a **group** conversation `character_id` is not used (the room has no single
+speaker); a `daily_greeting` is answered with
+`{type:"daily_greeting_skip", reason:"group_conversation"}` and no proactive
+session is started. Group replies are delivered whole (no `token` stream): a
+`<silent>` skip must never be pushed, so the driver decides after the stream ends.
 
 The debug channel `/ws/logs` (ADR-0002) is separate from the chat socket and
 takes `renderer_log` (`level`, `message`) and `command` (`command`, one of the

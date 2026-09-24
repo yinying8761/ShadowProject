@@ -47,6 +47,50 @@ async def _seed(factory):
         await s.commit()
 
 
+class TestGroupSpeakersInContext:
+    """群对话：喂给 LLM 的历史里，每条 assistant 消息按**自己的** speaker_id 报名字。"""
+
+    @pytest.fixture
+    async def group_factory(self):
+        engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        yield factory
+        await engine.dispose()
+
+    async def test_each_group_message_carries_its_own_speaker(self, group_factory):
+        from core.conversation_manager import ConversationManager
+        from models.group import Group
+
+        async with group_factory() as s:
+            s.add(CharacterProfile(id="c1", name="小柔", personality="", role="companion", archetype="friend"))
+            s.add(CharacterProfile(id="c2", name="阿B", personality="", role="companion", archetype="friend"))
+            s.add(Group(id="g1", name="小群"))
+            s.add(Conversation(id="conv-g", character_id=None, group_id="g1"))
+            base = datetime(2026, 9, 20, 6, 25, 0)
+            s.add(Message(id="gm1", conversation_id="conv-g", role="user", content="你们好", created_at=base))
+            s.add(Message(
+                id="gm2", conversation_id="conv-g", role="assistant", content="在的",
+                speaker_id="c1", created_at=datetime(2026, 9, 20, 6, 26, 0),
+            ))
+            s.add(Message(
+                id="gm3", conversation_id="conv-g", role="assistant", content="我也在",
+                speaker_id="c2", created_at=datetime(2026, 9, 20, 6, 27, 0),
+            ))
+            await s.commit()
+
+        mgr = ConversationManager()
+        async with group_factory() as s:
+            ctx = await mgr.get_context_messages(s, "conv-g", user_name="小明")
+
+        assert [m["content"] for m in ctx] == [
+            "2026/9/20 14:25 [小明]: 你们好",
+            "2026/9/20 14:26 [小柔]: 在的",
+            "2026/9/20 14:27 [阿B]: 我也在",
+        ]
+
+
 class TestGetContextMessagesTranscript:
     @pytest.mark.asyncio
     async def test_text_messages_prefixed_tool_raw(self, factory):

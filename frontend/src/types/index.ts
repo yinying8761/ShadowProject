@@ -118,7 +118,8 @@ export interface WsBaseMessage {
     | 'proactive_skip'
     | 'memory_updated'
     | 'daily_greeting_skip'
-    | 'message_ack';
+    | 'message_ack'
+    | 'group_message';
   content?: string;
   message_id?: string;
   name?: string;
@@ -134,6 +135,10 @@ export interface WsBaseMessage {
   client_message_id?: string;
   /** Machine-readable error kind, e.g. `conversation_not_found` (api/chat.py). */
   code?: string;
+  /** Group chat: which member said it (services/group_chat.py `group_message`). */
+  character_id?: string;
+  /** Group chat: marks the turn-burst boundary (every group reply carries none). */
+  group?: boolean;
 }
 
 /**

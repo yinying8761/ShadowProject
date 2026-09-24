@@ -64,21 +64,6 @@ class TestHttpSendRefusesUnknownConversation:
         }
 
 
-@pytest.fixture
-def ws_env():
-    """WS 测试专用：独立内存库 + 同步事件循环（TestClient 用线程里的另一个 loop）。"""
-    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
-
-    async def _create_all():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    asyncio.run(_create_all())
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    yield engine, factory
-    asyncio.run(engine.dispose())
-
-
 def _ws_client(monkeypatch, factory) -> TestClient:
     monkeypatch.setattr("database.async_session", factory)
 

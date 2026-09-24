@@ -45,8 +45,16 @@ async def send_chat(req: ChatRequest, session: AsyncSession = Depends(get_sessio
         # 往一个没人拥有的 conversation_id 里落库 —— 那正是孤儿消息的来源。
         from models.conversation import Conversation
 
-        if await session.get(Conversation, conv_id) is None:
+        conversation = await session.get(Conversation, conv_id)
+        if conversation is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        if conversation.group_id is not None:
+            # 群聊的回复由群轮编排产生（WS）。这条 HTTP 兜底是 1:1 的：让它跑下去
+            # 会把一句 speaker_id=NULL 的单聊回复写进群对话（ADR-0004）。
+            raise HTTPException(
+                status_code=400,
+                detail="Group conversations are answered over the websocket",
+            )
     else:
         conv = await conv_manager.get_or_create_conversation(session, req.character_id)
         conv_id = conv.id
@@ -138,6 +146,9 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             flush=True,
         )
 
+    # 群对话：character_id 为 NULL、group_id 有值（ADR-0004）——群里的一切走群轮驱动。
+    is_group = conv is not None and conv.group_id is not None
+
     def _char_id_getter() -> str | None:
         return last_known_character_id
 
@@ -179,17 +190,20 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
 
     from services.proactive_session import ProactiveSession
 
-    proactive_session = ProactiveSession(
-        conversation_id=conversation_id,
-        char_id_getter=_char_id_getter,
-        agent=agent,
-        send_json=websocket.send_json,
-        approval_callback=approval_callback,
-        get_user_config=get_user_config,
-        screen_fingerprints=screen_fingerprints,
-        screen_gate=screen_gate,
-    )
-    await proactive_session.start()
+    # 群聊根本不建主动陪伴会话（spec：群对话禁用主动说话与每日问候）。
+    proactive_session = None
+    if not is_group:
+        proactive_session = ProactiveSession(
+            conversation_id=conversation_id,
+            char_id_getter=_char_id_getter,
+            agent=agent,
+            send_json=websocket.send_json,
+            approval_callback=approval_callback,
+            get_user_config=get_user_config,
+            screen_fingerprints=screen_fingerprints,
+            screen_gate=screen_gate,
+        )
+        await proactive_session.start()
 
     async def handle_daily_greeting():
         """Gather context then delegate to GreetingOrchestrator.
@@ -201,6 +215,11 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         from being ingested as a memory.
         """
         print("[DAILY] handler invoked", flush=True)
+        if is_group:
+            await websocket.send_json(
+                {"type": "daily_greeting_skip", "reason": "group_conversation"}
+            )
+            return
         char_id = last_known_character_id
         if not char_id:
             print("[DAILY] no character_id known, skipping", flush=True)
@@ -436,6 +455,19 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         except Exception as e:
             print(f"[WS] background title generation failed: {e}", flush=True)
 
+    group_chat = None
+    if is_group:
+        from services.group_chat import GroupChatSession
+
+        group_chat = GroupChatSession(
+            conversation_id,
+            agent=agent,
+            conversation_manager=conv_manager,
+            send_json=websocket.send_json,
+            approval_callback=approval_callback,
+            on_turn_finished=lambda: asyncio.create_task(_ensure_title_bg(conversation_id)),
+        )
+
     async def handle_message(data: dict):
         msg_type = data.get("type", "chat")
 
@@ -474,7 +506,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         force_vision = bool(data.get("force_vision"))
         client_message_id = data.get("client_message_id")
 
-        if not content or not character_id:
+        if not is_group and not character_id:
             await websocket.send_json(
                 {
                     "type": "error",
@@ -485,6 +517,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
 
         # 会话可能在连接期间被删掉（多窗口挂着一个已删除的会话 id 继续聊，
         # 或后端换了数据目录）：每一轮再确认一次，绝不往不存在/已删除的会话落库。
+        # 群聊与 1:1 共用这道闸门 —— 群轮的落库在驱动里，同样不能漏。
         from database import async_session
         from models.conversation import Conversation
 
@@ -492,6 +525,16 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             if await session.get(Conversation, conversation_id) is None:
                 await refuse_missing_conversation()
                 return
+
+        if is_group:
+            # 群聊：一句话交给群轮驱动（自己落库/ack、按成员顺序跑轮、永不并行）。
+            # 群里没有"当前角色"，character_id 不参与；搜索提示注入与截屏增强是 1:1 的
+            # 便利，群聊不走这条路（角色要用工具自己调，spec：全量工具）。
+            if not content:
+                await websocket.send_json({"type": "error", "message": "content is required"})
+                return
+            group_chat.handle_user_message(content, client_message_id=client_message_id)
+            return
 
         nonlocal last_known_character_id
         last_known_character_id = character_id
@@ -594,4 +637,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         except Exception:
             pass
     finally:
-        await proactive_session.stop()
+        if group_chat is not None:
+            await group_chat.stop()
+        if proactive_session is not None:
+            await proactive_session.stop()
