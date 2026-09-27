@@ -293,8 +293,9 @@ list / create group conversation), the turn orchestration (ticket #53), the UI
   names server-side, live `group_message` events are labelled client-side, and
   `MessageBubble` renders a per-speaker name + stable colour (`utils/speakerStyle.ts`).
   Group turns are not token-streamed, so the group `done` event (no `message_id`)
-  is what clears the "thinking" state. TTS stays off in groups behind `useTTS`'s
-  reserved `GROUP_TTS_ENABLED` switch.
+  is what clears the "thinking" state — and `turn_end{pending}` clears it per **user
+  turn** as soon as nothing is queued (review P3). TTS stays off in groups behind
+  `useTTS`'s reserved `GROUP_TTS_ENABLED` switch.
 - **i18n** via `i18n/translations.ts` + `useTranslation` (zh default).
 
 ## 5. Protocols (the contracts you must not break)
@@ -308,12 +309,13 @@ list / create group conversation), the turn orchestration (ticket #53), the UI
 | `tool_result` | `name`, `result`, `is_error`, `denied?` | tool finished (or was denied) |
 | `done` | `message_id`, `partial_error?`, `proactive?`, `daily_greeting?` | assistant message persisted |
 | `done` (group) | `group: true` | group turn burst finished (`persist_reply=False` replies carry `content` + `deferred: true`, no `message_id`) |
+| `turn_end` | `group: true`, `pending` | one **user turn** finished inside a group burst; `pending` = more queued interjections are about to run. `pending:false` means "nothing queued *right now*" (review P3) |
 | `group_message` | `message_id`, `character_id`, `content` | one group member's message was persisted |
 | `error` | `message` | unrecoverable error |
 | `message_ack` | `client_message_id`, `message_id` | user message persisted (id swap) |
 | `memory_updated` | `count` | background memory extraction finished |
 | `llm_retry` | `attempt`, `max_retries` | LLM retry in progress (transient, chat path only) |
-| `proactive_skip` / `daily_greeting_skip` | | proactive/greeting aborted |
+| `proactive_skip` / `daily_greeting_skip` | `reason` | proactive/greeting aborted. `daily_greeting_skip` reasons: `already_greeted` (the only one meaning "today is done") / `group_conversation` / `no_character` / `disabled` / `no_config` / `in_flight` / `empty` (review N1) |
 
 ### 5.2 WebSocket inbound (client → server)
 
@@ -370,7 +372,20 @@ or circuit-breaker failures).
   messages through the *same* timestamped-transcript formatter (§7 时间戳对话记录)
   — never a second copy of the formatting rules. `render_transcript` returns the
   text lines (LLM context); `render_lines` returns speaker + text together (the
-  history API needs both, and renders once).
+  history API needs both, and renders once). Turning those lines into one block of
+  text (**render → drop the empty tool-pipeline lines → join**) is
+  `render_transcript_text` — group summary and group catch-up both call it instead
+  of re-implementing the join.
+- **Names are trimmed at the API edge**: `POST/PUT /api/characters` reject a blank
+  name with 400 and store `name.strip()` — `" A "` becomes `"A"` (review P2; the
+  speaker label would otherwise render as `[   ]`). Same for group names
+  (`api/group.py::_clean_group_name`).
+- **Default conversation title lives on the model**: `Conversation.DEFAULT_TITLE` is the
+  one value (the column default, plus a `ConversationManager.DEFAULT_TITLE` alias for
+  existing callers); `ConversationManager.is_default_title(title)` is the one predicate.
+  List **and** single-conversation endpoints send `is_default_title`, so the frontend
+  never compares against its own copy — and a rename response carries the refreshed
+  flag, so the list can update that row in place (review S6).
 - **Specs & tickets**: a spec (`docs/specs/<name>.md`) describes the PRD; tickets
   (`docs/Tickets/<name>/issues/NN-*.md`) are the ready-for-agent checklists
   (state `Blocked by:` explicitly). The `(done)` filename suffix marks a

@@ -237,3 +237,27 @@ class TestGroupConversations:
     async def test_create_conversation_unknown_group_404(self, client):
         r = await client.post("/api/groups/nope/conversations")
         assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_group_conversations_carry_the_default_title_flag(
+        self, client, session_factory
+    ):
+        """群侧对话概要也带 `is_default_title`（审查 S6）：与 /api/conversations 同一判定。"""
+        async with session_factory() as s:
+            s.add(Group(id="g1", name="群一"))
+            await s.commit()
+
+        created = (await client.post("/api/groups/g1/conversations")).json()
+        assert created["is_default_title"] is True  # 新建就是默认标题
+
+        from models.conversation import Conversation
+
+        async with session_factory() as s:
+            conv = await s.get(Conversation, created["id"])
+            conv.title = "用户起的名字"
+            await s.commit()
+
+        detail = (await client.get("/api/groups/g1")).json()
+        assert [(c["title"], c["is_default_title"]) for c in detail["conversations"]] == [
+            ("用户起的名字", False)
+        ]

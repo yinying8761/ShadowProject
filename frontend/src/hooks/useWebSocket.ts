@@ -129,8 +129,13 @@ export function useWebSocketBridge(conversationId: string | null) {
             case 'proactive_skip':
               break;
             case 'daily_greeting_skip':
-              // Server confirms greeting already done — mark complete
-              localStorage.setItem('daily_greeting_date', new Date().toISOString().slice(0, 10));
+              // 只有 already_greeted 才代表"今天 1:1 的问候确实做过了"。
+              // 其余 reason 都不是这层意思，一律记日期会把当天的问候吃掉（审查 N1）：
+              //   group_conversation / no_character / disabled / no_config / in_flight
+              //   （backend/api/chat.py）、empty（问候生成不出内容，core/agent.py）
+              if (data.reason === 'already_greeted') {
+                localStorage.setItem('daily_greeting_date', new Date().toISOString().slice(0, 10));
+              }
               break;
             case 'memory_updated':
               if (data.count && data.count > 0) {
@@ -153,6 +158,12 @@ export function useWebSocketBridge(conversationId: string | null) {
                 });
                 bumpConversationList();
               }
+              break;
+            case 'turn_end':
+              // 群轮按轮给信号（审查 P3）：还有插话要跑就保持"正在回应"，
+              // 没有了就按轮收掉，别让指示器一直挂到整批跑完。
+              // 批次结束仍由上面的 group done 兜底（两者都会清，幂等）。
+              if (!data.pending) setStreaming(false);
               break;
             case 'message_ack':
               // Server persisted our user message — swap the temporary

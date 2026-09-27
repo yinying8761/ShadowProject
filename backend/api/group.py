@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from core.conversation_manager import ConversationManager
 from database import get_session
 from models.character import CharacterProfile
 from models.conversation import Conversation
@@ -129,6 +130,8 @@ async def _group_payloads(groups: list[Group], session: AsyncSession) -> list[di
                 {
                     "id": c.id,
                     "title": c.title,
+                    # 与 `/api/conversations` 同一判定（审查 S6）：前端不必自带默认标题
+                    "is_default_title": ConversationManager.is_default_title(c.title),
                     "updated_at": c.updated_at.isoformat() if c.updated_at else None,
                 }
                 for c in conversations.get(group.id, [])
@@ -212,6 +215,7 @@ async def create_group_conversation(
         "group_id": conv.group_id,
         "character_id": conv.character_id,
         "title": conv.title,
+        "is_default_title": ConversationManager.is_default_title(conv.title),
         "created_at": conv.created_at.isoformat() if conv.created_at else None,
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
     }

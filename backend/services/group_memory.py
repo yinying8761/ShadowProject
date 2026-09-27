@@ -16,19 +16,20 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from core.conversation_manager import ConversationManager
-from core.transcript import ensure_utc, render_transcript
+from core.transcript import ensure_utc, render_transcript_text
 from models.conversation import Conversation
 from models.group import Group
 from models.message import Message
 from services.memory_extractor import (
     PROMPT_SCOPE_GROUP_USER_FACTS,
+    ExtractedMemory,
     MemoryExtractor,
 )
 from services.memory_store import MemoryStore
@@ -94,6 +95,43 @@ def batch_windows(
     return windows
 
 
+def _spans_more_than_a_day(window: DayWindow) -> bool:
+    """这批窗口是不是"合并批"（跨了不止一天）。
+
+    单日窗里 `created_at` 恰好就是那天，退回它没有代价；合并窗里退回它就会把
+    近几天的事记成最老那天 —— `_warn_missing_occurred_on` 靠这个区分。
+    """
+    first = date.fromisoformat(window.since_date)
+    return (ensure_utc(window.before).date() - first).days > 1
+
+
+def _warn_missing_occurred_on(
+    window: DayWindow, items: "list[ExtractedMemory]", conversation_id: str
+) -> int:
+    """合并窗里漏了 `occurred_on` 的条目会被标成批次最早一天 —— 让它可见。
+
+    返回被警告的条目数（0 = 没有这个问题），由 `CatchUpResult.undated` 带出去，
+    这样"缺口可见"既能被运维从日志看到、也能被测试直接断言，不必去解析日志文本。
+
+    正常路径不会走到这里：群聊提示词要求模型从行首时间戳里取 `occurred_on`
+    （`memory_extractor._GROUP_RULES`），日期因此是精确的。一旦模型漏字段，
+    `_item_created_at` 会退回窗口的 `created_at`：单日窗无所谓（那天就是那天），
+    **合并窗**（离开太久、最老那几天并成一批）会把近几天的事记成最早那天。
+    （docs/analysis/group-chat-phase2-review-fixes.md §2.1 / P1。）
+    """
+    missing = [item for item in items if not item.occurred_on]
+    if not missing or not _spans_more_than_a_day(window):
+        return 0
+    print(
+        f"[GroupMemory] conv={conversation_id[:8]} window={window.since_date}.."
+        f"{ensure_utc(window.before).date().isoformat()} 跨多日，但 {len(missing)}/"
+        f"{len(items)} 条没有 occurred_on → 记为 {window.created_at.date().isoformat()}"
+        "（该批最早一天）",
+        flush=True,
+    )
+    return len(missing)
+
+
 @dataclass(frozen=True)
 class CatchUpResult:
     """一次补账干了什么（给日志与测试看）。"""
@@ -103,6 +141,8 @@ class CatchUpResult:
     extracted: int = 0
     stored: int = 0
     compacted: int = 0
+    #: 合并窗里没有 `occurred_on`、被标成该批最早一天的条目数（>0 值得看一眼）
+    undated: int = 0
     completed: bool = True
 
 
@@ -175,7 +215,7 @@ class GroupMemoryCatchUp:
             await self._advance(conversation_id, until)
             return CatchUpResult()
 
-        windows_walked = extracted = stored = 0
+        windows_walked = extracted = stored = undated = 0
         processed_until: datetime | None = None
         failed = False
 
@@ -185,16 +225,14 @@ class GroupMemoryCatchUp:
                 conversation_id, since_date=window.since_date, before=window.before
             )
             if messages:
+                # 名字要查库，所以这里仍需一次 session（渲染器本身是纯函数，
+                # 不替调用方解析说话人）。
                 async with self._sessions() as session:
                     speaker_names = await self._conversations.resolve_speaker_names(
                         session, messages
                     )
                 # 群记录走共享渲染器：保留"谁说了什么"，提示词才能只挑用户的事实
-                transcript = "\n".join(
-                    line
-                    for line in render_transcript(messages, speaker_names=speaker_names)
-                    if line
-                )
+                transcript = render_transcript_text(messages, speaker_names=speaker_names)
                 try:
                     items = await self._extractor.extract(
                         transcript,
@@ -210,6 +248,9 @@ class GroupMemoryCatchUp:
                     failed = True
                     break  # 锚点停在上一批结尾：这一天下次再补
                 extracted += len(items)
+                # 合并窗漏 occurred_on 的条目会被标成该批最早一天：返回值让调用方
+                # （与测试）能看见，不必去解析日志文本。
+                undated += _warn_missing_occurred_on(window, items, conversation_id)
                 if items:
                     # 提取一次 → 每个成员各存一份（同一个角色内才去重）
                     for member_id in member_ids:
@@ -246,7 +287,7 @@ class GroupMemoryCatchUp:
         print(
             f"[GroupMemory] catch-up conv={conversation_id[:8]} windows={windows_walked} "
             f"extracted={extracted} stored={stored} compacted={compacted} "
-            f"completed={not failed}",
+            f"undated={undated} completed={not failed}",
             flush=True,
         )
         return CatchUpResult(
@@ -254,6 +295,7 @@ class GroupMemoryCatchUp:
             extracted=extracted,
             stored=stored,
             compacted=compacted,
+            undated=undated,
             completed=not failed,
         )
 

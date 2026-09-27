@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from services.group_memory import DayWindow, batch_windows
+from services.memory_extractor import ExtractedMemory
 
 
 def _utc(*args) -> datetime:
@@ -105,7 +106,7 @@ class SpyExtractor:
 
     def __init__(self, *, script=None, items=None, fail_on=(), log=None):
         self.script = script or {}
-        self.items = items or {"any": []}  # 提取出来的条目（测试脚本决定）
+        self.items = items or {"any": []}  # 提取出来的条目（`list[ExtractedMemory]`，与真提取器同型）
         self.fail_on = set(fail_on)
         self.log = log if log is not None else []
         self.load_calls: list[str | None] = []
@@ -220,7 +221,7 @@ class TestCatchUp:
         await _seed_group(factory, anchor=datetime(2026, 9, 20, 9, 0))
         log: list[str] = []
         extractor = SpyExtractor(script={"2026-09-20": [_msg("user", "我最近在学 Rust")]}, log=log)
-        extractor.items = {"any": ["记忆A", "记忆B"]}
+        extractor.items = {"any": [ExtractedMemory("记忆A"), ExtractedMemory("记忆B")]}
         conversations = SpyConversations(log)
 
         result = await _catch_up(factory, extractor, conversations).run("conv-g")
@@ -241,7 +242,7 @@ class TestCatchUp:
             "2026-09-18": [_msg("user", "前天那句")],
             "2026-09-20": [_msg("user", "今天这句")],
         })
-        extractor.items = {"any": ["一条记忆"]}
+        extractor.items = {"any": [ExtractedMemory("一条记忆")]}
 
         await _catch_up(factory, extractor, SpyConversations()).run("conv-g")
 
@@ -255,7 +256,7 @@ class TestCatchUp:
         await _seed_group(factory, anchor=datetime(2026, 9, 20, 9, 0))
         log: list[str] = []
         extractor = SpyExtractor(script={"2026-09-20": [_msg("user", "一句话")]}, log=log)
-        extractor.items = {"any": ["一条记忆"]}
+        extractor.items = {"any": [ExtractedMemory("一条记忆")]}
         conversations = SpyConversations(log)
 
         await _catch_up(factory, extractor, conversations).run("conv-g")
@@ -283,7 +284,7 @@ class TestCatchUp:
             fail_on=("2026-09-19",),
             log=log,
         )
-        extractor.items = {"any": ["一条记忆"]}
+        extractor.items = {"any": [ExtractedMemory("一条记忆")]}
         conversations = SpyConversations(log)
 
         result = await _catch_up(factory, extractor, conversations).run("conv-g")
@@ -427,6 +428,80 @@ class TestCatchUpWithTheRealExtractor:
         # 通知一次性汇总：2 行记忆 = 一次通知（`notify=False` 真的把 MemoryStore.add
         # 的逐条通知也关掉了，否则这里会是 2 行 × N 次）
         assert pop_memory_notifications("conv-g") == 2
+
+    @pytest.mark.asyncio
+    async def test_a_merged_window_without_occurred_on_is_dated_to_its_first_day(
+        self, factory, monkeypatch
+    ):
+        """P1：合并窗 + 模型漏 `occurred_on` → 退回该批最早一天，但**必须看得见**。
+
+        这不是"应该这样"，而是把已知行为锁住：单日窗退回它无所谓（那天就是那天），
+        合并窗会把近几天的事记成最老那天。精确日期靠提示词拿到 `occurred_on`；
+        见 docs/analysis/group-chat-phase2-review-fixes.md §2.1。
+        """
+        import json
+
+        from sqlalchemy import select
+
+        from core.conversation_manager import ConversationManager
+        from models.character import CharacterProfile
+        from models.conversation import Conversation
+        from models.group import Group, GroupMember
+        from models.memory import Memory
+        from models.message import Message
+        from services.group_memory import GroupMemoryCatchUp
+        from services.memory_extractor import MemoryExtractor
+        from services.memory_store import MemoryStore
+
+        import services.memory_extractor as me
+
+        monkeypatch.setattr(me, "async_session", factory)
+
+        # 锚点比 NOW 早 19 天 → 超过 MAX_BATCHES=7：最老的 14 天并成一批（09-01..09-14）
+        anchor = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+        in_merged_window = datetime(2026, 9, 14, 6, 0, tzinfo=timezone.utc)
+        async with factory() as s:
+            s.add(CharacterProfile(id="c1", name="小柔"))
+            s.add(Group(id="g1", name="深夜食堂"))
+            s.add(GroupMember(group_id="g1", character_id="c1", position=0))
+            s.add(Conversation(
+                id="conv-g", character_id=None, group_id="g1", last_extract_at=anchor,
+            ))
+            s.add(Message(
+                conversation_id="conv-g", role="user",
+                content="我这几天在赶项目", created_at=in_merged_window,
+            ))
+            await s.commit()
+
+        class FakeLLM:
+            async def chat_sync(self, messages, max_tokens=1024, temperature=0.3):
+                return json.dumps([
+                    {"content": "用户最近在赶项目", "memory_type": "important_event", "importance": 6}
+                ])  # 刻意不给 occurred_on
+
+        result = await GroupMemoryCatchUp(
+            extractor=MemoryExtractor(MemoryStore()),
+            conversation_manager=ConversationManager(),
+            llm_service=FakeLLM(),
+            session_factory=factory,
+            now=lambda: NOW,
+        ).run("conv-g")
+
+        async with factory() as s:
+            rows = (await s.execute(select(Memory))).scalars().all()
+
+        assert result.completed is True
+        # 已知回退：整批标成 09-01，而不是消息真实的 09-14
+        assert {m.created_at.date().isoformat() for m in rows} == {"2026-09-01"}
+
+        # 但绝不静默：`[GroupMemory] catch-up …` 汇总行看不出这件事，所以单独警告一行，
+        # 并把条数从 `CatchUpResult.undated` 带出来（断言结构化结果，不解析日志文本）
+        assert result.undated == 1
+
+        # 模块级通知队列：别把残留留给别的测试
+        from services.memory_service import pop_memory_notifications
+
+        pop_memory_notifications("conv-g")
 
 
 class TestInFlightDedup:

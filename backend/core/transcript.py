@@ -161,3 +161,30 @@ def render_transcript(
             tz=tz,
         )
     ]
+
+
+def render_transcript_text(
+    messages: Iterable[Any],
+    *,
+    user_name: str | None = None,
+    character_name: str | None = None,
+    speaker_names: Mapping[str, str] | None = None,
+    tz=None,
+) -> str:
+    """`render_transcript` 渲染成**一段文本**，丢掉工具管线留下的空行。
+
+    群摘要（`ConversationManager.summarize_and_trim`）与群补账（`group_memory`）
+    共用 ——「渲染 → 丢空行 → join」只此一份。纯函数：不碰 DB / 时钟，
+    说话人名字由调用方解析好传进来（`speaker_names`）。
+    """
+    return "\n".join(
+        line
+        for line in render_transcript(
+            messages,
+            user_name=user_name,
+            character_name=character_name,
+            speaker_names=speaker_names,
+            tz=tz,
+        )
+        if line
+    )

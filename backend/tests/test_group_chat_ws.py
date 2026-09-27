@@ -177,6 +177,21 @@ class TestGroupTurnOverTheWebSocket:
         history = [m for m in llm.calls[0] if m["role"] != "system"]
         assert any("[用户]: 你们好" in (m.get("content") or "") for m in history)
 
+    def test_the_turn_end_event_reports_an_empty_queue(self, ws_env, monkeypatch):
+        """按轮发信号（审查 P3）：一轮跑完先发 `turn_end`，队列空了 pending=False，`done` 兜底。"""
+        _engine, factory = ws_env
+        asyncio.run(_seed_group(factory))
+        client = _client(monkeypatch, factory, FakeGroupLLM({"小柔": ["在的呀"]}))
+
+        with client.websocket_connect("/ws/chat/conv-g") as ws:
+            ws.send_json({"type": "chat", "content": "你们好"})
+            events = _drain(ws)
+
+        assert [e for e in events if e["type"] == "turn_end"] == [
+            {"type": "turn_end", "group": True, "pending": False}
+        ]
+        assert events[-1] == {"type": "done", "group": True}  # 批次结束仍是 done
+
     def test_the_chain_budget_caps_a_chatty_group(self, ws_env, monkeypatch):
         _engine, factory = ws_env
         asyncio.run(_seed_group(factory))

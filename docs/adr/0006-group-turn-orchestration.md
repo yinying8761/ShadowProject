@@ -56,12 +56,19 @@ turn" callable**, and **the Agent hands the reply back instead of persisting it*
 ## Consequences
 
 - Group replies are delivered whole (`group_message`), not token-by-token: the client
-  can only show a member's message once the skip question is settled. A "typing"
-  indicator is left to the UI ticket (#54) — the backend needs no new event for it.
+  can only show a member's message once the skip question is settled.
+  **Amended (review P3):** the "typing" indicator itself is still UI work, but it needed
+  a *per-turn* boundary to hang off — one `done{group:true}` for a whole burst is too
+  coarse, because a burst can contain several user turns (queued interjections). The
+  orchestrator therefore reports each turn via an injected `on_turn_end()` callback and
+  the driver emits `turn_end{group:true, pending}`; `done{group:true}` still closes the
+  burst. `pending=false` means "nothing queued *right now*" — a message arriving while
+  the callback awaits still starts another turn.
 - Anything that wants to speak in a group must go through the orchestrator's sink;
   `speak` implementations must not persist (the driver is the single writer).
 - A failed member turn aborts the turn burst but **keeps** the queued messages: they
   belong to user messages that were already stored, so dropping them would silently
   lose a turn.
-- The protocol additions (`group_message`, `done{group:true}`, chat without
-  `character_id`) are part of the wire contract documented in CONTEXT.md §5.1/§5.2.
+- The protocol additions (`group_message`, `turn_end{group,pending}`, `done{group:true}`,
+  chat without `character_id`) are part of the wire contract documented in
+  CONTEXT.md §5.1/§5.2.

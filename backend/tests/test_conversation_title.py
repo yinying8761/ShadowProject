@@ -291,3 +291,44 @@ class TestPutEndpoint:
             result = await mgr.ensure_title(s, "conv-block", llm)
             assert result == "用户标题"
             assert llm.call_count == 0
+
+
+# ── Seam 3: GET /api/conversations 的「默认标题」标记（审查 S6） ────────────
+
+class TestListDefaultTitleFlag:
+    @pytest.mark.asyncio
+    async def test_the_list_marks_the_default_title(self, client, session_factory):
+        """谁算"还没起过名"由后端说了算：前端不再自带一份默认标题字符串去比对。"""
+        async with session_factory() as s:
+            s.add(CharacterProfile(
+                id="char-s6", name="Test", personality="", role="companion", archetype="friend",
+            ))
+            s.add(Conversation(id="conv-s6-default", character_id="char-s6"))
+            s.add(Conversation(id="conv-s6-named", character_id="char-s6", title="用户起的名字"))
+            await s.commit()
+
+        rows = {r["id"]: r for r in (await client.get("/api/conversations")).json()}
+
+        assert rows["conv-s6-default"]["is_default_title"] is True
+        assert rows["conv-s6-named"]["is_default_title"] is False
+
+    @pytest.mark.asyncio
+    async def test_renaming_returns_the_cleared_flag(self, client, session_factory):
+        """改名响应要带上刷新后的 flag：前端就地更新那一条。
+
+        前端 `displayTitle` 先短路在 `is_default_title` 上，只合并 `title` 会让本地
+        那份 flag 一直停在 true —— 侧栏改名后仍显示 'New Conversation'（复核发现的回归）。
+        """
+        async with session_factory() as s:
+            s.add(CharacterProfile(
+                id="char-s6b", name="Test2", personality="", role="companion", archetype="friend",
+            ))
+            s.add(Conversation(id="conv-s6-rename", character_id="char-s6b"))
+            await s.commit()
+
+        r = await client.put("/api/conversations/conv-s6-rename", json={"title": "新名字"})
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["title"] == "新名字"
+        assert body["is_default_title"] is False

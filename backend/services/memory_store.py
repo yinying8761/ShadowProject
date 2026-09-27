@@ -143,7 +143,6 @@ class MemoryStore:
         character_id: str | None = None,
         source: str = SOURCE_AI_SUMMARIZED,
         created_at: datetime | None = None,
-        notify: bool = True,
     ) -> Memory:
         """Insert a memory, deduplicating against existing similar content.
 
@@ -151,9 +150,11 @@ class MemoryStore:
         otherwise the server default (now) applies.  Daily extraction
         passes the window start date so memories reflect the conversation
         date rather than the extraction date.
-        """
-        from services.memory_service import push_memory_notification
 
+        **不推送通知**（审查 S3）：一次提取会存 N 条，逐条推会让前端把同一批
+        数两遍。推送归调用方 —— `MemoryExtractor.store()` 按批推一次，
+        `save_memory` 工具由 Agent 的显式 `memory_updated` 事件负责。
+        """
         # Check for near-duplicate before inserting (同一角色范围内)
         existing = await self.find_similar(session, content, character_id=character_id)
         if existing:
@@ -167,8 +168,6 @@ class MemoryStore:
             await self.sync_fts5_update(
                 existing.id, old_content, content, existing.memory_type,
             )
-            if source_conversation_id and notify:
-                push_memory_notification(source_conversation_id, 1)
             return existing
 
         mem_kwargs: dict = {
@@ -186,8 +185,6 @@ class MemoryStore:
         session.add(mem)
         await session.commit()
         await session.refresh(mem)
-        if source_conversation_id and notify:
-            push_memory_notification(source_conversation_id, 1)
         return mem
 
     # ---- FTS5 sync (content update during dedup) ---------------------

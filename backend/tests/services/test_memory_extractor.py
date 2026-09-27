@@ -525,3 +525,68 @@ class TestBeforeWindow:
         assert len(results) == 1
         assert "early" in results[0].content
         await engine.dispose()
+
+
+# ── 通知：一次提取推一次（审查 S3） ────────────────────────────────────────
+
+
+class TestMemoryNotifications:
+    """一个会话不该被数两遍。
+
+    以前 `MemoryStore.add` 每存一条就推一次，`store()` 末尾又推一次汇总 —— 1:1
+    于是推 N+1 次。现在落库是纯落库，推送只由调用方做：`store()` 按批推一次
+    （群聊传 `notify=False`、由 `group_memory` 汇总），`save_memory` 工具走
+    Agent 的显式 `memory_updated` 事件（`core/agent.py`）。
+    """
+
+    @pytest.mark.asyncio
+    async def test_store_pushes_one_aggregate_notification(self, monkeypatch):
+        engine, factory = await _setup_db()
+        import services.memory_extractor as me
+
+        monkeypatch.setattr(me, "async_session", factory)
+
+        from services import memory_service
+        from services.memory_extractor import ExtractedMemory
+
+        memory_service.pop_memory_notifications("conv-aggregate")  # 清掉别的用例的残留
+
+        stored = await MemoryExtractor(MemoryStore()).store(
+            [
+                ExtractedMemory("用户喜欢喝美式", "user_preference", 6),
+                ExtractedMemory("用户养了一只叫豆豆的猫", "user_fact", 7),
+            ],
+            conversation_id="conv-aggregate",
+            character_id="c1",
+        )
+
+        assert len(stored) == 2
+        # 公开 API 只能读"计数之和"：一次性批推 = 2；旧的逐条+汇总会推成 1+1+2 = 4。
+        # （不去戳 `memory_service._memory_notifications` 私有字典。）
+        assert memory_service.pop_memory_notifications("conv-aggregate") == 2
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_the_store_itself_never_pushes(self, monkeypatch):
+        """`MemoryStore.add` 只落库：否则调用方再汇总一次就被数两遍。"""
+        engine, factory = await _setup_db()
+        import services.memory_store as ms
+
+        monkeypatch.setattr(ms, "async_session", factory)
+
+        from services import memory_service
+
+        memory_service.pop_memory_notifications("conv-nopush")
+
+        async with factory() as session:
+            mem = await MemoryStore().add(
+                session,
+                content="用户怕打雷",
+                character_id="c1",
+                source_conversation_id="conv-nopush",
+            )
+
+        assert mem.id
+        # 落库不该往通知队列里留任何东西（公开 API 读到 0）
+        assert memory_service.pop_memory_notifications("conv-nopush") == 0
+        await engine.dispose()

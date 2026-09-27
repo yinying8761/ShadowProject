@@ -3,6 +3,8 @@
 Seam S1 — pure functions, no DB / no IO / no clock:
   - core.transcript.format_message_time: `YYYY/M/D HH:MM` (M/D NOT zero-padded)
   - core.transcript.render_transcript:   `YYYY/M/D HH:MM [说话人]: 内容`
+  - core.transcript.render_transcript_text: 上面那些行 → 一段文本（丢空行、换行 join）
+    —— 群摘要与群补账共用，别再各写一遍 join
 
 Only user/assistant TEXT messages get the prefix; tool-role messages and
 tool-call carriers are skipped (None). Naive datetimes are UTC (project-wide
@@ -14,7 +16,12 @@ expected wall-clock strings are deterministic on any machine.
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from core.transcript import DEFAULT_USER_SPEAKER, format_message_time, render_transcript
+from core.transcript import (
+    DEFAULT_USER_SPEAKER,
+    format_message_time,
+    render_transcript,
+    render_transcript_text,
+)
 
 TZ8 = timezone(timedelta(hours=8))  # fixed offset — deterministic everywhere
 
@@ -89,3 +96,25 @@ class TestRenderTranscript:
             speaker_names={"char-b": "阿B"}, tz=TZ8,
         )
         assert lines == ["2026/9/20 14:25 [阿B]: 我不同意"]
+
+
+class TestRenderTranscriptText:
+    """`render_transcript_text`：渲染 → 丢工具管线的空行 → join（只此一份组装）。"""
+
+    def test_joins_text_lines_and_drops_tool_plumbing(self):
+        msgs = [
+            _msg("user", "早", datetime(2026, 9, 20, 6, 25)),
+            _msg("tool", '{"ok": true}', datetime(2026, 9, 20, 6, 26), tool_calls=None),
+            _msg("assistant", "早呀", datetime(2026, 9, 20, 6, 27), speaker_id="char-b"),
+        ]
+        text = render_transcript_text(
+            msgs, user_name="小明", speaker_names={"char-b": "阿B"}, tz=TZ8,
+        )
+        assert text == (
+            "2026/9/20 14:25 [小明]: 早\n"
+            "2026/9/20 14:27 [阿B]: 早呀"
+        )
+
+    def test_only_tool_plumbing_renders_empty_text(self):
+        msgs = [_msg("tool", '{"ok": true}', datetime(2026, 9, 20, 6, 25))]
+        assert render_transcript_text(msgs, user_name="小明", tz=TZ8) == ""

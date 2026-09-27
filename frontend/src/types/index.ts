@@ -53,6 +53,8 @@ export interface Conversation {
   id: string;
   characterId: string;
   title: string;
+  /** 后端判定「标题还是默认值」（api/conversation.py）：前端不再自带默认标题字符串（S6） */
+  is_default_title?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -70,6 +72,8 @@ export interface GroupMemberInfo {
 export interface GroupConversationInfo {
   id: string;
   title: string;
+  /** 后端判定「标题还是默认值」（api/group.py，与 /api/conversations 同一规则） */
+  is_default_title?: boolean;
   updated_at: string | null;
 }
 
@@ -148,7 +152,8 @@ export interface WsBaseMessage {
     | 'memory_updated'
     | 'daily_greeting_skip'
     | 'message_ack'
-    | 'group_message';
+    | 'group_message'
+    | 'turn_end';
   content?: string;
   message_id?: string;
   name?: string;
@@ -170,6 +175,9 @@ export interface WsBaseMessage {
   speaker?: string;
   /** Group chat: marks the turn-burst boundary (every group reply carries none). */
   group?: boolean;
+  /** Group chat `turn_end`: 队列里还有插话、马上会开下一轮（services/group_chat.py）。
+   *  `false` 只表示"此刻队列是空的"——回调期间用户仍可能插话，之后马上又来一轮。 */
+  pending?: boolean;
 }
 
 /**

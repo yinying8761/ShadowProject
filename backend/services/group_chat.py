@@ -21,7 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from core.conversation_manager import ConversationManager
-from core.group_turn import SILENT_MARKER, GroupTurnOrchestrator, GroupUtterance
+from core.group_turn import (
+    SILENT_MARKER,
+    GroupTurnOrchestrator,
+    GroupUtterance,
+)
 from services.group_memory import schedule_catch_up
 from models.conversation import Conversation
 from models.group import Group
@@ -58,7 +62,7 @@ class GroupChatSession:
         agent,
         send_json: SendJson,
         approval_callback=None,
-        on_turn_finished: Callable[[], None] | None = None,
+        on_batch_finished: Callable[[], None] | None = None,
         conversation_manager: ConversationManager | None = None,
     ):
         self._conversation_id = conversation_id
@@ -66,9 +70,11 @@ class GroupChatSession:
         self._conversations = conversation_manager or ConversationManager()
         self._send_json = send_json
         self._approval_callback = approval_callback
-        self._on_turn_finished = on_turn_finished
+        self._on_batch_finished = on_batch_finished
         self._orchestrator = GroupTurnOrchestrator(
-            self._speak, on_utterance=self._store_and_push
+            self._speak,
+            on_utterance=self._store_and_send,
+            on_turn_end=self._on_turn_end,
         )
         self._turn_task: asyncio.Task | None = None
         self._persisting: list[asyncio.Task] = []
@@ -130,10 +136,26 @@ class GroupChatSession:
             await self._safe_send({"type": "error", "message": str(e)})
         finally:
             self._turn_task = None
-            if self._on_turn_finished is not None:
-                self._on_turn_finished()
+            if self._on_batch_finished is not None:
+                self._on_batch_finished()
             if not cancelled:
                 await self._safe_send({"type": "done", "group": True})
+
+    async def _on_turn_end(self) -> None:
+        """一个用户轮跑完：按轮发信号（审查 P3）。
+
+        `pending` = 队列里还有插话、马上会开下一轮；前端据此决定"正在回应"
+        要不要收掉，而不是等整批跑完。批次结束仍由上面的 `done` 兜底 ——
+        事件形状见 CONTEXT.md §5.1。
+
+        `pending=False` 只是"此刻队列是空的"：本回调 await 期间用户仍可能插话，
+        于是紧接着还会开一轮。前端不该把 false 当成"这一批彻底结束了"。
+        """
+        await self._safe_send({
+            "type": "turn_end",
+            "group": True,
+            "pending": self._orchestrator.has_pending(),
+        })
 
     async def _speak(self, character_id, *, is_continuation, user_messages) -> str | None:
         """跑一个角色的一轮：LLM 只生成，落库与推送由编排器判定后交给 sink。"""
@@ -165,7 +187,7 @@ class GroupChatSession:
                 # token 先攒着：这一条可能是 <silent>，绝不能漏给前端
         return reply
 
-    async def _store_and_push(self, utterance: GroupUtterance) -> None:
+    async def _store_and_send(self, utterance: GroupUtterance) -> None:
         """确实说了的：落库（`speaker_id` = 该角色）再推送。"""
         from database import async_session
 

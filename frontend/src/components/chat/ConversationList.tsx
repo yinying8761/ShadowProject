@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from '../../i18n/useTranslation';
 import { api } from '../../services/api';
 
-const DEFAULT_TITLE = 'New Conversation';
-
 export interface ConversationListItem {
   id: string;
   title: string;
+  /** 后端判定「标题还是默认值」——前端不再自带一份默认标题字符串（S6）。 */
+  is_default_title?: boolean;
 }
 
 /** 两个侧栏共用的"什么时候该重新载入列表"的键（拼成字符串，避免每次渲染都重载）。 */
@@ -70,14 +70,16 @@ export function ConversationList({
     }
   }, [editingId]);
 
-  const displayTitle = (title: string, convId: string) => {
-    if (title === DEFAULT_TITLE) return t('New Conversation');
-    return title || `${t('Chat')} ${convId.slice(0, 6)}`;
+  const displayTitle = (conv: ConversationListItem) => {
+    // 「是不是默认标题」由后端给（S6）；旧接口没带这个字段时按有标题处理。
+    if (conv.is_default_title) return t('New Conversation');
+    return conv.title || `${t('Chat')} ${conv.id.slice(0, 6)}`;
   };
 
-  const handleStartEdit = (convId: string, currentTitle: string) => {
-    setEditingId(convId);
-    setEditValue(currentTitle === DEFAULT_TITLE ? '' : currentTitle);
+  const handleStartEdit = (conv: ConversationListItem) => {
+    setEditingId(conv.id);
+    // 默认标题不是"用户起的名字"：进编辑态留空，免得用户把 'New Conversation' 存成标题
+    setEditValue(conv.is_default_title ? '' : conv.title);
   };
 
   const handleConfirmEdit = async (convId: string) => {
@@ -87,7 +89,13 @@ export function ConversationList({
     try {
       const updated = await api.updateConversation(convId, trimmed);
       setConversations((prev) =>
-        prev.map((c) => (c.id === convId ? { ...c, title: updated.title } : c))
+        prev.map((c) =>
+          c.id === convId
+            // `is_default_title` 必须一起刷新：改名后它就不再是默认标题了，
+            // 只换 title 会让 displayTitle 一直短路显示 'New Conversation'。
+            ? { ...c, title: updated.title, is_default_title: updated.is_default_title }
+            : c
+        )
       );
     } catch (e) {
       console.error('Failed to rename conversation:', e);
@@ -172,12 +180,12 @@ export function ConversationList({
                         : 'text-companion-text/60 hover:text-companion-text hover:bg-white/5'
                     }`}
                   >
-                    {displayTitle(conv.title, conv.id)}
+                    {displayTitle(conv)}
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleStartEdit(conv.id, conv.title);
+                      handleStartEdit(conv);
                     }}
                     title={t('Edit')}
                     className="px-1.5 py-1 text-[10px] transition-colors opacity-0 group-hover:opacity-100 text-white/30 hover:text-companion-accent/80"

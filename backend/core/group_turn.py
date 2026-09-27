@@ -15,6 +15,21 @@
 
 用户消息只有一条入口：`submit()` 入队，`run()` 跑完队列里所有待处理的消息。
 这样"两条消息几乎同时到达"不会开出两轮并行的群轮 —— 入队是同步的，没有竞态窗口。
+
+**任务句柄由驱动自管**（`services/group_chat.py` 的 `_turn_task`）：`submit()` 的返回值
+只表示"入队时是否已经有在途轮"，驱动不靠它决策。驱动之所以不会开出第二轮，是因为
+`run()` 里「`take_pending()` 取空 → `_in_flight` 置回 False」之间**没有任何 await**；
+不可重入守卫（`RuntimeError`）是最后一道防线，不是串行的实现手段。
+
+回调（都由调用方注入，编排器本身仍是纯逻辑）：
+
+- `on_utterance(utterance)` —— 每条被采纳的消息一确定就交出去（驱动落库 + 推送）。
+- `on_turn_end()` —— **每个用户轮**跑完就交出去（驱动据此按轮发信号）。
+
+  回调发生在 `take_pending()` **之前**，所以回调里 `has_pending()` 能回答"还有下一轮吗"，
+  而且回调 await 期间进来的新消息会被紧随其后的 `take_pending()` 取走、不会漏。
+  代价是 `has_pending() == False` 只是"此刻没有"，回调期间用户仍可能插话 —— 调用方
+  据此发信号时要容忍"说完没有、马上又来一轮"。
 """
 
 from __future__ import annotations
@@ -33,6 +48,10 @@ SpeakFn = Callable[..., Awaitable["str | None"]]
 
 #: 每条被采纳的消息一决定就交出去（驱动据此落库 + 推送，不必等整轮跑完）。
 UtteranceSink = Callable[["GroupUtterance"], Awaitable[None]]
+
+#: 每个用户轮跑完时回调（驱动据此按轮发事件；轮末调用时 `has_pending()` 仍准）。
+#: 不带载荷：驱动只需要"这一轮结束了 + 队列里还有吗"，轮内容由 `run()` 的返回值给。
+TurnEndSink = Callable[[], Awaitable[None]]
 
 #: 标记周围可能出现的修饰：模型偶尔会写成 `"<silent>"`、`（<silent>）` 之类。
 _DECORATION = "`*_~\"'“”‘’()（）[]【】{}<>《》:：,，.。!！?？-— \t\r\n"
@@ -86,10 +105,12 @@ class GroupTurnOrchestrator:
         speak: SpeakFn,
         *,
         on_utterance: "UtteranceSink | None" = None,
+        on_turn_end: "TurnEndSink | None" = None,
         chain_budget: int = GROUP_CHAIN_BUDGET,
     ):
         self._speak = speak
         self._on_utterance = on_utterance
+        self._on_turn_end = on_turn_end
         self._chain_budget = chain_budget
         self._queued: list[str] = []
         self._in_flight = False
@@ -106,9 +127,10 @@ class GroupTurnOrchestrator:
     def submit(self, text: str) -> bool:
         """用户说了一句：入队。
 
-        返回 True 表示已经有在途群轮（它会自己接力成新轮）；False 表示当前空闲 ——
-        调用方需要 await `run()` 把队列跑掉。**同步**方法：没有 await，所以两条
-        几乎同时到达的消息不可能各自开出一轮。
+        **同步**方法：没有 await，所以两条几乎同时到达的消息不可能各自开出一轮。
+        返回值只作参考：True = 入队时已经有在途群轮（它会自己接力成新轮）；
+        False = 当前空闲。**任务句柄由驱动自己管**（`group_chat._turn_task`），
+        驱动不需要按这个返回值决策 —— 见模块 docstring 里的说明。
         """
         self._queued.append(text)
         return self._in_flight
@@ -121,6 +143,10 @@ class GroupTurnOrchestrator:
     async def run(self, member_ids: Sequence[str]) -> list[GroupTurnResult]:
         """把队列里的用户消息一轮一轮跑完（插话合并、每轮预算重置）。
 
+        每跑完一个用户轮就回调 `on_turn_end()`（此时队列**还没取**，所以
+        `has_pending()` 仍能回答"还有下一轮吗"）；回调里 await 期间进来的新消息
+        会在紧随其后的 `take_pending()` 被取走，不会漏。
+
         不可重入：同一实例同时在跑两轮就违反"永不并行"，因此直接报错而不是悄悄串味。
         """
         if self._in_flight:
@@ -130,7 +156,10 @@ class GroupTurnOrchestrator:
             results: list[GroupTurnResult] = []
             pending = self.take_pending()
             while pending:
-                results.append(await self._run_one(member_ids, tuple(pending)))
+                result = await self._run_one(member_ids, tuple(pending))
+                results.append(result)
+                if self._on_turn_end is not None:
+                    await self._on_turn_end()
                 pending = self.take_pending()
             return results
         finally:

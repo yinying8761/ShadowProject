@@ -19,7 +19,7 @@ conv_manager = ConversationManager()
 
 class ConversationCreate(BaseModel):
     character_id: str
-    title: str = "New Conversation"
+    title: str = Conversation.DEFAULT_TITLE
 
 
 @router.get("")
@@ -38,6 +38,9 @@ async def list_conversations(
             "id": c.id,
             "character_id": c.character_id,
             "title": c.title,
+            # 「还没起过名」由后端判定（默认标题是模型的常量）：前端不再自带一份
+            # 'New Conversation' 去比对（审查 S6）。
+            "is_default_title": conv_manager.is_default_title(c.title),
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "updated_at": c.updated_at.isoformat() if c.updated_at else None,
         }
@@ -54,7 +57,12 @@ async def create_conversation(
     session.add(conv)
     await session.commit()
     await session.refresh(conv)
-    return {"id": conv.id, "character_id": conv.character_id, "title": conv.title}
+    return {
+        "id": conv.id,
+        "character_id": conv.character_id,
+        "title": conv.title,
+        "is_default_title": conv_manager.is_default_title(conv.title),
+    }
 
 
 @router.get("/{conversation_id}")
@@ -68,6 +76,9 @@ async def get_conversation(
         "id": conv.id,
         "character_id": conv.character_id,
         "title": conv.title,
+        # 单条也要带：前端改名后用它刷新本地那条，否则陈旧的 flag 会让列表
+        # 一直显示默认标题（复核发现的回归）。
+        "is_default_title": conv_manager.is_default_title(conv.title),
         "created_at": conv.created_at.isoformat() if conv.created_at else None,
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
     }
@@ -217,6 +228,9 @@ async def update_conversation(
         "id": conv.id,
         "character_id": conv.character_id,
         "title": conv.title,
+        # 改名后前端要就地刷新这条：不带这个字段的话，本地那份 `is_default_title`
+        # 会一直停在 true，侧栏就显示不回用户刚起的名字（复核发现的回归）。
+        "is_default_title": conv_manager.is_default_title(conv.title),
         "created_at": conv.created_at.isoformat() if conv.created_at else None,
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
     }

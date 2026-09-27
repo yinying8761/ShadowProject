@@ -465,7 +465,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             conversation_manager=conv_manager,
             send_json=websocket.send_json,
             approval_callback=approval_callback,
-            on_turn_finished=lambda: asyncio.create_task(_ensure_title_bg(conversation_id)),
+            on_batch_finished=lambda: asyncio.create_task(_ensure_title_bg(conversation_id)),
         )
         # 打开群对话 = 补账（后台、不阻塞聊天、同一对话在途去重）
         group_chat.start()

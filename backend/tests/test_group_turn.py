@@ -281,6 +281,28 @@ class TestInterjection:
 
         assert reported == ["B1"]
 
+    async def test_each_turn_is_reported_when_it_ends(self):
+        """驱动按**轮**收信号（审查 P3）：插话还没跑的轮说 pending=True。"""
+        seen: list[bool] = []
+
+        async def on_turn_end():
+            # 回调不带载荷；轮末队列还没被取 → 这里能回答"还有下一轮吗"
+            seen.append(orch.has_pending())
+
+        speakers = FakeSpeakers({"a": ["A1"]})
+
+        def hook(cid, is_continuation):
+            if not is_continuation and not seen:  # 只在第一轮在途时插一句
+                orch.submit("插话")
+
+        speakers.hook = hook
+        orch = GroupTurnOrchestrator(speakers.speak, on_turn_end=on_turn_end)
+
+        turns = await _run(orch, ["a"], "第一句")
+
+        assert [t.user_messages for t in turns] == [("第一句",), ("插话",)]
+        assert seen == [True, False]
+
     async def test_a_queued_interjection_survives_a_failed_turn(self):
         """某个角色生成失败，不该把已经落库的插话一起弄丢 —— 下一次驱动补上。"""
         calls = {"n": 0}

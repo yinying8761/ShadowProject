@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
-from core.transcript import render_role_labels, render_transcript
+from core.transcript import render_role_labels, render_transcript, render_transcript_text
 from models.character import CharacterProfile
 from models.message import Message
 from models.conversation import Conversation
@@ -138,7 +138,10 @@ class ConversationManager:
         return msg
 
     async def get_or_create_conversation(
-        self, session: AsyncSession, character_id: str, title: str = "New Conversation"
+        self,
+        session: AsyncSession,
+        character_id: str,
+        title: str = Conversation.DEFAULT_TITLE,
     ) -> Conversation:
         """Get the most recent conversation or create a new one."""
         query = (
@@ -179,7 +182,17 @@ class ConversationManager:
         )
         return result.scalar() or 0
 
-    DEFAULT_TITLE: str = "New Conversation"
+    #: 默认标题的唯一来源在模型上（列默认值同源）；这里保留同名别名给既有调用方与测试。
+    DEFAULT_TITLE: str = Conversation.DEFAULT_TITLE
+
+    @staticmethod
+    def is_default_title(title: str | None) -> bool:
+        """标题是否还是默认值（= 「用户还没起过名」）——判定只此一处。
+
+        API 用它下发 `is_default_title`，前端据此决定显示与"进编辑态留空"，
+        不必自带一份默认标题字符串（审查 S6）。
+        """
+        return (title or "") == Conversation.DEFAULT_TITLE
 
     async def ensure_title(
         self,
@@ -201,7 +214,7 @@ class ConversationManager:
         if not conv:
             return None
 
-        if conv.title != self.DEFAULT_TITLE:
+        if not self.is_default_title(conv.title):
             return conv.title
 
         # Fetch first user message and first assistant message
@@ -296,11 +309,7 @@ class ConversationManager:
         is_group = conv is not None and conv.group_id is not None
         if is_group:
             speaker_names = await self.resolve_speaker_names(session, old_messages)
-            transcript = "\n".join(
-                line
-                for line in render_transcript(old_messages, speaker_names=speaker_names)
-                if line
-            )
+            transcript = render_transcript_text(old_messages, speaker_names=speaker_names)
         else:
             transcript = render_role_labels(old_messages)
 

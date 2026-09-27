@@ -146,7 +146,9 @@ class Agent:
                     f"[Agent] greeting was empty or SKIP, full_response={repr(full_response[:100])}",
                     flush=True,
                 )
-                yield {"type": "daily_greeting_skip"}
+                # 问候跑了但什么都没生成（空回复 / <skip>）：带上 reason，让前端能把它
+                # 和"今天已经问候过了"区分开（审查 N1；前端只对 already_greeted 记日期）。
+                yield {"type": "daily_greeting_skip", "reason": "empty"}
             return
 
         # ── Chat / proactive mode ─────────────────────────────────────

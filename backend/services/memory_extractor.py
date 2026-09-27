@@ -73,10 +73,6 @@ _SYSTEM_BY_SCOPE = {
     PROMPT_SCOPE_GROUP_USER_FACTS: "你是一个记忆记录员。只记录关于用户的持久事实，只输出有效的 JSON 数组。",
 }
 
-
-
-
-
 _RULES_BY_SCOPE = {
     PROMPT_SCOPE_DIARY: _DIARY_RULES,
     PROMPT_SCOPE_GROUP_USER_FACTS: _GROUP_RULES,
@@ -144,14 +140,6 @@ class MemoryExtractor:
                 stmt = stmt.where(Message.created_at < before)
             result = await session.execute(stmt)
             return list(reversed(result.scalars().all()))
-
-    @staticmethod
-    def render_diary_transcript(messages) -> str:
-        """1:1 用的行格式（"谁说的"由角色标签给出，不需要名字）。
-
-        实现在 `core.transcript.render_role_labels` —— 对话摘要也用同一份。
-        """
-        return render_role_labels(messages)
 
     @staticmethod
     def _item_created_at(
@@ -248,7 +236,9 @@ class MemoryExtractor:
         """条目 → 记忆：按角色去重、算向量、落库。
 
         `created_at` 用**消息真实发生的日期**（补账跨多日时别把三天前记成今天）。
-        `notify=False` 交给调用方自己汇总通知（群聊要一次提取、N 份存储）。
+        `notify` 表示**这次 `store()` 是否由本方法汇总推一次通知**（`MemoryStore.add`
+        自己不再推送 —— 见审查 S3）。群聊一次提取、N 份存储，所以传 `notify=False`
+        由 `group_memory` 汇总推一次。
         """
         async with async_session() as session:
             stored: list[Memory] = []
@@ -286,11 +276,12 @@ class MemoryExtractor:
                         character_id=character_id,
                         source=SOURCE_AI_SUMMARIZED,
                         created_at=self._item_created_at(item, created_at),
-                        notify=notify,
                     )
                 )
 
         if stored and notify:
+            # 批推一次：`MemoryStore.add` 不再逐条推（审查 S3），1:1 因此从
+            # 「N+1 次通知」变成「1 次」；前端 `addMemoryNotification(count)` 本就累加。
             from services.memory_service import push_memory_notification
 
             push_memory_notification(conversation_id, len(stored))
@@ -318,7 +309,7 @@ class MemoryExtractor:
         hint = await self._user_name_hint(character_id)
         try:
             items = await self.extract(
-                self.render_diary_transcript(messages),
+                render_role_labels(messages),  # 1:1 行格式：核心渲染器里那一份
                 llm_service,
                 user_name_hint=hint,
             )

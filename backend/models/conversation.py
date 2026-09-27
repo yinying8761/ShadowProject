@@ -8,6 +8,10 @@ from database import Base
 class Conversation(Base):
     __tablename__ = "conversations"
 
+    #: 默认标题的**唯一来源**：列默认值、`ConversationManager.is_default_title`
+    #: 与 API 下发的 `is_default_title` 判定都取它（审查 S6）。
+    DEFAULT_TITLE = "New Conversation"
+
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
@@ -23,7 +27,7 @@ class Conversation(Base):
     )
     # "打开时补账"锚点：群记忆提取最后覆盖到的消息时间。
     last_extract_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    title: Mapped[str] = mapped_column(String(200), default="New Conversation")
+    title: Mapped[str] = mapped_column(String(200), default=DEFAULT_TITLE)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
