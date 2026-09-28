@@ -37,11 +37,24 @@ GROUP_SCENARIO = """## 当前场景：群聊
 你正在一个名为「{group_name}」的群聊里，群成员有：{member_names}（用户也在群里）。
 - 这是群聊，不是一对一：可以回应最近发言的人（用户或别的角色），也可以只说说自己的想法。
 - 有话就说，像在群里聊天那样 1-3 句，别长篇大论。
+- **上面那段带时间和「[名字]:」的对话记录是只读的**：不要在上面续写，也不要自己
+  写「[名字]:」或时间戳 —— 你说的话会由系统作为新的一条记录下来。你只输出**你要说
+  的那句话本身**（纯文本，可以分段落）。
 - **无话可说时只输出 {silent}**（不要加引号、不要解释、不要写别的字）。"""
 
-#: 同一个用户轮里"接着说"的问法。
+#: 群轮的收尾合成轮（`Agent.run(user_nudge=...)`）。**不可省**：带 `tools` 的请求
+#: 若以 assistant 结尾，DeepSeek 思考模式直接 400（"reasoning_content in the thinking
+#: mode must be passed back"）—— 而一个 burst 里第二个请求的历史正好以"上一个角色
+#: 刚说的话"结尾。所以每一轮都要用一条 user 轮收尾（不落库）。
+#: 一句话交代"轮到你说话"，同一个用户轮里"接着说"的用另一句。
+GROUP_TURN_OPEN = "（系统：现在轮到你发言，按群聊规则回应；无话可说只输出标记。）"
+
+#: 同一个用户轮里"接着说"的问法。这里必须重申"只写话本身"：续说请求的上下文就是一串
+#: `时间 [说话人]: 内容`，模型很容易顺手把**下一行**写出来（2026-09-27 / 09-28 两次实测，
+#: 第二次是自己说了一段之后另起一行续写记录）。
 GROUP_CONTINUATION = (
-    f"（系统：你刚说过话。还想补充就继续说；**不想说了只输出 {SILENT_MARKER}**。）"
+    f"（系统：你刚说过话。还想补充就直接接着说你**自己的话**（纯文本，别另起一行写"
+    f"「[名字]:」或时间戳）；**不想说了只输出 {SILENT_MARKER}**。）"
 )
 
 #: 转发给前端的事件：工具活动与记忆提示是真实发生的（token / done 由驱动决定）。
@@ -163,8 +176,9 @@ class GroupChatSession:
 
         await self._settle_persists()  # 角色读历史之前，用户那几句必须已经在库里
         suffix = self._scenario
-        if is_continuation:
-            suffix = f"{suffix}\n\n{GROUP_CONTINUATION}"
+        # 收尾用哪句合成轮：接着说是另一句（原本挂在 system prompt 上，但那只改措辞、
+        # 不改"最后一条是 assistant"这件事）。
+        nudge = GROUP_CONTINUATION if is_continuation else GROUP_TURN_OPEN
 
         reply = ""
         async with async_session() as session:
@@ -177,6 +191,7 @@ class GroupChatSession:
                 persist_reply=False,  # 先判"跳过"，再决定落不落库
                 system_suffix=suffix,
                 memory_query="\n".join(user_messages) or None,
+                user_nudge=nudge,  # 必须让请求以 user 结尾，见 GROUP_TURN_OPEN
             ):
                 if event["type"] == "done":
                     reply = event.get("content", "")
@@ -206,7 +221,9 @@ class GroupChatSession:
             # 名字在后端解析（与历史接口同一规则：按消息自己的 speaker_id），
             # 前端不必再维护第二套说话人规则。
             "speaker": self._member_names.get(utterance.character_id),
-            "content": utterance.content,
+            # 推落库后的文本（`add_message` 会剥掉模型带出来的对话记录前缀）：
+            # 推送与库里必须一致，否则刷新一下内容就变了。
+            "content": msg.content,
         })
 
     async def _persist_user_message(self, text: str, client_message_id: str | None) -> None:

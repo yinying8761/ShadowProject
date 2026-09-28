@@ -177,6 +177,28 @@ class TestGroupTurnOverTheWebSocket:
         history = [m for m in llm.calls[0] if m["role"] != "system"]
         assert any("[用户]: 你们好" in (m.get("content") or "") for m in history)
 
+    def test_every_member_request_ends_with_a_user_turn(self, ws_env, monkeypatch):
+        """带 `tools` 的请求若以 assistant 收尾，DeepSeek 思考模式直接 400
+        （`reasoning_content` in the thinking mode must be passed back）。
+
+        群轮里第二个请求的历史正好以"上一个角色刚说的话"结尾 —— 2026-09-27 的真实
+        故障就是它（一个角色回完、1 秒后 400）。所以每一轮都要用合成 user 轮收尾。
+        """
+        _engine, factory = ws_env
+        asyncio.run(_seed_group(factory))
+        llm = FakeGroupLLM({"小柔": ["A1"], "阿B": ["B1"]})
+        client = _client(monkeypatch, factory, llm)
+
+        with client.websocket_connect("/ws/chat/conv-g") as ws:
+            ws.send_json({"type": "chat", "content": "你们好"})
+            _drain(ws)
+
+        assert llm.calls, "假 LLM 一次都没被调用"
+        for index, messages in enumerate(llm.calls):
+            assert messages[-1]["role"] == "user", (
+                f"第 {index} 次请求以 {messages[-1]['role']} 收尾 —— 会被思考模式 400"
+            )
+
     def test_the_turn_end_event_reports_an_empty_queue(self, ws_env, monkeypatch):
         """按轮发信号（审查 P3）：一轮跑完先发 `turn_end`，队列空了 pending=False，`done` 兜底。"""
         _engine, factory = ws_env

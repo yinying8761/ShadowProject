@@ -123,3 +123,42 @@ class TestAgentGroupTurn:
             await _events(agent, s)
 
         assert searches == [("你们好", "c1")]
+
+    async def test_the_request_never_ends_on_an_assistant_message(self, factory):
+        """带 `tools` 的请求若以 assistant 收尾，DeepSeek 思考模式直接 400
+        （`reasoning_content` in the thinking mode must be passed back）。
+
+        群聊里第二个请求正是这个形状：历史以"上一个角色刚说的话"结尾。所以群轮
+        必须补一条**合成 user 轮**收尾 —— 这条断言修之前会红。
+        """
+        agent = _agent(["接着说"])
+        await _seed(factory)
+        async with factory() as s:
+            s.add(Message(
+                id="a1", conversation_id="conv-g", role="assistant",
+                content="我先说一句", speaker_id="c1",
+            ))
+            await s.commit()
+
+        async with factory() as s:
+            events = [
+                event
+                async for event in agent.run(
+                    s,
+                    user_message=None,
+                    conversation_id="conv-g",
+                    character_id="c1",
+                    persist_reply=False,
+                    user_nudge="（系统：轮到你发言，无话可说只输出 <silent>。）",
+                )
+            ]
+
+        sent = agent.llm_service.seen[0]
+        assert sent[-1]["role"] == "user"  # 修之前：最后一条是历史里的 assistant
+        assert "轮到你发言" in sent[-1]["content"]
+        assert events[-1]["content"] == "接着说"
+
+        # 合成轮只是满足 API 契约，不落库
+        async with factory() as s:
+            rows = (await s.execute(select(Message))).scalars().all()
+            assert sorted(m.id for m in rows) == ["a1", "u1"]

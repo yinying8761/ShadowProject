@@ -183,6 +183,44 @@ class TestGroupHistoryTranscript:
         assert null_pk == []
 
 
+class TestAssistantReplyPrefixIsStripped:
+    """助手消息落库前剥掉行首的对话记录前缀（2026-09-27 群聊实测的泄漏）。
+
+    模型偶尔把喂给它的记录格式当输出写出来（`2026/9/27 21:19 [小樱]: …`）。
+    `ConversationManager.add_message` 是所有助手写入的唯一入口，所以在这里收口。
+    """
+
+    @pytest.mark.asyncio
+    async def test_add_message_strips_the_prefix_for_assistant(self, client, session_factory):
+        from core.conversation_manager import ConversationManager
+
+        await _seed(session_factory)
+        mgr = ConversationManager()
+        async with session_factory() as s:
+            await mgr.add_message(
+                s, "conv-h", "assistant",
+                "2026/9/27 21:19 [小柔]: 话说今天合肥有34度",
+            )
+            await s.commit()
+
+        rows = (await client.get("/api/conversations/conv-h/messages")).json()
+        assert rows[-1]["content"] == "话说今天合肥有34度"
+        assert rows[-1]["transcript"].endswith("[小柔]: 话说今天合肥有34度")
+
+    @pytest.mark.asyncio
+    async def test_user_messages_are_left_alone(self, client, session_factory):
+        from core.conversation_manager import ConversationManager
+
+        await _seed(session_factory)
+        mgr = ConversationManager()
+        async with session_factory() as s:
+            await mgr.add_message(s, "conv-h", "user", "[小柔]: 这是我打的字")
+            await s.commit()
+
+        rows = (await client.get("/api/conversations/conv-h/messages")).json()
+        assert rows[-1]["content"] == "[小柔]: 这是我打的字"
+
+
 class TestSpeakerIdMigration:
     @pytest.mark.asyncio
     async def test_sequence_adds_nullable_speaker_id_preserving_data(self):

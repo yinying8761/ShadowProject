@@ -21,6 +21,7 @@ from core.transcript import (
     format_message_time,
     render_transcript,
     render_transcript_text,
+    strip_transcript_prefixes,
 )
 
 TZ8 = timezone(timedelta(hours=8))  # fixed offset — deterministic everywhere
@@ -118,3 +119,45 @@ class TestRenderTranscriptText:
     def test_only_tool_plumbing_renders_empty_text(self):
         msgs = [_msg("tool", '{"ok": true}', datetime(2026, 9, 20, 6, 25))]
         assert render_transcript_text(msgs, user_name="小明", tz=TZ8) == ""
+
+
+class TestStripTranscriptPrefixes:
+    """模型"跟着记录往下写"时带出来的行首前缀要剥掉（2026-09-27 / 09-28 两次群聊实测）。"""
+
+    def test_strips_the_whole_line_case(self):
+        """第一次（09-27）：整条就是一行记录，前缀在开头。"""
+        leaked = "2026/9/27 21:19 [小樱]: 话说今天合肥有34度，还挺热的，大家记得多喝水呀～"
+        assert strip_transcript_prefixes(leaked) == (
+            "话说今天合肥有34度，还挺热的，大家记得多喝水呀～"
+        )
+
+    def test_strips_a_prefix_that_appears_mid_message(self):
+        """第二次（09-28）：先说了一段，又另起一行续写记录 —— 只剥开头那种写法兜不住。"""
+        leaked = (
+            "哎呀哎呀，这话题转得～灰暗脸都红了吧，哈哈～阴影你这是想用撒娇逃避运动嘛。\n"
+            "\n"
+            "2026/9/28 20:52 [小樱]: 不过说真的，喜欢宅也没啥大不了的，"
+            "找点在家也能动一动的乐趣，比被念叨强多啦～"
+        )
+        assert strip_transcript_prefixes(leaked) == (
+            "哎呀哎呀，这话题转得～灰暗脸都红了吧，哈哈～阴影你这是想用撒娇逃避运动嘛。\n"
+            "\n"
+            "不过说真的，喜欢宅也没啥大不了的，找点在家也能动一动的乐趣，比被念叨强多啦～"
+        )
+
+    def test_strips_every_lines_prefix(self):
+        """一整个假对话段（多行）也要全剥掉。"""
+        leaked = "2026/9/27 21:19 [小樱]: 第一句\n2026/9/27 21:20 [灰暗]: 第二句"
+        assert strip_transcript_prefixes(leaked) == "第一句\n第二句"
+
+    def test_strips_a_bare_speaker_prefix(self):
+        assert strip_transcript_prefixes("[小柔]: 在的") == "在的"
+
+    def test_leaves_normal_text_alone(self):
+        for text in (
+            "今天好热呀（叹气）[笑]",
+            "我说的是 2026/9/27 21:19 [小樱]: 这种格式",  # 不在行首 → 不动
+            "[图片]",
+            "",
+        ):
+            assert strip_transcript_prefixes(text) == text

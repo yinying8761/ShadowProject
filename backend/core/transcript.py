@@ -11,6 +11,7 @@ Pure functions: no DB, no IO, no clock. Message inputs are duck-typed
 (role / content / created_at / speaker_id / tool_calls).
 """
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, NamedTuple
 
@@ -188,3 +189,31 @@ def render_transcript_text(
         )
         if line
     )
+
+
+#: 对话记录行的行首形状：`2026/9/27 21:19 [小樱]: `（时间戳可缺，只有 `[说话人]: `）。
+#: `MULTILINE` + 全局替换 —— 模型可能只在**中间某一行**续写记录（2026-09-28 实测）。
+_TRANSCRIPT_PREFIX = re.compile(
+    r"^[ \t]*(?:\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}\s*)?\[[^\]\n]{1,32}\][ \t]*[:：][ \t]*",
+    re.MULTILINE,
+)
+
+
+def strip_transcript_prefixes(text: str) -> str:
+    """剥掉**每一行行首**的对话记录前缀 —— 模型"跟着记录往下写"时会把它带出来。
+
+    喂给 LLM 的上下文是 `时间 [说话人]: 内容` 形式的对话记录（Phase 1），模型会把这行
+    记录的**下一行**当成自己的输出。两次实测（都在群聊）：
+
+        # 第一次：整条就是一行，前缀在开头
+        2026/9/27 21:19 [小樱]: 话说今天合肥有34度，还挺热的，大家记得多喝水呀～
+
+        # 第二次：自己先说了一段，然后**另起一行**续写记录
+        哎呀哎呀，这话题转得～灰暗脸都红了吧，哈哈～阴影你这是想用撒娇逃避运动嘛。
+        （空行）
+        2026/9/28 20:52 [小樱]: 不过说真的，喜欢宅也没啥大不了的……
+
+    —— 第二种只出现在中间某一行，所以**逐行**剥，而不是只剥整条的开头。前缀是格式、
+    不是内容；正文里出现同样形状（不在行首）不动，`[图片]` 这种没有冒号的不碰。
+    """
+    return _TRANSCRIPT_PREFIX.sub("", text)

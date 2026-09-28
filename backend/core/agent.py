@@ -48,6 +48,7 @@ class Agent:
         persist_reply: bool = True,
         system_suffix: str | None = None,
         memory_query: str | None = None,
+        user_nudge: str | None = None,
     ) -> AsyncIterator[dict]:
         """
         Execute the agent loop, yielding events.
@@ -88,6 +89,14 @@ class Agent:
             What to retrieve memories for. Defaults to ``user_message``; a group
             turn passes the user messages of the current turn, because the user
             message itself is persisted by the caller (``user_message=None``).
+        user_nudge:
+            Trailing **synthetic** user turn for callers that have no real user
+            message of their own (group turns, ticket #53) — appended last and
+            never persisted. Required, not cosmetic: a tool-carrying request
+            whose last message is an assistant message is rejected by the
+            DeepSeek thinking mode with 400 "reasoning_content ... must be
+            passed back", and a group burst's second request always ends on the
+            previous member's reply.
         """
         character = await session.get(CharacterProfile, character_id)
         if not character:
@@ -287,6 +296,13 @@ class Agent:
 
         if force_tool_context:
             messages.extend(force_tool_context)
+
+        if user_nudge:
+            # 收尾成 user —— **不是**可选的修饰。带 `tools` 的请求若以 assistant 结尾，
+            # DeepSeek 思考模式会直接 400（"reasoning_content in the thinking mode must
+            # be passed back"）：群聊一个 burst 里的第二个请求，历史正好以"上一个角色
+            # 刚说的话"结尾。合成轮不落库（用户消息由群驱动自己落）。
+            messages.append({"role": "user", "content": user_nudge})
 
         tools = self.tool_registry.get_tool_definitions()
 

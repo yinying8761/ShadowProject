@@ -2,7 +2,12 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
-from core.transcript import render_role_labels, render_transcript, render_transcript_text
+from core.transcript import (
+    render_role_labels,
+    render_transcript,
+    render_transcript_text,
+    strip_transcript_prefixes,
+)
 from models.character import CharacterProfile
 from models.message import Message
 from models.conversation import Conversation
@@ -112,7 +117,22 @@ class ConversationManager:
 
         `speaker_id` 只由群聊填写：那条消息是哪个角色说的（1:1 留空，说话人由
         会话的角色派生 —— 见 core/transcript.py）。
+
+        助手消息落库前会**逐行**剥掉行首的对话记录前缀（`2026/9/28 20:52 [小樱]: `）：
+        模型会把喂给它的记录格式当输出写出来，而且可能只出现在中间某一行
+        （2026-09-27 / 09-28 两次群聊实测）。这是所有助手写入的唯一入口，
+        所以 1:1 / 群聊 / 问候 / 主动陪伴都在这里收口。
         """
+        if role == "assistant":
+            cleaned = strip_transcript_prefixes(content)
+            if cleaned != content:
+                # 让"模型又续写记录了"在日志里可见（提示词只能降低概率，兜不住）
+                print(
+                    "[ConvManager] stripped a transcript prefix the model echoed "
+                    f"(conversation={conversation_id[:8]})",
+                    flush=True,
+                )
+                content = cleaned
         msg = Message(
             conversation_id=conversation_id,
             role=role,
