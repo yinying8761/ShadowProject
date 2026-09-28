@@ -237,6 +237,7 @@ const zh: TranslationDict = {
   'Pick at least one member': '至少选一个成员',
   'Group name cannot be empty': '群名不能为空',
   'No groups yet': '还没有群聊',
+  'Delete group': '删除群聊',
   'Leave Group': '退出群聊',
   Leave: '退出',
   'Speaking order': '发言顺序',

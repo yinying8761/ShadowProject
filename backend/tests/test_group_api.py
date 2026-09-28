@@ -2,8 +2,8 @@
 
 Seam: REST /api/groups —— 建群（名称+成员顺序）、编辑群（改名/增删成员/调序，
 替换式管理操作）、群列表与详情（含成员与对话概要）、为群创建对话
-（一群多条、归属 group_id、character_id NULL）。错误语义与现有 REST 一致：
-对象不存在 → 404；非法输入 → 400 带明确 detail。
+（一群多条、归属 group_id、character_id NULL）、删群（只删这个群的内容）。
+错误语义与现有 REST 一致：对象不存在 → 404；非法输入 → 400 带明确 detail。
 
 Fixtures `engine` / `session_factory` / `client` live in `conftest.py`.
 """
@@ -14,6 +14,8 @@ from sqlalchemy import select
 from models.character import CharacterProfile
 from models.conversation import Conversation
 from models.group import Group, GroupMember
+from models.memory import Memory
+from models.message import Message
 
 
 async def _seed_characters(session_factory):
@@ -261,3 +263,114 @@ class TestGroupConversations:
         assert [(c["title"], c["is_default_title"]) for c in detail["conversations"]] == [
             ("用户起的名字", False)
         ]
+
+
+class TestDeleteGroup:
+    """删群 = 删**这个群的内容**：群 + 成员资格 + 群对话 + 群消息。
+
+    明确**不删**：角色档案、它们的 1:1 会话与消息、角色记忆（只解绑来源会话）。
+    """
+
+    async def _seed(self, session_factory):
+        await _seed_characters(session_factory)
+        async with session_factory() as s:
+            s.add(Group(id="g1", name="要删的群"))
+            s.add(GroupMember(group_id="g1", character_id="c1", position=0))
+            s.add(GroupMember(group_id="g1", character_id="c2", position=1))
+            # 该群的两段群对话 + 消息
+            s.add(Conversation(id="conv-g1", character_id=None, group_id="g1"))
+            s.add(Conversation(id="conv-g2", character_id=None, group_id="g1"))
+            s.add(Message(id="gm1", conversation_id="conv-g1", role="user", content="群里第 1 句"))
+            s.add(Message(id="gm2", conversation_id="conv-g1", role="assistant",
+                          content="群里回一句", speaker_id="c1"))
+            s.add(Message(id="gm3", conversation_id="conv-g2", role="user", content="群里第 2 句"))
+            # 成员的 1:1 会话 + 消息（必须原样留着）
+            s.add(Conversation(id="conv-1to1", character_id="c1", title="1:1 会话"))
+            s.add(Message(id="m1", conversation_id="conv-1to1", role="user", content="单聊第 1 句"))
+            s.add(Message(id="m2", conversation_id="conv-1to1", role="assistant",
+                          content="单聊回一句", speaker_id="c1"))
+            # 记忆：一条来自群对话、一条来自 1:1（前者只解绑，后者不许动）
+            s.add(Memory(id="mem-g", content="从群里提取的事实", character_id="c1",
+                         source_conversation_id="conv-g1"))
+            s.add(Memory(id="mem-1to1", content="从单聊提取的事实", character_id="c1",
+                         source_conversation_id="conv-1to1"))
+            await s.commit()
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_the_group_content(self, client, session_factory):
+        await self._seed(session_factory)
+
+        r = await client.delete("/api/groups/g1")
+
+        assert r.status_code == 200
+        assert r.json() == {
+            "status": "deleted",
+            "conversations_deleted": 2,
+            "messages_deleted": 3,
+        }
+        assert (await client.get("/api/groups/g1")).status_code == 404
+        assert (await client.get("/api/groups")).json() == []
+        # 群对话没了（消息接口按会话查，空 = 消息确实删了）
+        assert (await client.get("/api/conversations/conv-g1/messages")).json() == []
+        assert (await client.get("/api/conversations/conv-g2/messages")).json() == []
+
+        async with session_factory() as s:
+            assert (await s.execute(select(Conversation))).scalars().all()  # 只剩 1:1
+            assert [c.id for c in (await s.execute(select(Conversation))).scalars().all()] == [
+                "conv-1to1"
+            ]
+            assert (await s.execute(select(GroupMember))).scalars().all() == []
+            assert (await s.execute(select(Message))).scalars().all()  # 群消息全清
+            left = [m.id for m in (await s.execute(select(Message))).scalars().all()]
+            assert left == ["m1", "m2"]
+
+    @pytest.mark.asyncio
+    async def test_characters_and_one_to_one_are_untouched(self, client, session_factory):
+        """删群不许牵连角色与 1:1 会话 —— 这是这个端点的红线。"""
+        await self._seed(session_factory)
+
+        await client.delete("/api/groups/g1")
+
+        chars = (await client.get("/api/characters")).json()
+        assert sorted(c["id"] for c in chars) == ["c1", "c2", "c3"]
+        convs = (await client.get("/api/conversations?character_id=c1")).json()
+        assert [c["id"] for c in convs] == ["conv-1to1"]
+        msgs = (await client.get("/api/conversations/conv-1to1/messages")).json()
+        assert [(m["id"], m["content"]) for m in msgs] == [
+            ("m1", "单聊第 1 句"),
+            ("m2", "单聊回一句"),
+        ]
+        assert msgs[1]["speaker_id"] == "c1"  # 1:1 的 speaker_id 也不受影响
+
+    @pytest.mark.asyncio
+    async def test_memories_survive_with_the_source_unbound(self, client, session_factory):
+        """记忆属于角色，不属于某段群聊：留着，只把来源会话解绑。"""
+        await self._seed(session_factory)
+
+        await client.delete("/api/groups/g1")
+
+        async with session_factory() as s:
+            mem_g = await s.get(Memory, "mem-g")
+            mem_1to1 = await s.get(Memory, "mem-1to1")
+            assert mem_g is not None and mem_g.source_conversation_id is None
+            assert mem_1to1 is not None and mem_1to1.source_conversation_id == "conv-1to1"
+
+    @pytest.mark.asyncio
+    async def test_unknown_group_404(self, client):
+        r = await client.delete("/api/groups/nope")
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_deleting_an_empty_group_is_fine(self, client, session_factory):
+        """没有对话的群也能删（计数为 0，不报错）。"""
+        await _seed_characters(session_factory)
+        async with session_factory() as s:
+            s.add(Group(id="g-empty", name="空群"))
+            s.add(GroupMember(group_id="g-empty", character_id="c1", position=0))
+            await s.commit()
+
+        r = await client.delete("/api/groups/g-empty")
+
+        assert r.status_code == 200
+        assert r.json()["conversations_deleted"] == 0
+        assert (await client.get("/api/groups/g-empty")).status_code == 404

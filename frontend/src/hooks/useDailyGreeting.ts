@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useChatStore } from '../stores/chatStore';
+import { useAppStore } from '../stores/appStore';
 
 /**
  * Sends a `daily_greeting` message to the backend whenever:
@@ -8,14 +9,18 @@ import { useChatStore } from '../stores/chatStore';
  *
  * The backend decides whether to actually generate a greeting
  * (per-character last_daily_greeting_date tracking).
+ *
+ * 群聊里**根本不发**：spec 明说群聊禁用每日问候，服务端虽然会拒（回
+ * `daily_greeting_skip{reason:"group_conversation"}`），但没必要白跑一趟往返。
  */
 export function useDailyGreeting() {
   const currentConversationId = useChatStore((s) => s.currentConversationId);
+  const inGroup = useAppStore((s) => s.activeGroup !== null);
   const pollingRef = useRef(false);
 
   // Send greeting on mount and when switching characters
   useEffect(() => {
-    if (!currentConversationId) return;
+    if (!currentConversationId || inGroup) return;
 
     let attempts = 0;
     const MAX = 60;
@@ -64,6 +69,8 @@ export function useDailyGreeting() {
 
     const handler = (value: { visible: boolean }) => {
       if (!value.visible) return;
+      // 群聊里不发（读实时状态：这个 effect 只挂一次，不能闭包捕获 inGroup）
+      if (useAppStore.getState().activeGroup) return;
 
       // Don't start a concurrent poll — the conversation-change effect
       // or a prior visibility fire may already be running.

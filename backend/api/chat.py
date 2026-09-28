@@ -216,6 +216,9 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
         """
         print("[DAILY] handler invoked", flush=True)
         if is_group:
+            # 群聊禁用每日问候（spec L33）；前端仍会按"切会话"发这个请求，
+            # 所以这里明确记一行 —— 日志里能看出是"被拒"而不是"跑了但没输出"。
+            print("[DAILY] group conversation — greeting disabled, skipping", flush=True)
             await websocket.send_json(
                 {"type": "daily_greeting_skip", "reason": "group_conversation"}
             )

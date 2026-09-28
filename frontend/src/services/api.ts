@@ -59,6 +59,12 @@ export const api = {
           : {}),
       }),
     }),
+  /** 删群：只删这个群的内容（群/成员资格/群对话/群消息），不碰角色与 1:1 会话。 */
+  deleteGroup: (groupId: string) =>
+    request<{ status: string; conversations_deleted: number; messages_deleted: number }>(
+      `/groups/${groupId}`,
+      { method: 'DELETE' }
+    ),
   createGroupConversation: (groupId: string) =>
     request<Conversation>(`/groups/${groupId}/conversations`, { method: 'POST' }),
   fetchConversations: (characterId?: string) =>

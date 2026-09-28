@@ -4,11 +4,17 @@
 "编辑群"是替换式的管理操作——一次 PUT 带完整成员列表即覆盖增、删、调序，
 不是聊天中的实时进出。错误语义与现有 REST 一致：对象不存在 → 404；
 非法输入 → 400 带明确 detail。
+
+**删群**（`DELETE /api/groups/{id}`）删的是"这个群的内容"：群本身、成员资格、
+该群的群对话与它们的消息。**不碰角色，也不碰任何 1:1 会话**（`group_id` 为空的
+会话连查都不查）。角色记忆按角色保留，只把 `source_conversation_id` 解绑成
+NULL —— 与 `api/character.py::_delete_character_dependents` 同一语义（ADR-0005：
+SQLite 不强制 FK，引用完整性由服务层显式兜住）。
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +23,8 @@ from database import get_session
 from models.character import CharacterProfile
 from models.conversation import Conversation
 from models.group import Group, GroupMember
+from models.memory import Memory
+from models.message import Message
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -218,4 +226,44 @@ async def create_group_conversation(
         "is_default_title": ConversationManager.is_default_title(conv.title),
         "created_at": conv.created_at.isoformat() if conv.created_at else None,
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+    }
+
+
+@router.delete("/{group_id}")
+async def delete_group(group_id: str, session: AsyncSession = Depends(get_session)):
+    """删群：把这个群的内容整份删掉，**不碰角色、也不碰 1:1 会话**。
+
+    删掉的是：群本身、成员资格、该群的群对话、以及这些对话里的消息。
+    保留的是：角色档案（含它们的 1:1 会话与消息）、角色记忆（只把
+    `source_conversation_id` 解绑 —— 记忆属于角色，不属于某段群聊）。
+
+    返回删除条数，前端据此告知用户"删掉了 N 段对话 / M 条消息"。
+    """
+    group = await _get_group_or_404(group_id, session)
+
+    # 只取这个群的群对话：`group_id` 为空的 1:1 会话不在 where 里，天然不会被碰。
+    conv_ids = (await session.execute(
+        select(Conversation.id).where(Conversation.group_id == group_id)
+    )).scalars().all()
+
+    messages_deleted = 0
+    if conv_ids:
+        messages_deleted = (await session.execute(
+            delete(Message).where(Message.conversation_id.in_(conv_ids))
+        )).rowcount or 0
+        # 记忆按角色保留，只解绑来源会话（与删角色同一语义，ADR-0005）。
+        await session.execute(
+            update(Memory)
+            .where(Memory.source_conversation_id.in_(conv_ids))
+            .values(source_conversation_id=None)
+        )
+        await session.execute(delete(Conversation).where(Conversation.id.in_(conv_ids)))
+
+    await session.execute(delete(GroupMember).where(GroupMember.group_id == group_id))
+    await session.delete(group)
+    await session.commit()
+    return {
+        "status": "deleted",
+        "conversations_deleted": len(conv_ids),
+        "messages_deleted": messages_deleted,
     }

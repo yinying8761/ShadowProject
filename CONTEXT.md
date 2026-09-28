@@ -222,7 +222,7 @@ transcript) whose conversations hold multiple speakers. Delivered so far: the
 shared timestamped-transcript renderer (Phase 1 — `core/transcript.py`, feeding
 both LLM context and the history API), the group data model + rebuild migration
 (ticket #51/ADR-0004), and the group entity API (`api/group.py`: create / edit /
-list / create group conversation), the turn orchestration (ticket #53), the UI
+list / create group conversation / **delete**), the turn orchestration (ticket #53), the UI
 (ticket #54: `activeGroup` session kind — ADR-0007), and the memory catch-up
 (ticket #55, below). Shape:
 
@@ -360,6 +360,15 @@ or circuit-breaker failures).
   catches). Schema validation (Workflow F) must follow this too.
 - **Error messages are user/LLM-facing**: keep them short and self-correctable;
   the LLM sees `tool_result.result` and is expected to fix its args.
+- **A tool-carrying LLM request must not end on an assistant message.** The DeepSeek
+  thinking mode requires `reasoning_content` to be replayed for tool-carrying requests,
+  and answers a request whose last message is an assistant message with
+  `400 … reasoning_content in the thinking mode must be passed back`. Since we never
+  capture that field, every caller with no real user message of its own must close the
+  request with a synthetic **user** turn: greeting builds `[system, user]` directly,
+  proactive passes `proactive_hint`, and a group turn passes `Agent.run(user_nudge=…)`
+  (`services/group_chat.py::GROUP_TURN_OPEN` / `GROUP_CONTINUATION`). Without it the
+  second request in a group burst always fails — that was the 2026-09-27 outage.
 - **Tests**: `pytest` + `pytest.mark.asyncio`; in-memory DB via
   `create_async_engine("sqlite+aiosqlite://")` + `Base.metadata.create_all`;
   fakes: `FakeLLMService` (yields preset events), `FakeClock`, `RecordingSleep`,

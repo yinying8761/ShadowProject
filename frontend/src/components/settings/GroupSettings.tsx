@@ -5,14 +5,17 @@ import { api } from '../../services/api';
 import type { GroupInfo } from '../../types';
 
 /**
- * 设置面板「群聊」：已建的群 + 创建群 + 编辑群（改名 / 增删成员）。
+ * 设置面板「群聊」：已建的群 + 创建群 + 编辑群（改名 / 增删成员）+ 删群。
  * 成员**点击顺序即发言顺序**（后端把数组下标存成 position），所以这里不做排序界面。
  * 点群名进入群聊：关设置面板 → 切完整模式（store.enterGroup）。
- * 没有"删群"：后端没有这个端点（ADR-0005），也不该顺手把群里的对话记录删掉。
+ * 删群走 `DELETE /api/groups/{id}`：**只删这个群的内容**（群 / 成员资格 / 群对话 /
+ * 群消息），角色与它们的 1:1 会话不受影响 —— 所以这里要二次确认，别手滑。
  */
 export function GroupSettings() {
   const characters = useAppStore((s) => s.characters);
   const enterGroup = useAppStore((s) => s.enterGroup);
+  const activeGroup = useAppStore((s) => s.activeGroup);
+  const leaveGroup = useAppStore((s) => s.leaveGroup);
   const { t } = useTranslation();
 
   const [groups, setGroups] = useState<GroupInfo[]>([]);
@@ -22,6 +25,8 @@ export function GroupSettings() {
   const [name, setName] = useState('');
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [error, setError] = useState('');
+  const [listError, setListError] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
 
   const reload = async () => {
     try {
@@ -89,6 +94,27 @@ export function GroupSettings() {
     group.members
       .map((m) => m.character_name || characters.find((c) => c.id === m.character_id)?.name || '?')
       .join(', ');
+
+  /** 删群：点一次进入"确认"，再点一次真删（与对话列表同一个二次确认手感）。 */
+  const handleDelete = async (group: GroupInfo) => {
+    if (confirmingDelete !== group.id) {
+      setConfirmingDelete(group.id);
+      setListError('');
+      setTimeout(() => setConfirmingDelete((cur) => (cur === group.id ? null : cur)), 3000);
+      return;
+    }
+    setConfirmingDelete(null);
+    try {
+      await api.deleteGroup(group.id);
+      if (editing?.id === group.id) closeForm();
+      // 删的正是当前所在的那个群 → 退出群聊（回单聊并恢复进群前的模式）
+      if (activeGroup?.id === group.id) leaveGroup();
+      await reload();
+    } catch (e) {
+      console.error('Failed to delete group:', e);
+      setListError(t('Delete failed. Please check your network.'));
+    }
+  };
 
   if (loading) {
     return <p className="text-xs text-companion-text/50">{t('Loading…')}</p>;
@@ -183,12 +209,24 @@ export function GroupSettings() {
             >
               ✎
             </button>
+            <button
+              onClick={() => handleDelete(group)}
+              title={t('Delete group')}
+              className={`px-1.5 py-1 text-[10px] transition-colors ${
+                confirmingDelete === group.id
+                  ? 'font-medium text-red-400'
+                  : 'text-white/30 opacity-0 group-hover:opacity-100 hover:text-red-400/80'
+              }`}
+            >
+              {confirmingDelete === group.id ? t('Confirm?') : '🗑'}
+            </button>
           </li>
         ))}
         {groups.length === 0 && (
           <p className="text-[10px] text-companion-text/40">{t('No groups yet')}</p>
         )}
       </ul>
+      {listError && <p className="text-[10px] text-red-400">{listError}</p>}
     </div>
   );
 }

@@ -36,7 +36,8 @@ class GroupMember(Base):
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     # 无 ondelete=（ADR-0005）：删角色时由 api/character.py 显式删掉成员资格；
-    # 因此变成 0 成员的群会保留下来（可再编辑加人）。删群端点尚未实现。
+    # 因此变成 0 成员的群会保留下来（可再编辑加人）。删群是显式操作：
+    # `DELETE /api/groups/{id}`（api/group.py）会删群、成员资格与它的全部群对话。
     group_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("groups.id"),
         nullable=False,
