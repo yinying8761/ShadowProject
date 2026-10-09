@@ -1,8 +1,8 @@
-"""群聊跑通（ticket #53）：WS 进一句话 → 成员按序回应 / 跳过不落库 / 预算封顶 / 串行。
+"""群聊跑通（ticket #53 / #08）：WS 进一句话 → 成员按序各说一条 / 跳过不落库 / 串行。
 
 Seam: `/ws/chat/{conversation_id}` 的**群对话**分支 + 历史接口（真实协议 + 内存库 + 假 LLM）。
 编排语义本身在 `tests/test_group_turn.py`（纯逻辑）；这里验接线：`speaker_id` 落库、
-跳过的不落库不推送、两条消息不并行、群对话不问候不主动。
+跳过的不落库不推送、每人一条、两条消息不并行、群对话不问候不主动。
 
 落库断言走**历史接口**（公开面）而不是直接查库：看到的正是用户/LLM 会看到的东西。
 
@@ -57,7 +57,11 @@ class FakeGroupLLM:
         try:
             system = messages[0]["content"]
             self.calls.append(messages)
-            name = next((n for n in self.script if n in system), None)
+            # 按"名字在 system prompt 里**最先**出现"认角色：每个成员的系统提示里都列着
+            # 全部成员（场景说明在末尾），只判 `in` 会把所有人认成列表里的第一个人。
+            name = min(
+                (n for n in self.script if n in system), key=system.index, default=None
+            )
             replies = self.script.get(name, []) if name else []
             for ch in replies.pop(0) if replies else "":
                 yield {"type": "token", "content": ch}
@@ -145,7 +149,7 @@ class TestGroupTurnOverTheWebSocket:
     def test_members_reply_in_order_and_a_skip_leaves_no_trace(self, ws_env, monkeypatch):
         _engine, factory = ws_env
         asyncio.run(_seed_group(factory))
-        llm = FakeGroupLLM({"小柔": ["在的呀"]})  # 阿B 没脚本 → 跳过
+        llm = FakeGroupLLM({"小柔": ["在的呀"]})  # 阿B 没有自己的脚本 → 跳过
         client = _client(monkeypatch, factory, llm)
 
         with client.websocket_connect("/ws/chat/conv-g") as ws:
@@ -214,10 +218,14 @@ class TestGroupTurnOverTheWebSocket:
         ]
         assert events[-1] == {"type": "done", "group": True}  # 批次结束仍是 done
 
-    def test_the_chain_budget_caps_a_chatty_group(self, ws_env, monkeypatch):
+    def test_a_member_speaks_once_per_user_turn(self, ws_env, monkeypatch):
+        """「继续说」已停用（ticket #08）：一个成员一轮只说一条（想多说等下一次唤醒）。
+
+        小柔手里有一条"下一句"也不再说 —— 那是旧行为（接着说）才会发生的事。
+        """
         _engine, factory = ws_env
         asyncio.run(_seed_group(factory))
-        llm = FakeGroupLLM({"小柔": [f"第{i}句" for i in range(1, 10)], "阿B": ["我也说"]})
+        llm = FakeGroupLLM({"小柔": ["A1", "A2"], "阿B": ["B1"]})
         client = _client(monkeypatch, factory, llm)
 
         with client.websocket_connect("/ws/chat/conv-g") as ws:
@@ -225,13 +233,13 @@ class TestGroupTurnOverTheWebSocket:
             events = _drain(ws)
 
         spoken = [e for e in events if e["type"] == "group_message"]
-        assert len(spoken) == 6  # 链预算
-        assert {e["character_id"] for e in spoken} == {"c1"}  # 到顶 → 后面的成员不被打扰
+        assert [(e["character_id"], e["content"]) for e in spoken] == [
+            ("c1", "A1"),
+            ("c2", "B1"),
+        ]
 
         rows = client.get("/api/conversations/conv-g/messages").json()
-        assert [r["content"] for r in rows if r["role"] == "assistant"] == [
-            f"第{i}句" for i in range(1, 7)
-        ]
+        assert [r["content"] for r in rows if r["role"] == "assistant"] == ["A1", "B1"]
 
     def test_a_burst_of_messages_never_runs_two_turns_at_once(self, ws_env, monkeypatch):
         _engine, factory = ws_env

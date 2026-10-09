@@ -7,11 +7,11 @@
 契约：
 
 - **串行**：一次只跑一个角色的一轮（一个 LLM 流），永不并行；顺序 = 传入的成员顺序。
-- **三种输出**：跳过（整条回复只有 `<silent>`，丢弃）／一条消息／继续说（同一角色再
-  生成一条，仍计入链预算）。
+- **两种输出**：跳过（整条回复只有 `<silent>`，丢弃）／一条消息。**一个成员每用户轮
+  只生成一次**（ticket #08 停用了「继续说」：想说更多 = 被下一次唤醒再想一轮）。
 - **链预算**：每个用户轮的角色消息总量上限（默认 6）；到顶即整群静默。
 - **插话**：用户轮在途时又发消息 → 不打断在途流；当前这条流收尾后旧轮**立即**收束
-  （既不续说，也不让剩余成员就旧消息发言），排队的消息**合并为一个新轮**（预算重置）。
+  （剩下的成员不再就旧消息发言），排队的消息**合并为一个新轮**（预算重置）。
 
 用户消息只有一条入口：`submit()` 入队，`run()` 跑完队列里所有待处理的消息。
 这样"两条消息几乎同时到达"不会开出两轮并行的群轮 —— 入队是同步的，没有竞态窗口。
@@ -186,18 +186,10 @@ class GroupTurnOrchestrator:
             if is_silent(reply):
                 continue
             await self._accept(utterances, character_id, reply)
-
-            while len(utterances) < self._chain_budget:
-                if self._queued:
-                    # 插话：当前这条流（第一句也算）已经收尾 —— 既不续说，
-                    # 也不让剩余成员就旧消息发言。
-                    break
-                more = await self._speak(
-                    character_id, is_continuation=True, user_messages=user_messages
-                )
-                if is_silent(more):
-                    break  # 说完了
-                await self._accept(utterances, character_id, more)
+            # 到这里这一轮就结束了：**一次生成最多一条消息**（ticket #08 停用了
+            # 「继续说」）。想说更多 = 等下一次唤醒再想一轮，所以这里没有内循环。
+            # 结果就是 `is_continuation` 永远是 False —— 形参与续说提示词暂时留着
+            # （不可达分支），死代码清理留给后续票（ADR-0009 Consequences）。
 
         return GroupTurnResult(
             user_messages,
