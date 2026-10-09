@@ -66,6 +66,9 @@ ADDITIVE_MIGRATIONS = [
     # groups 表由 create_all 先建，故此处的 REFERENCES 成立。
     ("conversations", "group_id", "VARCHAR(36) REFERENCES groups(id)"),
     ("conversations", "last_extract_at", "DATETIME"),
+    # 群聊并发化（ticket #56 / ADR-0009）：会话内单调递增的消息序号。
+    # 加列本身是增量的；既有行由 backfill_message_sequence 回填（见 run_migration_sequence）。
+    ("messages", "seq", "INTEGER"),
 ]
 
 
@@ -78,14 +81,19 @@ async def _apply_additive_migrations(conn) -> None:
             print(f"[DB] migrated: added {table}.{column}", flush=True)
 
 
-def _backup_db_before_group_migration() -> None:
-    """重建迁移是破坏性的：先对 DB 文件做一次快照备份；备份失败则中止迁移。"""
+def _backup_db_before_migrations() -> None:
+    """迁移会改数据（重建 conversations / 回填 messages.seq）：先对 DB 文件做一次
+    快照备份；备份失败则中止迁移。非破坏性的回填也要备份——序号填错了会打乱历史
+    顺序，而没有快照就再也回不去了。
+
+    （文件名里的 `bak-group` 是 ADR-0004 记下的约定，保持一致便于按文档找快照。）
+    """
     if not DB_PATH.exists():
         return  # 内存库或尚无文件，无需备份
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = DB_PATH.with_name(f"{DB_PATH.name}.bak-group-{stamp}")
     shutil.copy2(DB_PATH, backup)
-    print(f"[DB] backup before group migration -> {backup}", flush=True)
+    print(f"[DB] backup before migration -> {backup}", flush=True)
 
 
 async def conversations_need_group_rebuild(conn) -> bool:
@@ -153,15 +161,65 @@ async def ensure_group_schema(conn) -> bool:
     return True
 
 
+async def messages_need_sequence_backfill(conn) -> bool:
+    """老库探测：是否还有消息没有序号（迁移会写数据 → init_db 据此决定要不要备份）。"""
+    result = await conn.execute(text("PRAGMA table_info(messages)"))
+    rows = result.fetchall()
+    if not rows:
+        return False  # 表尚不存在（全新库）
+    if not any(row[1] == "seq" for row in rows):
+        return True  # 连列都还没加：迁移后必然要回填一批
+    found = await conn.execute(text("SELECT 1 FROM messages WHERE seq IS NULL LIMIT 1"))
+    return found.first() is not None
+
+
+async def backfill_message_sequence(conn) -> int:
+    """给还没有序号的消息补上「每会话单调递增」的序号（ticket #56 / ADR-0009）。
+
+    - 按 `(created_at, rowid)` 升序、**每会话独立**从 1 编号。
+    - 只处理**含未编号行**的会话，且整条会话一起重排：这样未编号的行会落在它真正的
+      时间位置上（"接在末尾"会丢掉真实位置，也与读路径"未编号视为最前"的兜底相反）。
+    - 正常情况下零写入：新库没有消息，已迁移过的库一条未编号的都没有 —— 所以重复执行
+      是安全的，不会重排已经编好的顺序。
+    - 跑在调用方的事务里：失败整体回滚，不会留下"补了一半"的库。
+    """
+    dirty = (await conn.execute(text(
+        "SELECT DISTINCT conversation_id FROM messages WHERE seq IS NULL"
+    ))).fetchall()
+    if not dirty:
+        return 0
+
+    written = 0
+    for (conversation_id,) in dirty:
+        ordered = (await conn.execute(text(
+            "SELECT id FROM messages WHERE conversation_id = :cid "
+            "ORDER BY created_at, rowid"
+        ), {"cid": conversation_id})).fetchall()
+        for position, (message_id,) in enumerate(ordered, start=1):
+            await conn.execute(
+                text("UPDATE messages SET seq = :seq WHERE id = :id"),
+                {"seq": position, "id": message_id},
+            )
+            written += 1
+    print(
+        f"[DB] backfilled messages.seq: {written} rows in {len(dirty)} conversation(s)",
+        flush=True,
+    )
+    return written
+
+
 async def run_migration_sequence(conn) -> bool:
-    """唯一权威的迁移顺序：create_all → additive → 群重建（ADR-0004）。
+    """唯一权威的迁移顺序：create_all → additive → 群重建（ADR-0004）→ 序号回填。
 
     init_db、测试与 scripts/check_group_migration.py 都走这里，
     避免迁移顺序被多处复述后漂移。
     """
     await conn.run_sync(Base.metadata.create_all)
     await _apply_additive_migrations(conn)
-    return await ensure_group_schema(conn)
+    rebuilt = await ensure_group_schema(conn)
+    # 回填必须在 additive 之后（seq 列由那里加出来），与重建互不依赖。
+    await backfill_message_sequence(conn)
+    return rebuilt
 
 
 async def init_db():
@@ -171,8 +229,9 @@ async def init_db():
     # 探测与备份在迁移事务之外：快照必须是未被本事务触碰的干净文件（ADR-0004）。
     async with engine.connect() as conn:
         needs_rebuild = await conversations_need_group_rebuild(conn)
-    if needs_rebuild:
-        await asyncio.to_thread(_backup_db_before_group_migration)
+        needs_backfill = await messages_need_sequence_backfill(conn)
+    if needs_rebuild or needs_backfill:
+        await asyncio.to_thread(_backup_db_before_migrations)
 
     async with engine.begin() as conn:
         await run_migration_sequence(conn)

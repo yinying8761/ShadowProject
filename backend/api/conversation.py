@@ -93,7 +93,8 @@ async def get_messages(
     query = (
         select(Message)
         .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.asc())
+        # 顺序以序号为准（ADR-0009）：`created_at` 是秒级精度，并发/同秒写入会并列。
+        .order_by(*Message.chronological_order())
         .limit(limit)
     )
     result = await session.execute(query)

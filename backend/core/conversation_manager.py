@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, update
 from core.transcript import (
     render_role_labels,
     render_transcript,
@@ -69,7 +69,7 @@ class ConversationManager:
         query = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.desc())
+            .order_by(*Message.chronological_order(newest_first=True))
         )
         result = await session.execute(query)
         messages = result.scalars().all()
@@ -133,6 +133,22 @@ class ConversationManager:
                     flush=True,
                 )
                 content = cleaned
+
+        # 序号分配必须在**写锁**下进行：先落一条 conversations 写（`updated_at` 本来
+        # 就要推进），拿到 SQLite 的写锁之后才取 `MAX(seq)+1`。少了这一步，两个并发
+        # 的 add_message 会各自读到同一个 MAX 而写出**并列**序号 —— 而并列正是本列
+        # 要消灭的东西（ADR-0009：群聊里多个成员同时落库）。
+        await session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(updated_at=func.now())
+        )
+        next_seq = (await session.execute(
+            select(func.coalesce(func.max(Message.seq), 0)).where(
+                Message.conversation_id == conversation_id
+            )
+        )).scalar_one() + 1
+
         msg = Message(
             conversation_id=conversation_id,
             role=role,
@@ -141,17 +157,9 @@ class ConversationManager:
             tool_calls=tool_calls,
             tool_call_id=tool_call_id,
             speaker_id=speaker_id,
+            seq=next_seq,
         )
         session.add(msg)
-
-        conv = await session.get(Conversation, conversation_id)
-        if conv:
-            from sqlalchemy import update
-            await session.execute(
-                update(Conversation)
-                .where(Conversation.id == conversation_id)
-                .values(updated_at=func.now())
-            )
 
         await session.commit()
         await session.refresh(msg)
@@ -238,10 +246,11 @@ class ConversationManager:
             return conv.title
 
         # Fetch first user message and first assistant message
+        # （"第一条"以序号为准：同秒并列时按时间戳取会随机挑到后面那条）
         first_user = await session.execute(
             select(Message)
             .where(Message.conversation_id == conversation_id, Message.role == "user")
-            .order_by(Message.created_at.asc())
+            .order_by(*Message.chronological_order())
             .limit(1)
         )
         first_user_msg = first_user.scalar_one_or_none()
@@ -249,7 +258,7 @@ class ConversationManager:
         first_assistant = await session.execute(
             select(Message)
             .where(Message.conversation_id == conversation_id, Message.role == "assistant")
-            .order_by(Message.created_at.asc())
+            .order_by(*Message.chronological_order())
             .limit(1)
         )
         first_assistant_msg = first_assistant.scalar_one_or_none()
@@ -308,10 +317,11 @@ class ConversationManager:
             return {"deleted": 0, "summary": ""}
 
         # Get old messages (oldest first, beyond keep_count)
+        # （"最老"以序号为准，见 Message.chronological_order）
         subquery = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.asc())
+            .order_by(*Message.chronological_order())
             .limit(total - keep_count)
         )
         result = await session.execute(subquery)

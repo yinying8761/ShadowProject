@@ -38,5 +38,7 @@ class Conversation(Base):
 
     messages: Mapped[list["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan",
-        order_by="Message.created_at",
+        # 与 Message.chronological_order 同一套顺序（序号优先，时间戳只作同一批的兜底）：
+        # 这里是模型层的第三个读路径，绝不能再按 created_at 单排（ADR-0009 / ticket #56）。
+        order_by="Message.seq, Message.created_at",
     )

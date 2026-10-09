@@ -367,13 +367,14 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             memory_texts = [m.content for m in user_memories.scalars().all()]
 
             # ── Recent messages as conversational context ──────────
-            from sqlalchemy import select, desc
+            from sqlalchemy import select
             from models.message import Message
 
             result = await session.execute(
                 select(Message)
                 .where(Message.conversation_id == conversation_id)
-                .order_by(desc(Message.created_at))
+                # 顺序以序号为准（ADR-0009），不是秒级的 created_at
+                .order_by(*Message.chronological_order(newest_first=True))
                 .limit(5)
             )
             recent_msgs = list(result.scalars().all())

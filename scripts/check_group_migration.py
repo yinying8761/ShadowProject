@@ -1,6 +1,7 @@
-"""Acceptance (ticket #51): run the group migration sequence against a COPY
-of data/companion.db and verify conversation/message counts are unchanged and
-conversations.character_id becomes nullable. Read-only on the real DB."""
+"""Acceptance (#51 / #56): run the migration sequence against a COPY of
+data/companion.db and verify conversation/message counts are unchanged,
+conversations.character_id becomes nullable, and no message is left without a
+sequence number. Read-only on the real DB."""
 
 import asyncio
 import shutil
@@ -23,11 +24,19 @@ def snapshot(path: Path) -> dict:
         memories = conn.execute("SELECT count(*) FROM memories").fetchone()[0]
         info = conn.execute("PRAGMA table_info(conversations)").fetchall()
         character_notnull = next((row[3] for row in info if row[1] == "character_id"), None)
+        # 序号回填（ticket #56）：迁移前可能连列都还没有，那时"全部待编号"。
+        message_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        unnumbered = (
+            conn.execute("SELECT count(*) FROM messages WHERE seq IS NULL").fetchone()[0]
+            if "seq" in message_cols
+            else messages
+        )
         return {
             "conversations": conversations,
             "messages": messages,
             "memories": memories,
             "character_id_notnull": character_notnull,
+            "unnumbered": unnumbered,
         }
     finally:
         conn.close()
@@ -69,6 +78,7 @@ def main() -> int:
         and after["messages"] == before["messages"]
         and after["memories"] == before["memories"]
         and after["character_id_notnull"] == 0
+        and after["unnumbered"] == 0  # ticket #56：迁移后不留没有序号的消息
     )
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

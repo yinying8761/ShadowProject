@@ -127,13 +127,13 @@ class MemoryExtractor:
                         Message.conversation_id == conversation_id,
                         Message.created_at >= _date.fromisoformat(since_date),
                     )
-                    .order_by(Message.created_at.desc())
+                    .order_by(*Message.chronological_order(newest_first=True))
                 )
             else:
                 stmt = (
                     _select(Message)
                     .where(Message.conversation_id == conversation_id)
-                    .order_by(Message.created_at.desc())
+                    .order_by(*Message.chronological_order(newest_first=True))
                     .limit(EXTRACTION_MESSAGE_COUNT)
                 )
             if before is not None:

@@ -87,3 +87,25 @@ async def client(engine, session_factory):
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def file_client(ws_env):
+    """`client` 的文件库版本：会话来自 `ws_env` 那个库。
+
+    并发写入的测试**必须**用它（或 `ws_env`）：内存库走 StaticPool，所有 session
+    共享一条连接，那样的"并发"不经过 SQLite 的锁 —— 既不会红也验证不到写锁。
+    """
+    from main import app
+
+    _, factory = ws_env
+
+    async def override_get_session():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.clear()
