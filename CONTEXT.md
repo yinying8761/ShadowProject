@@ -229,19 +229,34 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
 (ticket #54: `activeGroup` session kind — ADR-0007), and the memory catch-up
 (ticket #55, below). Shape:
 
-- **Turn orchestration — serial today, concurrent spec'd (ADR-0009).** Shipped
-  (ticket #53, ADR-0006): `core/group_turn.py`
-  decides who speaks when — member order, `<silent>` skips (dropped, never stored
-  or pushed), a **chain budget** (6 role messages per user turn), and interjection
-  handling (a new user message queues, the in-flight stream finishes, the old turn
-  winds down, queued messages merge into one new turn with a fresh budget). It is
-  pure logic: the "run one member's turn" callable is injected.
-  `services/group_chat.py` is the wiring — one character's turn goes through the
+- **Turn orchestration — the scheduler is concurrent (ticket #09 / ADR-0009); the
+  driver is still one batch at a time (ticket #10 pending).** `core/group_turn.py`
+  is the **concurrent scheduler**, still pure logic (`speak` injected, no DB / network
+  / clock): a user message starts **every** member thinking at once; each message that
+  lands wakes every idle member that has not spent its cap — **except the speaker
+  itself** (being woken by your own message is just 继续说 renamed; ADR-0009's rule is
+  "new messages wake *the rest*"). One message per thinking round; `<silent>` produces
+  nothing but still burns a round. Caps per user turn: **K** rounds per member
+  (N≤4 → 3, N>4 → 2, `rounds_cap`) and **M = 9** role messages (`GROUP_MESSAGE_BUDGET`);
+  the slot is **reserved before a round starts** (`stored + in-flight < M`), so a
+  generation is never dropped after the fact. Nobody producing a message means no wake
+  event, so an all-silent turn costs one round each. In-flight streams are never
+  cancelled; convergence is "everyone at K, or nobody left to start and nothing in
+  flight". `run()` awaits every in-flight round (and cancels them only if the batch
+  itself is cancelled, e.g. the socket closed).
+- Interjections: a new user message never interrupts an in-flight reply — the current
+  batch stops opening new rounds, the in-flight members finish, and the queued
+  messages merge into a **fresh user turn** (K/M reset, everyone woken).
+- `services/group_chat.py` is the wiring — one character's round goes through the
   shared `Agent` (`persist_reply=False`, so a skip is never stored; the driver
   persists with `speaker_id` and pushes `group_message`), user messages are
-  persisted/acked by the driver, and one conversation never runs two turns at once.
-- User interjections never interrupt an in-flight reply — they queue and become
-  a **new turn** (budget reset); several interjections merge into one turn.
+  persisted/acked by the driver, and one conversation still runs only one batch at a
+  time. Because members now generate concurrently, each `_speak` opens its own session
+  and `_settle_persists` makes **all** concurrent callers wait for the same persist
+  batch (otherwise a member could read a history without the user's message). The
+  **parent task is the only writer of scheduler state** — children only return their
+  text — so the replies a batch produces are accepted in member order and the pushed
+  order matches the persisted order.
 - **Message order is the sequence, not the clock (ticket #56 / ADR-0009):**
   every write goes through `ConversationManager.add_message`, which assigns
   `Message.seq` = `MAX(seq)+1` **within that conversation under SQLite's write
@@ -253,16 +268,11 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
   without a sequence (pre-migration leftovers, hand-built fixtures) counts as 0, so
   an all-legacy table still reads in `created_at` order — the change is a pure
   increment for 1:1.
-- **Pending (ADR-0009 — supersedes ADR-0006's serial contract):** members think
-  **concurrently**; every newly persisted message wakes each idle member that has not
-  spent its cap. Caps per user turn: **K** thinking rounds per member (N≤4 → 3,
-  N>4 → 2) and **M = 9** role messages globally. **One message per thinking round**
-  (继续说 retired — saying more means being woken again); the message budget is
-  **reserved before a round starts** (never generate-then-drop); a new user message is
-  a fresh user turn (K/M reset, everyone woken); tool approvals are **serialized**.
-  In-flight streams are still
-  never cancelled — each round re-reads the transcript, which is exactly what
-  "inject what arrived while you were thinking" means, so it needs no new mechanism.
+- **Pending (ADR-0009 — supersedes ADR-0006's serial contract):** tool approvals are
+  **serialized** (one prompt at a time), and the **driver** still runs a single batch
+  per conversation (ticket #10 rewrites it so a conversation can have several
+  generations in flight and wakes idle members as messages land). The frontend still
+  renders one "thinking" member (ticket #11).
 - Daily greeting + proactive are **disabled** for group conversations; group TTS
   is disabled behind a reserved switch.
 - Opening a group conversation schedules a background **extract → compact**

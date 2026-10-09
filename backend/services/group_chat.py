@@ -7,7 +7,8 @@
    归属该角色）。回复先不落库（`persist_reply=False`），交给编排器判"跳过"。
 2. **确实说了的**：落库（`speaker_id` = 该角色）并推送 `group_message`；
    跳过的（`<silent>`）一律不落库、不推送。
-3. **用户消息**的落库 / `message_ack`，以及"一个会话同一时刻只有一串群轮"。
+3. **用户消息**的落库 / `message_ack`，以及"一条会话同一时刻只有一批群轮"
+   （批次**之内**成员并发 —— ADR-0009；驱动的并发化是 ticket #10）。
 
 spec: docs/specs/group-chat.md（Phase 2 · 群轮编排）。
 """
@@ -91,6 +92,7 @@ class GroupChatSession:
         )
         self._turn_task: asyncio.Task | None = None
         self._persisting: list[asyncio.Task] = []
+        self._settling: asyncio.Future | None = None
         self._scenario = ""
         self._member_names: dict[str, str] = {}
 
@@ -108,10 +110,11 @@ class GroupChatSession:
     def handle_user_message(self, text: str, *, client_message_id: str | None = None) -> None:
         """用户说了一句。
 
-        **同步方法**（不 await）：两条几乎同时到达的消息必须落在同一串群轮上，
-        否则会开出两轮并行的群轮 —— "串行、永不并行"是硬契约。落库与 ack 走后台
-        任务，但每个角色读历史之前都会先把它们结清（`_settle_persists`），
-        所以轮到谁说话时，用户那几句一定已经在历史里。
+        **同步方法**（不 await）：两条几乎同时到达的消息必须落在同一批群轮上，
+        否则会开出两批并行的群轮 —— 批次之间仍是串行（批次**之内**成员已经并发，
+        ADR-0009；驱动的并发化见 ticket #10）。落库与 ack 走后台任务，但每个角色
+        读历史之前都会先把它们结清（`_settle_persists`），所以轮到谁说话时，
+        用户那几句一定已经在历史里。
         """
         self._persisting.append(
             asyncio.create_task(self._persist_user_message(text, client_message_id))
@@ -171,7 +174,11 @@ class GroupChatSession:
         })
 
     async def _speak(self, character_id, *, is_continuation, user_messages) -> str | None:
-        """跑一个角色的一轮：LLM 只生成，落库与推送由编排器判定后交给 sink。"""
+        """跑一个角色的一轮：LLM 只生成，落库与推送由编排器判定后交给 sink。
+
+        成员并发开口（ticket #09），所以每次调用都开自己的 session；用户消息的结清
+        走 `_settle_persists`（并发调用会等同一批）。
+        """
         from database import async_session
 
         await self._settle_persists()  # 角色读历史之前，用户那几句必须已经在库里
@@ -241,11 +248,26 @@ class GroupChatSession:
             })
 
     async def _settle_persists(self) -> None:
-        """结清还没落库的用户消息（每个角色开口前都要做一次）。"""
-        if not self._persisting:
-            return
-        pending, self._persisting = self._persisting, []
-        await asyncio.gather(*pending)
+        """结清还没落库的用户消息（每个成员开口前都要做一次）。
+
+        成员现在是**并发**开口的（ticket #09），所以这里必须让所有并发调用等**同一批**：
+        第一个调用者取走列表去 await，后到的若看到空列表就往下走，会读到"用户消息
+        还没落库"的历史（回复的序号甚至可能排到用户消息前面）。批次的创建者负责清理；
+        这一批期间新提交的消息留在列表里，由下一次调用结清。
+        """
+        batch = self._settling
+        if batch is None:
+            if not self._persisting:
+                return
+            pending, self._persisting = self._persisting, []
+            batch = self._settling = asyncio.gather(*pending)
+        try:
+            # shield：某个成员这一轮被取消（连接断开）不该把落库一起取消 ——
+            # 用户那几句已经收下了，必须落进库里。
+            await asyncio.shield(batch)
+        finally:
+            if self._settling is batch:
+                self._settling = None
 
     async def _roster(self) -> tuple[list[str], str, dict[str, str]]:
         """一次查询备好：成员 id（按发言顺序）+ 场景说明 + id→名字。"""

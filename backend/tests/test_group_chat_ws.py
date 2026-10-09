@@ -29,17 +29,15 @@ from models.message import Message
 
 
 class FakeGroupLLM:
-    """按角色名字挑脚本的假 LLM（角色名就在 system prompt 里）。
+    """按角色名字挑脚本的假 LLM（角色的名字就在 system prompt 开头）。
 
-    每次流式吐完一句；脚本用完 → 空回复（= 什么都没说）。
-    同时记录 system prompt 与并发峰值 —— "永不并行"必须能被测到。
+    每次流式吐完一句；脚本用完 → 空回复（= 什么都没说）。记下每次调用的完整 messages。
+    并发本身（全员同时起跑、峰值）在 tests/test_group_turn.py 用纯逻辑断言，这里只管接线。
     """
 
     def __init__(self, script: dict[str, list[str]]):
         self.script = {k: list(v) for k, v in script.items()}
         self.calls: list[list[dict]] = []  # 每次调用的完整 messages（system + 历史）
-        self.concurrent = 0
-        self.max_concurrent = 0
 
     @property
     def system_prompts(self) -> list[str]:
@@ -52,21 +50,16 @@ class FakeGroupLLM:
         return "群聊标题"
 
     async def stream_chat(self, messages, tools=None, on_retry=None):
-        self.concurrent += 1
-        self.max_concurrent = max(self.max_concurrent, self.concurrent)
-        try:
-            system = messages[0]["content"]
-            self.calls.append(messages)
-            # 按"名字在 system prompt 里**最先**出现"认角色：每个成员的系统提示里都列着
-            # 全部成员（场景说明在末尾），只判 `in` 会把所有人认成列表里的第一个人。
-            name = min(
-                (n for n in self.script if n in system), key=system.index, default=None
-            )
-            replies = self.script.get(name, []) if name else []
-            for ch in replies.pop(0) if replies else "":
-                yield {"type": "token", "content": ch}
-        finally:
-            self.concurrent -= 1
+        system = messages[0]["content"]
+        self.calls.append(messages)
+        # 只认**自己的**名字：场景说明（`GROUP_SCENARIO`）追加在末尾、里面列着全部
+        # 成员 —— 在整段 prompt 里找名字，会让每个人认成列表里的第一个人，于是成员
+        # 并发开口时互相偷脚本（曾经真的让 WS 测试时好时坏）。
+        persona = system.split("## 当前场景", 1)[0]
+        name = next((n for n in self.script if n in persona), None)
+        replies = self.script.get(name, []) if name else []
+        for ch in replies.pop(0) if replies else "":
+            yield {"type": "token", "content": ch}
 
 
 async def _seed_group(factory):
@@ -218,30 +211,47 @@ class TestGroupTurnOverTheWebSocket:
         ]
         assert events[-1] == {"type": "done", "group": True}  # 批次结束仍是 done
 
-    def test_a_member_speaks_once_per_user_turn(self, ws_env, monkeypatch):
-        """「继续说」已停用（ticket #08）：一个成员一轮只说一条（想多说等下一次唤醒）。
+    def test_members_keep_reacting_until_the_round_cap(self, ws_env, monkeypatch):
+        """并发群轮（ticket #09 / ADR-0009）：两人**互相唤醒**，一直说到各自用满 K=3 轮。
 
-        小柔手里有一条"下一句"也不再说 —— 那是旧行为（接着说）才会发生的事。
+        具体**顺序**取决于两个并发生成谁先收尾（那是纯逻辑缝的事，见
+        tests/test_group_turn.py）；这里锁的是"互相接话确实发生了"：每人都说了 3 条
+        （= 被对方唤醒了两次），而且推送顺序与落库顺序一致。
         """
         _engine, factory = ws_env
         asyncio.run(_seed_group(factory))
-        llm = FakeGroupLLM({"小柔": ["A1", "A2"], "阿B": ["B1"]})
+        llm = FakeGroupLLM(
+            {"小柔": ["A1", "A2", "A3"], "阿B": ["B1", "B2", "B3"]}
+        )
         client = _client(monkeypatch, factory, llm)
 
         with client.websocket_connect("/ws/chat/conv-g") as ws:
             ws.send_json({"type": "chat", "content": "聊聊呗"})
             events = _drain(ws)
 
-        spoken = [e for e in events if e["type"] == "group_message"]
-        assert [(e["character_id"], e["content"]) for e in spoken] == [
-            ("c1", "A1"),
-            ("c2", "B1"),
+        spoken = [(e["character_id"], e["content"]) for e in events if e["type"] == "group_message"]
+        assert sorted(spoken) == [
+            ("c1", "A1"), ("c1", "A2"), ("c1", "A3"),
+            ("c2", "B1"), ("c2", "B2"), ("c2", "B3"),
         ]
 
         rows = client.get("/api/conversations/conv-g/messages").json()
-        assert [r["content"] for r in rows if r["role"] == "assistant"] == ["A1", "B1"]
+        assert [r["content"] for r in rows if r["role"] == "assistant"] == [
+            content for _, content in spoken
+        ]
 
-    def test_a_burst_of_messages_never_runs_two_turns_at_once(self, ws_env, monkeypatch):
+        # 成员并发开口，但**每个**角色读历史之前用户那几句都已经落库（ticket #09 的并发
+        # 让 _settle_persists 必须让所有调用等同一批；漏了就会出现"读不到用户消息"的那一轮）
+        for messages in llm.calls:
+            history = [m for m in messages if m["role"] != "system"]
+            assert any("聊聊呗" in (m.get("content") or "") for m in history)
+
+    def test_a_burst_of_messages_is_one_turn_burst(self, ws_env, monkeypatch):
+        """两条挤在一起的消息合成**一个**用户轮：各存一次，回复数不超一批的上限。
+
+        ADR-0006 的"一次只有一个 LLM 流"已由 ADR-0009 取代（成员并发）—— 批次串行与
+        成员并发都在 tests/test_group_turn.py 用纯逻辑断言，这里只验接线与落库。
+        """
         _engine, factory = ws_env
         asyncio.run(_seed_group(factory))
         llm = FakeGroupLLM({"小柔": ["收到一", "收到二", "收到三"]})
@@ -252,9 +262,11 @@ class TestGroupTurnOverTheWebSocket:
             ws.send_json({"type": "chat", "content": "第二句"})
             _drain(ws)
 
-        assert llm.max_concurrent == 1, "群轮必须串行：一次只有一个 LLM 流"
         rows = client.get("/api/conversations/conv-g/messages").json()
         assert [r["content"] for r in rows if r["role"] == "user"] == ["第一句", "第二句"]
+        # 一批的确定结果：小柔说一句；阿B 没话说；小柔**不被自己的消息**唤醒 → 到此为止。
+        # （开出两批的话这里会多出来）
+        assert [r["content"] for r in rows if r["role"] == "assistant"] == ["收到一"]
 
     def test_opening_a_group_conversation_schedules_the_catch_up(self, ws_env, monkeypatch):
         """打开群对话 → 排上后台补账（补账本身在 tests/services/test_group_memory.py）。"""

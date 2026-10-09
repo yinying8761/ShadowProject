@@ -1,49 +1,60 @@
-"""群轮编排器（ticket #53 / #08）：顺序 / 跳过 / 每人一条 / 链预算 / 插话新轮 —— 全用假对象测。
+"""群轮并发调度器（ticket #09 / ADR-0009）：起跑 / 唤醒 / K 分档 / M 封顶 / 预留 / 收敛。
 
-Seam: `core/group_turn.GroupTurnOrchestrator`（spec S3）。注入"跑一个角色的一轮"的
-`speak` 可调用对象；编排器不碰 DB / 网络 / 时钟，所以这里能直接测出
-「谁在什么时候说、说几条、什么时候收束」的全部语义。
+Seam: `core.group_turn.GroupTurnOrchestrator`（spec S3）。只注入"跑一个成员一轮"的
+`speak` 可调用对象 + 假脚本；调度器不碰 DB / 网络，所以「全员同时起跑、谁被唤醒、
+每人几轮、全局几条、什么时候收束」全都能在这里直接测出来。
 
-用户消息只有一个入口：`submit()`（同步入队）+ `run()`（跑完队列）。
+`run()` 会等所有在途生成结束，所以测试直接 await 它即可 —— 不需要额外的等待原语。
+
+用户消息仍然只有一个入口：`submit()`（同步入队）+ `run()`（跑完队列）。
 """
 
 import asyncio
 
 import pytest
 
-from core.group_turn import GROUP_CHAIN_BUDGET, GroupTurnOrchestrator, is_silent
+from core.group_turn import (
+    GROUP_MESSAGE_BUDGET,
+    GroupTurnOrchestrator,
+    is_silent,
+    rounds_cap,
+)
 
 
-class FakeSpeakers:
-    """按脚本回答的假说话人。
+class FakeMembers:
+    """按脚本回答的假成员：**并发安全**，记录调用与并发峰值。
 
     - `script`: 每个角色的回复列表，按顺序消费；用完一律 `<silent>`。
-    - `hook`: 每次 speak 时同步回调（用来模拟"正在生成时用户又发消息"）。
-    - 并发保护：上一个角色这一轮没结束就轮到别人 → 直接断言失败（串行契约）。
+    - `hook`: 每次生成时同步回调（模拟"正在生成时用户又发消息"）。
+    - `peak`: 同时在途的生成数峰值 —— "全员同时起跑"就是靠它断言的（串行实现只有 1）。
+
+    `await asyncio.sleep(0)` 让出事件循环：真并发才会让同一批的所有成员都在这一拍里
+    进入生成，峰值因此是确定的。
     """
 
     def __init__(self, script: dict[str, list[str | None]] | None = None):
         self.script = {k: list(v) for k, v in (script or {}).items()}
-        self.calls: list[tuple[str, bool, tuple[str, ...]]] = []
+        self.calls: list[str] = []           # 被起跑的顺序
+        self.rounds: dict[str, int] = {}     # 每人的思考轮数
+        self.peak = 0
         self.hook = None
-        self._current: str | None = None
+        self._live = 0
 
     async def speak(self, character_id, *, is_continuation, user_messages):
-        assert self._current is None, f"并发：{self._current} 尚未收尾就轮到 {character_id}"
-        self._current = character_id
+        # 续说已停用（ticket #08）：这个形参现在永远是 False，锁住"不可达"
+        assert is_continuation is False
+        self.calls.append(character_id)
+        self.rounds[character_id] = self.rounds.get(character_id, 0) + 1
+        self._live += 1
+        self.peak = max(self.peak, self._live)
         try:
-            self.calls.append((character_id, is_continuation, tuple(user_messages)))
             if self.hook:
-                self.hook(character_id, is_continuation)
-            # 让出事件循环：真有并发就会在这里被上面的断言抓到
+                self.hook(character_id)
             await asyncio.sleep(0)
             replies = self.script.get(character_id, [])
             return replies.pop(0) if replies else "<silent>"
         finally:
-            self._current = None
-
-    def calls_of(self, character_id: str) -> list[tuple[bool, tuple[str, ...]]]:
-        return [(c, u) for cid, c, u in self.calls if cid == character_id]
+            self._live -= 1
 
 
 async def _run(orch: GroupTurnOrchestrator, members, *user_messages) -> list:
@@ -53,13 +64,21 @@ async def _run(orch: GroupTurnOrchestrator, members, *user_messages) -> list:
     return await orch.run(list(members))
 
 
-def _chatty_group(n: int) -> tuple[list[str], FakeSpeakers]:
-    """n 个成员 + 每人两条脚本。
+def _speakers_of(turn, members) -> set[str]:
+    return {u.character_id for u in turn.utterances}
 
-    脚本多于一条才有判别力：只有"继续说"还在时，同一个人才会说第二条。
-    """
-    members = list("abcdefghij"[:n])
-    return members, FakeSpeakers({m: [f"{m.upper()}1", f"{m.upper()}2"] for m in members})
+
+def _one_submit_per_turn(orch, text):
+    """在**第一个**在途轮里插一句话（只插一次）。"""
+    fired = {"done": False}
+
+    def hook(character_id):
+        if fired["done"]:
+            return
+        fired["done"] = True
+        assert orch.submit(text) is True, "在途时插话必须被接受（排队，不打断）"
+
+    return hook
 
 
 class TestSilentMarker:
@@ -80,142 +99,159 @@ class TestSilentMarker:
         assert is_silent(reply) is False
 
 
-class TestOrderAndSkip:
-    async def test_members_speak_one_after_another_in_member_order(self):
-        speakers = FakeSpeakers({"a": ["A 说"], "b": ["B 说"]})
+class TestRoundsCapTiers:
+    """K 按人数分档（ADR-0009：N≤4 → 3；N>4 → 2）。"""
 
-        turns = await _run(GroupTurnOrchestrator(speakers.speak), ["a", "b"], "在吗")
+    @pytest.mark.parametrize("member_count", [1, 2, 3, 4])
+    def test_small_groups_get_three_rounds(self, member_count):
+        assert rounds_cap(member_count) == 3
 
-        assert [u.character_id for u in turns[0].utterances] == ["a", "b"]
-        assert [u.content for u in turns[0].utterances] == ["A 说", "B 说"]
+    @pytest.mark.parametrize("member_count", [5, 6, 9])
+    def test_larger_groups_get_two_rounds(self, member_count):
+        assert rounds_cap(member_count) == 2
+
+
+class TestConcurrentStart:
+    """全员起跑：一个用户消息让所有成员**同时**开始思考。"""
+
+    async def test_a_user_message_starts_every_member_at_once(self):
+        speakers = FakeMembers({"a": ["A1"], "b": ["B1"], "c": ["C1"]})
+
+        turn = (await _run(GroupTurnOrchestrator(speakers.speak), ["a", "b", "c"], "在吗"))[0]
+
+        assert speakers.peak == 3, "全员必须同时在途（串行实现只会有 1）"
+        assert _speakers_of(turn, ["a", "b", "c"]) == {"a", "b", "c"}
+        assert all(rounds >= 1 for rounds in speakers.rounds.values())
 
     async def test_a_silent_member_is_dropped_without_an_utterance(self):
-        speakers = FakeSpeakers({"a": ["<silent>"], "b": ["B 说"]})
+        speakers = FakeMembers({"a": ["<silent>"], "b": ["B1"]})
 
-        turns = await _run(GroupTurnOrchestrator(speakers.speak), ["a", "b"], "在吗")
+        turn = (await _run(GroupTurnOrchestrator(speakers.speak), ["a", "b"], "在吗"))[0]
 
-        assert [u.character_id for u in turns[0].utterances] == ["b"]
-        assert speakers.calls_of("a")[0][0] is False  # 先问一次"要不要说"
+        assert [u.content for u in turn.utterances] == ["B1"]
+        assert speakers.rounds["a"] >= 1  # 跳过照样消耗一轮（只是不产消息）
 
-    async def test_everyone_silent_ends_the_turn_with_nothing(self):
-        turn = (await _run(GroupTurnOrchestrator(FakeSpeakers().speak), ["a", "b"], "在吗"))[0]
+    async def test_everyone_silent_converges_after_one_round_each(self):
+        """没人产消息 → 没有唤醒事件 → 每人一轮就收敛（不会白烧 K 轮）。"""
+        speakers = FakeMembers()
+
+        turn = (await _run(GroupTurnOrchestrator(speakers.speak), ["a", "b"], "在吗"))[0]
 
         assert turn.utterances == ()
-        assert turn.stopped_for_interjection is False
+        assert speakers.rounds == {"a": 1, "b": 1}
         assert turn.budget_exhausted is False
 
     async def test_the_turn_carries_the_user_messages_it_was_anchored_on(self):
-        speakers = FakeSpeakers({"a": ["A 说"]})
+        speakers = FakeMembers({"a": ["A1"]})
 
         turn = (await _run(GroupTurnOrchestrator(speakers.speak), ["a"], "第一句", "第二句"))[0]
 
         assert turn.user_messages == ("第一句", "第二句")
 
 
-class TestOneMessagePerMember:
-    """每个成员每用户轮只生成**一条**（ticket #08 / ADR-0009）。
+class TestWakeAndCaps:
+    """事件唤醒 + 两道上限（每人 K 轮、全局 M 条）。"""
 
-    「继续说」已停用：想多说 = 被下一次唤醒（ticket #09 的并发调度器负责唤醒）。
-    `is_continuation` 形参与续说提示词暂时留着，但已成为**不可达分支**。
-    链预算仍然封顶一个用户轮的角色消息总量。
-    """
+    async def test_a_new_message_wakes_the_other_idle_members(self):
+        """a 说了一句 → 把第一轮沉默的 b 唤醒，b 因此说上话。"""
+        speakers = FakeMembers({"a": ["A1"], "b": ["<silent>", "B1"]})
 
-    async def test_a_member_speaks_at_most_once_per_user_turn(self):
-        speakers = FakeSpeakers({"a": ["第一句", "第二句", "<silent>"]})
+        turn = (await _run(GroupTurnOrchestrator(speakers.speak), ["a", "b"], "在吗"))[0]
+
+        assert [u.content for u in turn.utterances] == ["A1", "B1"]
+        assert speakers.rounds["b"] >= 2  # 被 a 的消息唤醒过
+
+    async def test_a_speaker_is_not_woken_by_its_own_message(self):
+        """自己的消息不唤醒自己 —— 否则就是「继续说」换个名字（ADR-0009 标题：wake **the rest**）。"""
+        speakers = FakeMembers({"a": ["A1", "A2", "A3"]})
 
         turn = (await _run(GroupTurnOrchestrator(speakers.speak), ["a"], "在吗"))[0]
 
-        assert [u.content for u in turn.utterances] == ["第一句"]
-        # 只问了一次，而且是"轮到你说话"的问法（不再有接着说的第二次调用）
-        assert speakers.calls_of("a") == [(False, ("在吗",))]
+        assert [u.content for u in turn.utterances] == ["A1"]
+        assert speakers.rounds["a"] == 1
 
-    async def test_every_member_gets_one_generation_until_the_budget_is_gone(self):
-        members, speakers = _chatty_group(8)  # 8 人 > 链预算：预算到顶就整群静默
+    async def test_each_member_is_capped_at_three_rounds_in_a_small_group(self):
+        """N=2（≤4 → K=3）：两人互相唤醒直到双双用满 3 轮，恰好 6 条消息。"""
+        speakers = FakeMembers({m: [f"{m.upper()}{i}" for i in range(1, 6)] for m in "ab"})
+
+        turn = (await _run(GroupTurnOrchestrator(speakers.speak), ["a", "b"], "在吗"))[0]
+
+        assert speakers.rounds == {"a": 3, "b": 3}
+        assert len(turn.utterances) == 6  # M=9 未到顶：封顶的是 K
+
+    async def test_each_member_is_capped_at_two_rounds_above_four_members(self):
+        """N=5（>4 → K=2）：a/b 一直说，a/b 各 2 轮；沉默的 c/d/e 也只被唤醒到 2 轮。"""
+        members = list("abcde")
+        speakers = FakeMembers({"a": ["A1", "A2"], "b": ["B1", "B2"]})
 
         turn = (await _run(GroupTurnOrchestrator(speakers.speak), members, "在吗"))[0]
 
-        assert [u.character_id for u in turn.utterances] == members[:GROUP_CHAIN_BUDGET]
-        assert turn.budget_exhausted is True
-        # 到顶即整群静默：后面的成员不再被打扰
-        assert speakers.calls_of("g") == []
-        assert speakers.calls_of("h") == []
+        assert speakers.rounds == {m: 2 for m in members}
+        assert len(turn.utterances) == 4
+        assert turn.budget_exhausted is False
 
-    async def test_the_budget_is_a_knob_not_a_magic_number(self):
-        speakers = FakeSpeakers({"a": ["A1"], "b": ["B1"], "c": ["C1"]})
+    async def test_the_global_budget_caps_the_turn_without_dropping_a_generation(self):
+        """N=4（K=3）全员一直说：全局封顶 M=9，而且**没有一次生成被丢掉**。"""
+        members = list("abcd")
+        speakers = FakeMembers({m: [f"{m.upper()}{i}" for i in range(1, 9)] for m in members})
+
+        turn = (await _run(GroupTurnOrchestrator(speakers.speak), members, "在吗"))[0]
+
+        assert len(turn.utterances) == GROUP_MESSAGE_BUDGET == 9
+        assert len(speakers.calls) == 9, "发起 9 次就该存下 9 条（额度预留：不多起一次）"
+        assert all(rounds <= 3 for rounds in speakers.rounds.values())
+        assert turn.budget_exhausted is True
+
+    async def test_a_round_is_never_started_without_a_message_slot(self):
+        """额度预留：余额只剩 1 条时**只起一个人**，b 压根没被起跑（不是跑完再丢）。"""
+        speakers = FakeMembers({"a": ["A1"], "b": ["B1"]})
 
         turn = (await _run(
-            GroupTurnOrchestrator(speakers.speak, chain_budget=2), ["a", "b", "c"], "在吗"
+            GroupTurnOrchestrator(speakers.speak, max_messages=1), ["a", "b"], "在吗"
         ))[0]
 
-        assert [u.character_id for u in turn.utterances] == ["a", "b"]
+        assert [u.content for u in turn.utterances] == ["A1"]
+        assert speakers.calls == ["a"]
         assert turn.budget_exhausted is True
-
-    async def test_a_skip_does_not_eat_the_budget(self):
-        speakers = FakeSpeakers({"a": ["<silent>"], "b": ["B1"]})
-
-        turn = (await _run(
-            GroupTurnOrchestrator(speakers.speak, chain_budget=1), ["a", "b"], "在吗"
-        ))[0]
-
-        assert [u.character_id for u in turn.utterances] == ["b"]
-        assert turn.budget_exhausted is True
-
-
-def _interject_during_first_reply(orch, text, character_id="a"):
-    """模拟"某个角色**第一句**还在生成时"用户又发了一句（只在第一轮触发一次）。"""
-    fired = {"done": False}
-
-    def hook(cid, is_continuation):
-        if fired["done"] or cid != character_id or is_continuation:
-            return
-        fired["done"] = True
-        assert orch.submit(text) is True, "在途时插话必须被接受（排队，不打断）"
-
-    return hook
 
 
 class TestInterjection:
-    """插话：在途回复不被打断；当前这条流收尾后旧轮收束，插话合并成新轮（预算重置）。"""
+    """插话：不打断在途生成；新用户消息 = **全新的用户轮**（K/M 重置 + 唤醒全员）。"""
 
-    async def test_the_in_flight_reply_finishes_and_the_turn_then_winds_down(self):
-        speakers = FakeSpeakers({"a": ["A1", "A2", "A3"], "b": ["B1"]})
+    async def test_an_interjection_does_not_cancel_the_in_flight_rounds(self):
+        speakers = FakeMembers({"a": ["A1"], "b": ["B1"]})
         orch = GroupTurnOrchestrator(speakers.speak)
-        speakers.hook = _interject_during_first_reply(orch, "等等，我还有一句")
+        speakers.hook = _one_submit_per_turn(orch, "等等")
+
+        turns = await _run(orch, ["a", "b"], "第一句")
+
+        # 插话那一刻还在途的两轮都照样说完、都落库（一个都没被取消）
+        assert _speakers_of(turns[0], ["a", "b"]) == {"a", "b"}
+        assert turns[0].stopped_for_interjection is True
+        assert [t.user_messages for t in turns] == [("第一句",), ("等等",)]
+
+    async def test_a_queued_interjection_wakes_everyone_in_a_fresh_user_turn(self):
+        """新用户消息 = K/M 重置 + 唤醒全员：上一轮说过话的人在新轮里照样被起跑。"""
+        speakers = FakeMembers({"a": ["A1", "A2"], "b": ["B1", "B2"]})
+        orch = GroupTurnOrchestrator(speakers.speak)
+        speakers.hook = _one_submit_per_turn(orch, "补一句")
 
         turns = await _run(orch, ["a", "b"], "第一句")
 
         assert len(turns) == 2
-        # 旧轮：a 在途那条照样说完（不打断），收尾后立即收束 —— b 不再就旧消息发言
-        assert [u.content for u in turns[0].utterances] == ["A1"]
-        assert turns[0].stopped_for_interjection is True
-        assert all(
-            user_messages == ("等等，我还有一句",)
-            for _, user_messages in speakers.calls_of("b")
-        )
-
-    async def test_an_interjection_while_the_first_reply_is_in_flight_winds_down(self):
-        """插话落在**第一句**在途时：这一句说完就收束 —— 不续说，也不轮到别人。"""
-        speakers = FakeSpeakers({"a": ["A1", "A2"], "b": ["B1"]})
-        orch = GroupTurnOrchestrator(speakers.speak)
-        speakers.hook = _interject_during_first_reply(orch, "等等")
-
-        turns = await _run(orch, ["a", "b"], "第一句")
-
-        assert [u.content for u in turns[0].utterances] == ["A1"]
-        # 旧轮里只问了 a 一次（第一句），没问"要不要接着说"
-        assert [c for c, msgs in speakers.calls_of("a") if msgs == ("第一句",)] == [False]
-        # b 只在**新轮**里被问到，旧轮里连问都没问
-        assert all(user_messages == ("等等",) for _, user_messages in speakers.calls_of("b"))
-        assert [t.user_messages for t in turns] == [("第一句",), ("等等",)]
+        # 旧轮：两人各说一条就被插话打断（收束，不再开新思考）
+        assert _speakers_of(turns[0], ["a", "b"]) == {"a", "b"}
+        # 新轮：全员重新起跑，每人又拿到一轮（额度是新的）
+        assert _speakers_of(turns[1], ["a", "b"]) == {"a", "b"}
+        assert speakers.rounds["a"] >= 2 and speakers.rounds["b"] >= 2
 
     async def test_queued_interjections_merge_into_one_new_turn(self):
-        speakers = FakeSpeakers({"a": ["A1", "A2", "A3"], "b": ["B1"]})
+        speakers = FakeMembers({"a": ["A1", "A2"]})
         orch = GroupTurnOrchestrator(speakers.speak)
         fired = {"done": False}
 
-        def hook(cid, is_continuation):
-            # 趁 a 还在生成（在途流）时用户连发两句
-            if fired["done"] or cid != "a" or is_continuation:
+        def hook(character_id):
+            if fired["done"]:
                 return
             fired["done"] = True
             assert orch.submit("插话1") is True
@@ -223,36 +259,22 @@ class TestInterjection:
 
         speakers.hook = hook
 
-        turns = await _run(orch, ["a", "b"], "第一句")
+        turns = await _run(orch, ["a"], "第一句")
 
         # 两条插话合并成同一个新轮（不是各开一轮）
         assert [t.user_messages for t in turns] == [("第一句",), ("插话1", "插话2")]
-        # 旧轮：a 只说完在途那条就收束
-        assert [u.content for u in turns[0].utterances] == ["A1"]
-        # 新轮：a 说它的第二条，b 也发言 —— 预算是新的
-        assert [u.character_id for u in turns[1].utterances] == ["a", "b"]
 
     async def test_each_turn_counts_its_own_budget(self):
-        members, speakers = _chatty_group(7)  # 7 人 > 链预算：旧轮一定会到顶
-        # 每人两条脚本：两轮各自都能说满 6 条（新轮的预算是重置过的）
+        """新用户轮 = 额度重置 + 唤醒全员：上一轮说过话的人，在新轮里照样被起跑。"""
+        speakers = FakeMembers({"a": [f"A{i}" for i in range(1, 9)]})
         orch = GroupTurnOrchestrator(speakers.speak)
+        speakers.hook = _one_submit_per_turn(orch, "补充")
 
-        def hook(cid, is_continuation):
-            # 第 6 条（预算到顶的那一条）在生成时，用户插话
-            if len(speakers.calls) == GROUP_CHAIN_BUDGET:
-                assert orch.submit("补充") is True
+        turns = await _run(orch, ["a"], "第一句")
 
-        speakers.hook = hook
-
-        turns = await _run(orch, members, "第一句")
-
-        assert len(turns) == 2
-        assert [u.character_id for u in turns[0].utterances] == members[:GROUP_CHAIN_BUDGET]
-        assert turns[0].budget_exhausted is True
-        # 新轮预算重置：又能说满 6 条（同一个人第二次开口是新轮，不是"接着说"）
-        assert turns[1].user_messages == ("补充",)
-        assert [u.character_id for u in turns[1].utterances] == members[:GROUP_CHAIN_BUDGET]
-        assert turns[1].budget_exhausted is True
+        assert [t.user_messages for t in turns] == [("第一句",), ("补充",)]
+        # 一轮一条（单人群里"自己的消息不唤醒自己"），但两轮**都开了口** —— 新轮没被旧轮额度拖住
+        assert [[u.content for u in t.utterances] for t in turns] == [["A1"], ["A2"]]
 
     async def test_each_utterance_is_reported_as_soon_as_it_is_decided(self):
         """驱动要能"边说边落库边推送"，不能等整轮跑完才知道说了什么。"""
@@ -261,13 +283,12 @@ class TestInterjection:
         async def sink(utterance):
             reported.append((utterance.character_id, utterance.content))
 
-        speakers = FakeSpeakers({"a": ["A1", "A2"], "b": ["B1"]})
+        speakers = FakeMembers({"a": ["A1"], "b": ["B1"]})
         orch = GroupTurnOrchestrator(speakers.speak, on_utterance=sink)
 
-        turns = await _run(orch, ["a", "b"], "在吗")
+        await _run(orch, ["a", "b"], "在吗")
 
-        assert reported == [("a", "A1"), ("b", "B1")]
-        assert [u.content for u in turns[0].utterances] == ["A1", "B1"]
+        assert set(reported) == {("a", "A1"), ("b", "B1")}
 
     async def test_a_silent_member_reports_nothing(self):
         reported: list[str] = []
@@ -275,7 +296,9 @@ class TestInterjection:
         async def sink(utterance):
             reported.append(utterance.content)
 
-        orch = GroupTurnOrchestrator(FakeSpeakers({"a": ["<silent>"], "b": ["B1"]}).speak, on_utterance=sink)
+        orch = GroupTurnOrchestrator(
+            FakeMembers({"a": ["<silent>"], "b": ["B1"]}).speak, on_utterance=sink
+        )
 
         await _run(orch, ["a", "b"], "在吗")
 
@@ -289,14 +312,9 @@ class TestInterjection:
             # 回调不带载荷；轮末队列还没被取 → 这里能回答"还有下一轮吗"
             seen.append(orch.has_pending())
 
-        speakers = FakeSpeakers({"a": ["A1"]})
-
-        def hook(cid, is_continuation):
-            if not is_continuation and not seen:  # 只在第一轮在途时插一句
-                orch.submit("插话")
-
-        speakers.hook = hook
+        speakers = FakeMembers({"a": ["A1"]})
         orch = GroupTurnOrchestrator(speakers.speak, on_turn_end=on_turn_end)
+        speakers.hook = _one_submit_per_turn(orch, "插话")
 
         turns = await _run(orch, ["a"], "第一句")
 
@@ -304,7 +322,7 @@ class TestInterjection:
         assert seen == [True, False]
 
     async def test_a_queued_interjection_survives_a_failed_turn(self):
-        """某个角色生成失败，不该把已经落库的插话一起弄丢 —— 下一次驱动补上。"""
+        """某个成员生成失败，不该把已经落库的插话一起弄丢 —— 下一次驱动补上。"""
         calls = {"n": 0}
 
         async def flaky_speak(character_id, *, is_continuation, user_messages):
@@ -322,8 +340,25 @@ class TestInterjection:
         turns = await orch.run(["a"])
         assert turns[0].user_messages == ("第二句",)
 
+    async def test_a_failed_round_does_not_cancel_its_siblings(self):
+        """失败也不取消在途：同一轮的其他成员先说完（在途永不取消）。"""
+        finished: list[str] = []
+
+        async def speak(character_id, *, is_continuation, user_messages):
+            if character_id == "a":
+                raise RuntimeError("a 炸了")
+            await asyncio.sleep(0)
+            finished.append(character_id)
+            return "B 说完"
+
+        orch = GroupTurnOrchestrator(speak)
+        with pytest.raises(RuntimeError):
+            await _run(orch, ["a", "b"], "第一句")
+
+        assert finished == ["b"]
+
     async def test_submit_while_idle_says_nobody_is_driving(self):
-        orch = GroupTurnOrchestrator(FakeSpeakers().speak)
+        orch = GroupTurnOrchestrator(FakeMembers().speak)
 
         assert orch.in_flight is False
         assert orch.submit("你好") is False  # 空闲 → 调用方必须自己 await run()
@@ -332,16 +367,14 @@ class TestInterjection:
         assert turns[0].user_messages == ("你好",)
 
     async def test_submit_during_a_turn_reports_in_flight(self):
-        speakers = FakeSpeakers({"a": ["A1", "A2"]})
+        speakers = FakeMembers({"a": ["A1"]})
         orch = GroupTurnOrchestrator(speakers.speak)
         seen = {}
+        submit_once = _one_submit_per_turn(orch, "插话")
 
-        def hook(cid, is_continuation):
-            # 趁 a 这一轮还在生成（在途流）
-            if seen or is_continuation:
-                return
+        def hook(character_id):
             seen["in_flight"] = orch.in_flight
-            assert orch.submit("插话") is True
+            submit_once(character_id)
 
         speakers.hook = hook
 
@@ -351,8 +384,8 @@ class TestInterjection:
         assert [t.user_messages for t in turns] == [("第一句",), ("插话",)]
 
     async def test_a_second_concurrent_run_is_refused(self):
-        """永不并行：同一实例同时跑两轮要报错，而不是悄悄串味。"""
-        speakers = FakeSpeakers({"a": ["A1"]})
+        """同一实例同时跑两批要报错，而不是悄悄串味（成员之间才是并发的）。"""
+        speakers = FakeMembers({"a": ["A1"]})
         started = asyncio.Event()
 
         async def blocking_speak(character_id, *, is_continuation, user_messages):
