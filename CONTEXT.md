@@ -194,12 +194,15 @@ pops it and emits `memory_updated`.
   **constraint** change SQLite cannot do additively, there is a second,
   explicitly non-additive path: `database.ensure_group_schema` (probe → backup →
   rebuild → rename, one transaction — ADR-0004). `run_migration_sequence` is the
-  single authoritative order (`create_all` → additive → rebuild); `init_db`,
-  tests and `scripts/check_group_migration.py` all go through it.
+  single authoritative order (`create_all` → additive → rebuild → 序号回填);
+  `init_db`, tests and `scripts/check_group_migration.py` all go through it.
+  A migration that writes data (the rebuild, the `messages.seq` backfill) makes
+  `init_db` snapshot the DB file **outside** the migration transaction first.
 - Models: `CharacterProfile`, `Conversation` (`character_id` nullable since
   ADR-0004; group conversations carry `group_id` + `last_extract_at` instead),
   `Group`/`GroupMember` (fixed member set, `position` = speaking order),
-  `Message` (has `tool_calls`, `tool_call_id`, `token_count`, `speaker_id`),
+  `Message` (has `tool_calls`, `tool_call_id`, `token_count`, `speaker_id`,
+  `seq` = the per-conversation monotonic number that fixes "who spoke first"),
   `Memory`, `UserProfile`, `UserConfig`, `ToolRun` (tracing, has `retry_count`).
 - **Referential integrity is service-layer, not DB-enforced** (ADR-0005): FK
   enforcement is off, so models carry **no `ondelete=`** — the declaration would
@@ -226,7 +229,8 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
 (ticket #54: `activeGroup` session kind — ADR-0007), and the memory catch-up
 (ticket #55, below). Shape:
 
-- **Serial** turn orchestration (shipped, ticket #53): `core/group_turn.py`
+- **Turn orchestration — serial today, concurrent spec'd (ADR-0009).** Shipped
+  (ticket #53, ADR-0006): `core/group_turn.py`
   decides who speaks when — member order, `<silent>` skips (dropped, never stored
   or pushed), a **chain budget** (6 role messages per user turn), and interjection
   handling (a new user message queues, the in-flight stream finishes, the old turn
@@ -238,6 +242,27 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
   persisted/acked by the driver, and one conversation never runs two turns at once.
 - User interjections never interrupt an in-flight reply — they queue and become
   a **new turn** (budget reset); several interjections merge into one turn.
+- **Message order is the sequence, not the clock (ticket #56 / ADR-0009):**
+  every write goes through `ConversationManager.add_message`, which assigns
+  `Message.seq` = `MAX(seq)+1` **within that conversation under SQLite's write
+  lock** (it touches `conversations.updated_at` first — that lock is what makes a
+  concurrent burst get 1,2,3… instead of all 1s). `Message.chronological_order()`
+  is the ONE ordering key, and every read path uses it: LLM context
+  (`get_context_messages`), the history API, `ensure_title`, `summarize_and_trim`
+  (so compact trims the right end) and the memory window (`load_window`). A row
+  without a sequence (pre-migration leftovers, hand-built fixtures) counts as 0, so
+  an all-legacy table still reads in `created_at` order — the change is a pure
+  increment for 1:1.
+- **Pending (ADR-0009 — supersedes ADR-0006's serial contract):** members think
+  **concurrently**; every newly persisted message wakes each idle member that has not
+  spent its cap. Caps per user turn: **K** thinking rounds per member (N≤4 → 3,
+  N>4 → 2) and **M = 9** role messages globally. **One message per thinking round**
+  (继续说 retired — saying more means being woken again); the message budget is
+  **reserved before a round starts** (never generate-then-drop); a new user message is
+  a fresh user turn (K/M reset, everyone woken); tool approvals are **serialized**.
+  In-flight streams are still
+  never cancelled — each round re-reads the transcript, which is exactly what
+  "inject what arrived while you were thinking" means, so it needs no new mechanism.
 - Daily greeting + proactive are **disabled** for group conversations; group TTS
   is disabled behind a reserved switch.
 - Opening a group conversation schedules a background **extract → compact**
@@ -385,6 +410,12 @@ or circuit-breaker failures).
   text (**render → drop the empty tool-pipeline lines → join**) is
   `render_transcript_text` — group summary and group catch-up both call it instead
   of re-implementing the join.
+- **One message order**: `Message.chronological_order()` is the only ordering key for
+  message reads — never `order_by(Message.created_at)` again (ADR-0009 / ticket #56).
+  `created_at` is second-precision SQLite, so concurrent writes tie; a second ordering
+  rule anywhere is exactly what makes two views of one conversation disagree. The
+  sequence is assigned in `add_message` under the write lock, and legacy rows are
+  backfilled once by `database.backfill_message_sequence`.
 - **Names are trimmed at the API edge**: `POST/PUT /api/characters` reject a blank
   name with 400 and store `name.strip()` — `" A "` becomes `"A"` (review P2; the
   speaker label would otherwise render as `[   ]`). Same for group names
@@ -428,7 +459,10 @@ or circuit-breaker failures).
 | 生效配置 | Effective config | `data/config.yaml` 里的当前供应商 + 模型选择 |
 | LLM 运行时配置 | Runtime LLM config | 内存中的可变配置对象；UI 写 yaml/.env 后刷新，立即生效 |
 | 群 | Group | 固定角色集合 + 共享对话流；一个群可开多条「群对话」（spec: `group-chat`） |
-| 群聊 | Group chat | 群内的多角色对话：成员按顺序依次发言，可跳过、可续说，每轮受链预算约束 |
+| 群聊 | Group chat | 群内的多角色对话：成员**同时思考**、可互相接话、可沉默；每人受思考轮上限 K，全局受消息上限 M（ADR-0009）|
 | 发言者 | Speaker | 消息的说话人（用户或某角色）。群聊消息必带；1:1 由会话角色派生 |
-| 链预算 | Chain budget | 每「用户轮」内角色消息总量上限（默认 6 条），到顶或全体跳过即静默 |
+| 链预算 | Chain budget | 每「用户轮」内角色消息**总量**上限（**M = 9**），到顶或无人再开口即静默 |
+| 思考轮 | Thinking round | 一个成员的一次生成（产出 0 或 1 条消息；`<silent>` 也算一轮）。每成员每用户轮上限 **K**：N≤4 → 3，N>4 → 2 |
+| 唤醒 | Wake | 新消息落库后，让「空闲且未用满 K」的成员开始一次新思考 |
 | 时间戳对话记录 | Timestamped transcript | 喂 LLM 与历史记录共用的统一格式：`YYYY/M/D HH:MM [说话人]: 内容`（系统本地时区） |
+| 消息序号 | Message sequence | 会话内**单调递增**的整数（`Message.seq`）：`created_at` 只有秒级精度，并发写入同秒会并列 —— "谁先说的"由序号定，所有读路径按它排序（ADR-0009 / ticket #56）|

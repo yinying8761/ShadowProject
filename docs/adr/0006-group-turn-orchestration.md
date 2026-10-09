@@ -1,5 +1,10 @@
 # Group turns: a pure orchestrator decides, the driver persists
 
+> **Superseded in part by ADR-0009 (2026-09-30):** the serial contract recorded below
+> ("one LLM stream at a time", "parallel group turns are a bug") is replaced by
+> concurrent member thinking. The pure-orchestrator, skip-before-persist and
+> driver-is-the-only-writer decisions still stand.
+
 Ticket #53 (群轮编排) had to answer "who speaks when, how often, and when does the turn
 stop" for a group conversation while reusing the existing `Agent` (persona, memory,
 tools, approvals) — the spec's user story 27 forbids a second LLM path. Two decisions
