@@ -137,6 +137,9 @@ async def get_messages(
             "speaker_id": m.speaker_id,
             "speaker": line.speaker if line else None,
             "transcript": line.text if line else None,
+            # 会话内单调序号（ticket #56）：群聊并发下前端按它把消息插到正确位置
+            # （ticket #11）。1:1 用不到，但有了它前端才知道在途消息该排在哪条之后。
+            "seq": m.seq,
         }
         for m, line in zip(messages, rendered)
     ]

@@ -80,3 +80,16 @@ the exchange stays bounded so it cannot run away.
   it, not just continuations.
 - ADR-0006's serial contract is **superseded by this ADR**; its "pure orchestrator",
   "skip precedes persistence" and "the driver is the only writer" decisions stand.
+- **Delivered wire contract (tickets #09/#10).** The frontend consequence above is
+  spelled out as events: each thinking round is bracketed by
+  `group_thinking{character_id, speaker, thinking}` — so several members can be "typing"
+  at once and a `<silent>` round is still cleared — every `group_message` carries the
+  per-conversation `seq`, and `message_ack` plus the history API carry `seq` too, so the
+  client can place every message (including the user's own) on the sequence. Tool
+  approvals are serialized by `services/approval_gate.py`: one `ApprovalGate` per chat
+  socket puts "send the prompt → wait for the answer" under a lock, so N
+  concurrently-thinking members queue instead of showing N dialogs (120 s unanswered
+  = denied, unchanged). `turn_end{group,pending}` survives as an informational
+  per-user-turn signal; the per-member "typing" state comes from `group_thinking`.
+  A user turn is still one **batch** at a time (a new user message winds the current
+  batch down) — the concurrency is *within* a batch, which is what this ADR decided.

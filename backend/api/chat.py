@@ -1,6 +1,5 @@
 import asyncio
 import json
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -100,7 +99,6 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
     await websocket.accept()
     print(f"[WS] connected conversation={conversation_id}", flush=True)
 
-    pending_approvals: dict[str, asyncio.Future] = {}
     _daily_greeting_tasks: dict[str, asyncio.Task] = {}
     _title_tasks: dict[str, asyncio.Task] = {}
     last_known_character_id: str | None = None
@@ -152,32 +150,13 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
     def _char_id_getter() -> str | None:
         return last_known_character_id
 
-    async def approval_callback(tool_name: str, arguments: dict) -> bool:
-        request_id = f"approval-{uuid.uuid4().hex[:12]}"
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future[bool] = loop.create_future()
-        pending_approvals[request_id] = future
+    # 审批闸门（ticket #10）：群聊并发开口时，同一时刻只让**一个**审批出现在用户面前，
+    # 其余排队；超时语义不变（120s 没回答 = 拒绝）。1:1 只有一条生成在途，闸门空转。
+    from services.approval_gate import ApprovalGate
 
-        print(f"[APPROVAL] requesting tool={tool_name} id={request_id}", flush=True)
-        await websocket.send_json(
-            {
-                "type": "approval_request",
-                "request_id": request_id,
-                "name": tool_name,
-                "arguments": arguments,
-            }
-        )
-
-        try:
-            approved = await asyncio.wait_for(future, timeout=120.0)
-            print(f"[APPROVAL] resolved id={request_id} approved={approved}", flush=True)
-        except asyncio.TimeoutError:
-            print(f"[APPROVAL] TIMEOUT id={request_id}", flush=True)
-            approved = False
-        finally:
-            pending_approvals.pop(request_id, None)
-
-        return approved
+    approval_gate = ApprovalGate(websocket.send_json)
+    # 直接绑成回调：闸门的 `request(tool_name, arguments) -> bool` 就是审批回调的形状。
+    approval_callback = approval_gate.request
 
     from services.screen_capture_gate import ScreenCaptureGate
 
@@ -481,10 +460,7 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
             request_id = data.get("request_id", "")
             approved = data.get("approved", False)
             print(f"[APPROVAL] received response id={request_id} approved={approved}", flush=True)
-            future = pending_approvals.get(request_id)
-            if future and not future.done():
-                future.set_result(approved)
-            else:
+            if not approval_gate.resolve(request_id, approved):
                 print(f"[APPROVAL] WARNING future not found id={request_id}", flush=True)
             return
 
@@ -533,9 +509,9 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                 return
 
         if is_group:
-            # 群聊：一句话交给群轮驱动（自己落库/ack、按成员顺序跑轮、永不并行）。
-            # 群里没有"当前角色"，character_id 不参与；搜索提示注入与截屏增强是 1:1 的
-            # 便利，群聊不走这条路（角色要用工具自己调，spec：全量工具）。
+            # 群聊：一句话交给群轮驱动（自己落库/ack；批次之内**成员并发**、批次之间串行，
+            # ADR-0009）。群里没有"当前角色"，character_id 不参与；搜索提示注入与截屏增强
+            # 是 1:1 的便利，群聊不走这条路（角色要用工具自己调，spec：全量工具）。
             if not content:
                 await websocket.send_json({"type": "error", "message": "content is required"})
                 return

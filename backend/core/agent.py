@@ -265,6 +265,9 @@ class Agent:
                     "type": "message_ack",
                     "client_message_id": client_message_id,
                     "message_id": user_msg.id,
+                    # 会话内序号（ticket #56）：前端把本地那条换成真身时一起补上，
+                    # 群聊里每条消息（含用户自己的）就都能按序号排序。
+                    "seq": user_msg.seq,
                 }
 
         history = await self.conversation_manager.get_context_messages(

@@ -28,6 +28,16 @@ from models.group import Group, GroupMember
 from models.message import Message
 
 
+def _member_name(system_prompt: str, keys) -> str | None:
+    """按"名字出现在**场景说明之前**"认人。
+
+    `GROUP_SCENARIO` 是追加在 system prompt 末尾的，里面列着全部成员 —— 在整段 prompt
+    里找名字，会让每个人认成列表里的第一个人，于是成员并发开口时互相偷脚本。
+    """
+    persona = system_prompt.split("## 当前场景", 1)[0]
+    return next((name for name in keys if name in persona), None)
+
+
 class FakeGroupLLM:
     """按角色名字挑脚本的假 LLM（角色的名字就在 system prompt 开头）。
 
@@ -52,11 +62,7 @@ class FakeGroupLLM:
     async def stream_chat(self, messages, tools=None, on_retry=None):
         system = messages[0]["content"]
         self.calls.append(messages)
-        # 只认**自己的**名字：场景说明（`GROUP_SCENARIO`）追加在末尾、里面列着全部
-        # 成员 —— 在整段 prompt 里找名字，会让每个人认成列表里的第一个人，于是成员
-        # 并发开口时互相偷脚本（曾经真的让 WS 测试时好时坏）。
-        persona = system.split("## 当前场景", 1)[0]
-        name = next((n for n in self.script if n in persona), None)
+        name = _member_name(system, self.script)
         replies = self.script.get(name, []) if name else []
         for ch in replies.pop(0) if replies else "":
             yield {"type": "token", "content": ch}
@@ -86,7 +92,7 @@ async def _all_messages(factory) -> list[tuple[str, str, str | None]]:
         return [(m.role, m.content, m.speaker_id) for m in rows]
 
 
-def _client(monkeypatch, factory, llm, *, proactive=None) -> TestClient:
+def _client(monkeypatch, factory, llm, *, proactive=None, registry=None) -> TestClient:
     monkeypatch.setattr("database.async_session", factory)
 
     async def _noop(*_args, **_kwargs):
@@ -101,7 +107,9 @@ def _client(monkeypatch, factory, llm, *, proactive=None) -> TestClient:
         "api.chat.agent",
         Agent(
             llm_service=llm,
-            tool_registry=ToolRuntime(ToolRegistry(), enable_tracing=False, enable_sandbox=False),
+            tool_registry=ToolRuntime(
+                registry or ToolRegistry(), enable_tracing=False, enable_sandbox=False
+            ),
         ),
     )
 
@@ -136,6 +144,21 @@ def _drain(ws, *, expected_dones=1, max_events=40) -> list[dict]:
             raise AssertionError(f"等不到 done，只收到：{[e.get('type') for e in events]}")
         events.append(ws.receive_json())
     return events
+
+
+def _recv_until(ws, kind: str, *, max_events=40) -> list[dict]:
+    """读到出现指定类型的事件（含它）为止，返回读到的全部事件。
+
+    审批测试用：收到 `approval_request` 就得先回答它，不能一口气 drain 到 done
+    （那会在没人回答时永远等下去）。
+    """
+    events: list[dict] = []
+    while len(events) < max_events:
+        event = ws.receive_json()
+        events.append(event)
+        if event.get("type") == kind:
+            return events
+    raise AssertionError(f"等不到 {kind}，只收到：{[e.get('type') for e in events]}")
 
 
 class TestGroupTurnOverTheWebSocket:
@@ -326,3 +349,165 @@ class TestGroupTurnOverTheWebSocket:
 
         assert started["count"] == 0, "群对话不启动主动陪伴"
         assert event == {"type": "daily_greeting_skip", "reason": "group_conversation"}
+
+
+class BarrierGroupLLM(FakeGroupLLM):
+    """两个成员必须**同时**在生成里，否则第一个会超时失败（串行驱动直接红）。
+
+    假 LLM 的 `stream_chat` 是异步生成器，两份并发调用会各自进入这个函数；串行驱动下
+    第二个人永远不来，`wait_for` 超时 → 那一轮报错 → 断言拿不到两条消息。
+    """
+
+    def __init__(self, script: dict[str, list[str]], expected: int = 2):
+        super().__init__(script)
+        self.expected = expected
+        self.arrived = 0
+        self.gate = asyncio.Event()
+
+    async def stream_chat(self, messages, tools=None, on_retry=None):
+        self.arrived += 1
+        if self.arrived >= self.expected:
+            self.gate.set()
+        await asyncio.wait_for(self.gate.wait(), timeout=5)
+        async for chunk in super().stream_chat(messages, tools=tools, on_retry=on_retry):
+            yield chunk
+
+
+class ToolCallGroupLLM(FakeGroupLLM):
+    """每个成员第一轮请一个**需要审批**的工具，审批过了第二轮才说话。"""
+
+    def __init__(self, tool_name: str = "write_file", names=("小柔", "阿B")):
+        super().__init__({})
+        self.tool_name = tool_name
+        self.names = names  # 与 `_seed_group` 的两个成员对应
+        self.rounds: dict[str, int] = {}
+
+    async def stream_chat(self, messages, tools=None, on_retry=None):
+        self.calls.append(messages)
+        name = _member_name(messages[0]["content"], self.names) or "?"
+        self.rounds[name] = self.rounds.get(name, 0) + 1
+        if self.rounds[name] == 1:
+            yield {
+                "type": "tool_use",
+                "id": f"call-{name}",
+                "name": self.tool_name,
+                "arguments": {"path": f"{name}.txt"},
+            }
+        else:
+            yield {"type": "token", "content": f"{name} 写好了"}
+
+
+class TestConcurrentDriverOverTheWebSocket:
+    """ticket #10：驱动层的并发、序号、正在输入、审批串行（WS 集成 + 内存 SQLite）。"""
+
+    def test_members_really_generate_at_the_same_time(self, ws_env, monkeypatch):
+        """并发生成：两个成员必须同时在途（串行驱动会让屏障超时）。"""
+        _engine, factory = ws_env
+        asyncio.run(_seed_group(factory))
+        llm = BarrierGroupLLM({"小柔": ["A1"], "阿B": ["B1"]})
+        client = _client(monkeypatch, factory, llm)
+
+        with client.websocket_connect("/ws/chat/conv-g") as ws:
+            ws.send_json({"type": "chat", "content": "你们好"})
+            events = _drain(ws)
+
+        assert llm.arrived >= 2
+        assert {e["character_id"] for e in events if e["type"] == "group_message"} == {"c1", "c2"}
+
+    def test_group_messages_carry_an_increasing_sequence(self, ws_env, monkeypatch):
+        """每条 `group_message` 带序号：递增、不重复，且推送顺序与落库顺序一致。"""
+        _engine, factory = ws_env
+        asyncio.run(_seed_group(factory))
+        llm = FakeGroupLLM({"小柔": ["A1", "A2", "A3"], "阿B": ["B1", "B2", "B3"]})
+        client = _client(monkeypatch, factory, llm)
+
+        with client.websocket_connect("/ws/chat/conv-g") as ws:
+            ws.send_json({"type": "chat", "content": "聊聊呗"})
+            events = _drain(ws)
+
+        spoken = [e for e in events if e["type"] == "group_message"]
+        seqs = [e["seq"] for e in spoken]
+        assert all(isinstance(s, int) for s in seqs), f"序号必须是整数：{seqs}"
+        assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+
+        rows = client.get("/api/conversations/conv-g/messages").json()
+        assert [r["content"] for r in rows if r["role"] == "assistant"] == [
+            e["content"] for e in spoken
+        ]
+        # 历史接口也带序号（前端据此把在途消息插到正确位置）
+        assert [r["seq"] for r in rows if r["role"] == "assistant"] == seqs
+
+    def test_each_member_reports_when_it_starts_and_stops_thinking(self, ws_env, monkeypatch):
+        """多成员"正在输入"：每个成员各自亮起、各自收掉（漏一个就会永远转圈）。"""
+        _engine, factory = ws_env
+        asyncio.run(_seed_group(factory))
+        llm = FakeGroupLLM({"小柔": ["A1", "A2"], "阿B": ["<silent>", "B1"]})
+        client = _client(monkeypatch, factory, llm)
+
+        with client.websocket_connect("/ws/chat/conv-g") as ws:
+            ws.send_json({"type": "chat", "content": "你们好"})
+            events = _drain(ws)
+
+        thinking = [
+            (e["character_id"], e["thinking"], e.get("speaker"))
+            for e in events
+            if e["type"] == "group_thinking"
+        ]
+        assert thinking, "一个 group_thinking 都没收到"
+        for character_id in ("c1", "c2"):
+            states = [flag for cid, flag, _ in thinking if cid == character_id]
+            assert states[0] is True, f"{character_id} 没有「开始思考」"
+            assert states[-1] is False, f"{character_id} 的「正在输入」没收掉：{states}"
+            assert states.count(True) == states.count(False)
+        # 说话人名字也在事件里（前端不必自己查角色表）
+        assert all(speaker for _, _, speaker in thinking)
+
+    def test_two_members_get_their_approvals_one_after_another(self, ws_env, monkeypatch):
+        """两个成员同时要审批：各拿到一次自己的请求（串行保证在 tests/test_approval_gate.py）。"""
+        from core.tool_registry import ToolRegistry
+
+        _engine, factory = ws_env
+        asyncio.run(_seed_group(factory))
+
+        registry = ToolRegistry()
+
+        async def write_file(**kwargs) -> str:
+            return "written"
+
+        registry.register(
+            name="write_file",
+            description="写文件",
+            parameters={"type": "object", "properties": {}, "required": []},
+            handler=write_file,
+            require_approval=True,
+        )
+
+        llm = ToolCallGroupLLM()
+        client = _client(monkeypatch, factory, llm, registry=registry)
+
+        with client.websocket_connect("/ws/chat/conv-g") as ws:
+            ws.send_json({"type": "chat", "content": "写个文件"})
+            events = _recv_until(ws, "approval_request")
+            first = events[-1]
+            ws.send_json({
+                "type": "approval_response",
+                "request_id": first["request_id"],
+                "approved": True,
+            })
+            events += _recv_until(ws, "approval_request")
+            second = events[-1]
+            assert second["request_id"] != first["request_id"]
+            ws.send_json({
+                "type": "approval_response",
+                "request_id": second["request_id"],
+                "approved": True,
+            })
+            events += _drain(ws)
+
+        assert {e["request_id"] for e in events if e["type"] == "approval_request"} == {
+            first["request_id"],
+            second["request_id"],
+        }
+        # 两个成员都批完并说上了话
+        assert {e["character_id"] for e in events if e["type"] == "group_message"} == {"c1", "c2"}
+        assert len(llm.rounds) == 2  # 两个成员都走了两轮（工具 + 正文）

@@ -7,8 +7,8 @@
    归属该角色）。回复先不落库（`persist_reply=False`），交给编排器判"跳过"。
 2. **确实说了的**：落库（`speaker_id` = 该角色）并推送 `group_message`；
    跳过的（`<silent>`）一律不落库、不推送。
-3. **用户消息**的落库 / `message_ack`，以及"一条会话同一时刻只有一批群轮"
-   （批次**之内**成员并发 —— ADR-0009；驱动的并发化是 ticket #10）。
+3. **用户消息**的落库 / `message_ack`，以及"一条会话同一时刻只有**一批**群轮"
+   （批次**之内**成员并发、批次之间串行 —— ADR-0009）。
 
 spec: docs/specs/group-chat.md（Phase 2 · 群轮编排）。
 """
@@ -111,10 +111,9 @@ class GroupChatSession:
         """用户说了一句。
 
         **同步方法**（不 await）：两条几乎同时到达的消息必须落在同一批群轮上，
-        否则会开出两批并行的群轮 —— 批次之间仍是串行（批次**之内**成员已经并发，
-        ADR-0009；驱动的并发化见 ticket #10）。落库与 ack 走后台任务，但每个角色
-        读历史之前都会先把它们结清（`_settle_persists`），所以轮到谁说话时，
-        用户那几句一定已经在历史里。
+        否则会开出两批并行的群轮 —— 批次之间仍是串行（批次**之内**成员并发，
+        ADR-0009）。落库与 ack 走后台任务，但每个角色读历史之前都会先把它们结清
+        （`_settle_persists`），所以轮到谁说话时，用户那几句一定已经在历史里。
         """
         self._persisting.append(
             asyncio.create_task(self._persist_user_message(text, client_message_id))
@@ -178,36 +177,52 @@ class GroupChatSession:
 
         成员并发开口（ticket #09），所以每次调用都开自己的 session；用户消息的结清
         走 `_settle_persists`（并发调用会等同一批）。
+
+        进来/出去各报一次 `group_thinking`（ticket #10）：前端据此为**每个成员**各显示
+        一个"正在输入"，谁说完谁收掉 —— 而不是所有成员共用一个"正在回应"。
         """
         from database import async_session
 
-        await self._settle_persists()  # 角色读历史之前，用户那几句必须已经在库里
-        suffix = self._scenario
-        # 收尾用哪句合成轮：接着说是另一句（原本挂在 system prompt 上，但那只改措辞、
-        # 不改"最后一条是 assistant"这件事）。
-        nudge = GROUP_CONTINUATION if is_continuation else GROUP_TURN_OPEN
+        await self._thinking(character_id, True)
+        try:
+            await self._settle_persists()  # 角色读历史之前，用户那几句必须已经在库里
+            suffix = self._scenario
+            # 收尾用哪句合成轮：接着说是另一句（原本挂在 system prompt 上，但那只改措辞、
+            # 不改"最后一条是 assistant"这件事）。
+            nudge = GROUP_CONTINUATION if is_continuation else GROUP_TURN_OPEN
 
-        reply = ""
-        async with async_session() as session:
-            async for event in self._agent.run(
-                session=session,
-                user_message=None,  # 用户消息由驱动落库，这里只读历史
-                conversation_id=self._conversation_id,
-                character_id=character_id,
-                approval_callback=self._approval_callback,
-                persist_reply=False,  # 先判"跳过"，再决定落不落库
-                system_suffix=suffix,
-                memory_query="\n".join(user_messages) or None,
-                user_nudge=nudge,  # 必须让请求以 user 结尾，见 GROUP_TURN_OPEN
-            ):
-                if event["type"] == "done":
-                    reply = event.get("content", "")
-                elif event["type"] == "error":
-                    raise GroupTurnError(event.get("message") or "角色生成失败")
-                elif event["type"] in _FORWARDED:
-                    await self._safe_send(event)
-                # token 先攒着：这一条可能是 <silent>，绝不能漏给前端
-        return reply
+            reply = ""
+            async with async_session() as session:
+                async for event in self._agent.run(
+                    session=session,
+                    user_message=None,  # 用户消息由驱动落库，这里只读历史
+                    conversation_id=self._conversation_id,
+                    character_id=character_id,
+                    approval_callback=self._approval_callback,
+                    persist_reply=False,  # 先判"跳过"，再决定落不落库
+                    system_suffix=suffix,
+                    memory_query="\n".join(user_messages) or None,
+                    user_nudge=nudge,  # 必须让请求以 user 结尾，见 GROUP_TURN_OPEN
+                ):
+                    if event["type"] == "done":
+                        reply = event.get("content", "")
+                    elif event["type"] == "error":
+                        raise GroupTurnError(event.get("message") or "角色生成失败")
+                    elif event["type"] in _FORWARDED:
+                        await self._safe_send(event)
+                    # token 先攒着：这一条可能是 <silent>，绝不能漏给前端
+            return reply
+        finally:
+            await self._thinking(character_id, False)
+
+    async def _thinking(self, character_id: str, thinking: bool) -> None:
+        """报一次"这个成员开始/结束思考"（前端按成员显示/收起"正在输入"）。"""
+        await self._safe_send({
+            "type": "group_thinking",
+            "character_id": character_id,
+            "speaker": self._member_names.get(character_id),
+            "thinking": thinking,
+        })
 
     async def _store_and_send(self, utterance: GroupUtterance) -> None:
         """确实说了的：落库（`speaker_id` = 该角色）再推送。"""
@@ -231,6 +246,9 @@ class GroupChatSession:
             # 推落库后的文本（`add_message` 会剥掉模型带出来的对话记录前缀）：
             # 推送与库里必须一致，否则刷新一下内容就变了。
             "content": msg.content,
+            # 会话内单调序号（ticket #56）：并发下到达顺序 ≠ 发言顺序，
+            # 前端据此把消息插到正确的位置（ticket #11）。
+            "seq": msg.seq,
         })
 
     async def _persist_user_message(self, text: str, client_message_id: str | None) -> None:
@@ -245,6 +263,9 @@ class GroupChatSession:
                 "type": "message_ack",
                 "client_message_id": client_message_id,
                 "message_id": msg.id,
+                # 用户消息的序号也带上：前端把"本地那条"换成真身时一起补上序号，
+                # 这样群里的每一条（含用户自己的）都能按序号排序。
+                "seq": msg.seq,
             })
 
     async def _settle_persists(self) -> None:

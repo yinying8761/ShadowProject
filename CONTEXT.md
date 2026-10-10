@@ -249,14 +249,21 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
   messages merge into a **fresh user turn** (K/M reset, everyone woken).
 - `services/group_chat.py` is the wiring — one character's round goes through the
   shared `Agent` (`persist_reply=False`, so a skip is never stored; the driver
-  persists with `speaker_id` and pushes `group_message`), user messages are
+  persists with `speaker_id` and pushes `group_message` with `seq`), user messages are
   persisted/acked by the driver, and one conversation still runs only one batch at a
-  time. Because members now generate concurrently, each `_speak` opens its own session
+  time. Because members generate concurrently, each `_speak` opens its own session
   and `_settle_persists` makes **all** concurrent callers wait for the same persist
   batch (otherwise a member could read a history without the user's message). The
   **parent task is the only writer of scheduler state** — children only return their
   text — so the replies a batch produces are accepted in member order and the pushed
-  order matches the persisted order.
+  order matches the persisted order. Each round brackets itself with
+  `group_thinking{thinking:true/false}`, so the client can show one indicator per
+  member.
+- **Tool approvals are serialized** (`services/approval_gate.py`, ticket #10): one
+  `ApprovalGate` per chat socket puts "send the prompt → wait for the answer" under a
+  lock, so N concurrently-thinking members queue up instead of showing N dialogs.
+  Timeout semantics are unchanged (120 s unanswered = denied), and a stale/duplicate
+  `approval_response` resolves nothing (the WS layer logs it).
 - **Message order is the sequence, not the clock (ticket #56 / ADR-0009):**
   every write goes through `ConversationManager.add_message`, which assigns
   `Message.seq` = `MAX(seq)+1` **within that conversation under SQLite's write
@@ -268,11 +275,8 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
   without a sequence (pre-migration leftovers, hand-built fixtures) counts as 0, so
   an all-legacy table still reads in `created_at` order — the change is a pure
   increment for 1:1.
-- **Pending (ADR-0009 — supersedes ADR-0006's serial contract):** tool approvals are
-  **serialized** (one prompt at a time), and the **driver** still runs a single batch
-  per conversation (ticket #10 rewrites it so a conversation can have several
-  generations in flight and wakes idle members as messages land). The frontend still
-  renders one "thinking" member (ticket #11).
+- **Pending:** the frontend still renders a single "thinking" state (ticket #11 wires
+  `group_thinking` into per-member indicators and orders arrivals by `seq`).
 - Daily greeting + proactive are **disabled** for group conversations; group TTS
   is disabled behind a reserved switch.
 - Opening a group conversation schedules a background **extract → compact**
@@ -344,10 +348,11 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
 | `tool_result` | `name`, `result`, `is_error`, `denied?` | tool finished (or was denied) |
 | `done` | `message_id`, `partial_error?`, `proactive?`, `daily_greeting?` | assistant message persisted |
 | `done` (group) | `group: true` | group turn burst finished (`persist_reply=False` replies carry `content` + `deferred: true`, no `message_id`) |
-| `turn_end` | `group: true`, `pending` | one **user turn** finished inside a group burst; `pending` = more queued interjections are about to run. `pending:false` means "nothing queued *right now*" (review P3) |
-| `group_message` | `message_id`, `character_id`, `content` | one group member's message was persisted |
+| `turn_end` | `group: true`, `pending` | one **user turn** finished inside a group burst; `pending` = more queued interjections are about to run. `pending:false` means "nothing queued *right now*" (review P3). Informational since ticket #10 — per-member "thinking" is `group_thinking`, not this |
+| `group_thinking` | `character_id`, `speaker`, `thinking` | a group member started (`true`) / finished (`false`) one thinking round (ticket #10). The frontend shows one "typing" indicator **per member** from this; a round that ends in `<silent>` is cleared by `thinking:false`, never by a message |
+| `group_message` | `message_id`, `character_id`, `speaker`, `content`, `seq` | one group member's message was persisted (persist first, push second). `seq` is the per-conversation monotonic number (ticket #56) — concurrent arrivals are ordered by it, not by arrival time |
 | `error` | `message` | unrecoverable error |
-| `message_ack` | `client_message_id`, `message_id` | user message persisted (id swap) |
+| `message_ack` | `client_message_id`, `message_id`, `seq` | user message persisted (id swap). `seq` lets the client place its own message in the sequence (ticket #10) |
 | `memory_updated` | `count` | background memory extraction finished |
 | `llm_retry` | `attempt`, `max_retries` | LLM retry in progress (transient, chat path only) |
 | `proactive_skip` / `daily_greeting_skip` | `reason` | proactive/greeting aborted. `daily_greeting_skip` reasons: `already_greeted` (the only one meaning "today is done") / `group_conversation` / `no_character` / `disabled` / `no_config` / `in_flight` / `empty` (review N1) |
@@ -363,6 +368,8 @@ speaker); a `daily_greeting` is answered with
 `{type:"daily_greeting_skip", reason:"group_conversation"}` and no proactive
 session is started. Group replies are delivered whole (no `token` stream): a
 `<silent>` skip must never be pushed, so the driver decides after the stream ends.
+The history API (`GET /api/conversations/{id}/messages`) carries `seq` per message
+for the same reason.
 
 The debug channel `/ws/logs` (ADR-0002) is separate from the chat socket and
 takes `renderer_log` (`level`, `message`) and `command` (`command`, one of the

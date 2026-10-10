@@ -383,8 +383,9 @@ class TestOneToOneUnchanged:
         body = resp.json()
 
         assert [m["content"] for m in body] == ["第一句", "第二句", "第三句"]
-        # 载荷是既有契约（api/conversation.py::get_messages）：序号只在服务端用，不上线
+        # 载荷 = 既有契约（api/conversation.py::get_messages）+ 一个刻意的增量：`seq`
+        # （ticket #11 要按序号把在途消息插到正确位置；1:1 拿到也会忽略它）。
         assert set(body[0]) == {
             "id", "role", "content", "tool_calls", "token_count",
-            "created_at", "speaker_id", "speaker", "transcript",
+            "created_at", "speaker_id", "speaker", "transcript", "seq",
         }
