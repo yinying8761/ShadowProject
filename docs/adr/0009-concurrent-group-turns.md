@@ -16,7 +16,9 @@ the exchange stays bounded so it cannot run away.
 
 - **All members start together; new messages wake the rest.** A user message starts
   every member thinking concurrently. After that, each newly persisted message wakes
-  every member that is idle and has not hit its cap.
+  every member that is idle and has not hit its cap — **except the one that just spoke**
+  (a member is woken by *other people's* messages; being woken by its own would just be
+  继续说 renamed, which is what the previous ADR removed).
 - **In-flight generation is never cancelled.** A member finishes its current round;
   the messages that landed meanwhile are already in the history it re-reads, so the
   "inject what arrived while you were thinking" step needs **no new mechanism** — each
@@ -93,3 +95,11 @@ the exchange stays bounded so it cannot run away.
   per-user-turn signal; the per-member "typing" state comes from `group_thinking`.
   A user turn is still one **batch** at a time (a new user message winds the current
   batch down) — the concurrency is *within* a batch, which is what this ADR decided.
+- **Concurrency uses the caller's event loop directly, and no task factory is
+  injected.** Ticket #09 asked for an injectable task factory; the scheduler instead
+  calls `asyncio.create_task` / `asyncio.wait` on the caller's loop. Reason, recorded
+  here so it is a decision rather than an omission: an asyncio primitive is not IO (the
+  "pure logic, no DB / network / clock" contract holds), the only thing tests need to
+  control — "run one member's round" — *is* injected, and `run()` awaits every in-flight
+  round before returning, so awaiting it is deterministic without a factory. A factory
+  parameter with no consumer would be dead surface.

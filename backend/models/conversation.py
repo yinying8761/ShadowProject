@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import String, Text, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+from models.message import Message
 
 
 class Conversation(Base):
@@ -38,7 +39,9 @@ class Conversation(Base):
 
     messages: Mapped[list["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan",
-        # 与 Message.chronological_order 同一套顺序（序号优先，时间戳只作同一批的兜底）：
-        # 这里是模型层的第三个读路径，绝不能再按 created_at 单排（ADR-0009 / ticket #56）。
-        order_by="Message.seq, Message.created_at",
+        # 与全项目**同一个**排序键（`Message.chronological_order()`）：序号优先、created_at
+        # 只作无序号老行的兜底。这里绝不能再手写一份（比如 "Message.seq, Message.created_at"）——
+        # 第二份副本正是"同一段对话在两处顺序不一致"的来源（CONTEXT.md §6 / ADR-0009；
+        # 2026-10-10 审查 S3）。
+        order_by=Message.chronological_order(),
     )

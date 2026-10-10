@@ -291,6 +291,50 @@ class TestReadOrder:
         messages = await MemoryExtractor(MemoryStore()).load_window("conv-h")
         assert [m.content for m in messages] == ["第一句", "第二句", "第三句"]
 
+    @pytest.mark.asyncio
+    async def test_the_relationship_reads_in_the_same_order(self, session_factory):
+        """`Conversation.messages`（关系）与所有读路径同一套顺序 —— 不允许第二份副本。
+
+        2026-10-10 审查 S3：这里曾经手写 `order_by="Message.seq, Message.created_at"`，
+        绕开了 `Message.chronological_order()`。SQLite 下两种写法恰好等价（NULL 都排最前），
+        所以这条测试锁的是**行为**：无序号的老行在前、其余按序号，与
+        `get_context_messages` 完全一致；将来若有人再手写一份并写歪（比如倒序），这里会红。
+        """
+        from datetime import datetime
+
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from core.conversation_manager import ConversationManager
+        from models.conversation import Conversation
+        from models.message import Message
+
+        async with session_factory() as s:
+            s.add(Conversation(id="conv-rel", character_id=None))
+            await s.commit()
+        async with session_factory() as s:
+            # 序号 1/2 的时间戳故意反着来；另有一条**没有序号**的老行（时间最早）
+            s.add(Message(id="r1", conversation_id="conv-rel", role="user", content="序号一",
+                          created_at=datetime(2026, 9, 20, 6, 25, 5), seq=1))
+            s.add(Message(id="r2", conversation_id="conv-rel", role="user", content="序号二",
+                          created_at=datetime(2026, 9, 20, 6, 25, 1), seq=2))
+            s.add(Message(id="old", conversation_id="conv-rel", role="user", content="无序号老行",
+                          created_at=datetime(2026, 9, 20, 6, 24, 0), seq=None))
+            await s.commit()
+
+        async with session_factory() as s:
+            conv = (await s.execute(
+                select(Conversation)
+                .options(selectinload(Conversation.messages))
+                .where(Conversation.id == "conv-rel")
+            )).scalar_one()
+            via_relationship = [m.content for m in conv.messages]
+
+            context = await ConversationManager().get_context_messages(s, "conv-rel")
+
+        assert via_relationship == ["无序号老行", "序号一", "序号二"]
+        assert [c["content"].split("]: ")[-1] for c in context] == via_relationship
+
 
 class TestConcurrentWrites:
     """并发落库（ADR-0009 的起因）：序号不并列，顺序不抖动。

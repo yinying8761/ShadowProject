@@ -157,11 +157,11 @@ class GroupChatSession:
                 await self._safe_send({"type": "done", "group": True})
 
     async def _on_turn_end(self) -> None:
-        """一个用户轮跑完：按轮发信号（审查 P3）。
+        """一个用户轮跑完：按轮发信号（**自 ticket #10 起只是信息性事件**）。
 
-        `pending` = 队列里还有插话、马上会开下一轮；前端据此决定"正在回应"
-        要不要收掉，而不是等整批跑完。批次结束仍由上面的 `done` 兜底 ——
-        事件形状见 CONTEXT.md §5.1。
+        `pending` = 队列里还有插话、马上会开下一轮；批次结束由 `done{group}` 兜底 ——
+        事件形状见 CONTEXT.md §5.1。前端**不**再据此收"正在输入"：逐成员的状态由
+        `group_thinking{thinking}` 自己负责（按轮收会提前收掉还在生成的成员）。
 
         `pending=False` 只是"此刻队列是空的"：本回调 await 期间用户仍可能插话，
         于是紧接着还会开一轮。前端不该把 false 当成"这一批彻底结束了"。

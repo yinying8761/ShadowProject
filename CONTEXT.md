@@ -3,7 +3,7 @@
 > Living, agent-facing context document. Read this before working on the code.
 > It is the canonical summary of the current architecture; specs and tickets live
 > in `docs/specs/` and `docs/Tickets/`. Non-trivial design decisions go to
-> `docs/adr/` (see `docs/agents/domain.md`; ADR-0001…0004 so far).
+> `docs/adr/` (see `docs/agents/domain.md`; ADR-0001…0009 so far).
 
 ## 1. What this is
 
@@ -87,7 +87,7 @@ docs/
   specs/                  # PRDs (mark `(done)` once tickets are written)
   Tickets/                # implementation tickets (see §6)
   agents/                 # issue-tracker.md, domain.md (this doc's consumers)
-  adr/                    # architecture decision records (0001–0004)
+  adr/                    # architecture decision records (0001–0009)
 ```
 
 ## 3. Backend: the runtime shape
@@ -229,8 +229,7 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
 (ticket #54: `activeGroup` session kind — ADR-0007), and the memory catch-up
 (ticket #55, below). Shape:
 
-- **Turn orchestration — the scheduler is concurrent (ticket #09 / ADR-0009); the
-  driver is still one batch at a time (ticket #10 pending).** `core/group_turn.py`
+- **Turn orchestration — concurrent (tickets #09/#10, ADR-0009).** `core/group_turn.py`
   is the **concurrent scheduler**, still pure logic (`speak` injected, no DB / network
   / clock): a user message starts **every** member thinking at once; each message that
   lands wakes every idle member that has not spent its cap — **except the speaker
@@ -493,6 +492,6 @@ or circuit-breaker failures).
 | 发言者 | Speaker | 消息的说话人（用户或某角色）。群聊消息必带；1:1 由会话角色派生 |
 | 链预算 | Chain budget | 每「用户轮」内角色消息**总量**上限（**M = 9**），到顶或无人再开口即静默 |
 | 思考轮 | Thinking round | 一个成员的一次生成（产出 0 或 1 条消息；`<silent>` 也算一轮）。每成员每用户轮上限 **K**：N≤4 → 3，N>4 → 2 |
-| 唤醒 | Wake | 新消息落库后，让「空闲且未用满 K」的成员开始一次新思考 |
+| 唤醒 | Wake | 新消息落库后，让「空闲且未用满 K」的**其他**成员开始一次新思考（说话者自己除外 —— 被自己的消息唤醒就是「继续说」换个名字）|
 | 时间戳对话记录 | Timestamped transcript | 喂 LLM 与历史记录共用的统一格式：`YYYY/M/D HH:MM [说话人]: 内容`（系统本地时区） |
 | 消息序号 | Message sequence | 会话内**单调递增**的整数（`Message.seq`）：`created_at` 只有秒级精度，并发写入同秒会并列 —— "谁先说的"由序号定，所有读路径按它排序（ADR-0009 / ticket #56）|
