@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Message, ApprovalRequest } from '../types';
+import { insertBySequence } from '../utils/messageOrder';
 
 export interface ToolActivity {
   id: string;
@@ -34,6 +35,8 @@ interface ChatState {
   isStreaming: boolean;
   streamingContent: string;
   streamingIsProactive: boolean;
+  /** 群聊里"正在思考"的成员（顺序 = 亮起的先后）。并发时会有好几个（ticket #11）。 */
+  groupThinking: string[];
   pendingApproval: ApprovalRequest | null;
   recentTools: ToolActivity[];
   memoryNotificationCount: number;
@@ -50,8 +53,13 @@ interface ChatState {
   wsSendJson: ((data: Record<string, unknown>) => boolean) | null;
 
   addMessage: (msg: Message) => void;
+  /** 群聊：按 `seq` 插到正确位置（并发下到达顺序 ≠ 发言顺序，ticket #11） */
+  addGroupMessage: (msg: Message) => void;
+  /** 群聊：某成员开始/结束思考 —— 每个成员一个独立的"正在输入" */
+  setGroupThinking: (characterId: string, thinking: boolean) => void;
+  clearGroupThinking: () => void;
   removeMessage: (msgId: string) => void;
-  replaceMessageId: (clientMessageId: string, serverId: string) => void;
+  replaceMessageId: (clientMessageId: string, serverId: string, seq?: number | null) => void;
   setMessages: (msgs: Message[]) => void;
   appendStreamingToken: (token: string, isProactive?: boolean) => void;
   finalizeStreamingMessage: (msgId: string, isProactive?: boolean) => void;
@@ -84,6 +92,7 @@ export const useChatStore = create<ChatState>((set) => ({
   isStreaming: false,
   streamingContent: '',
   streamingIsProactive: false,
+  groupThinking: [],
   pendingApproval: null,
   recentTools: [],
   memoryNotificationCount: 0,
@@ -100,23 +109,53 @@ export const useChatStore = create<ChatState>((set) => ({
   addMessage: (msg) =>
     set((state) => ({ messages: [...state.messages, msg] })),
 
+  // 群聊的一条消息：按序号插到正确位置，而不是追加。并发下几个成员同时生成，
+  // 到达顺序与发言顺序可能不一致（重连重播、历史加载交叉都会放大它）。
+  addGroupMessage: (msg) =>
+    set((state) => ({ messages: insertBySequence(state.messages, msg) })),
+
+  // 幂等：消息落库和 thinking:false 都会收掉指示器，先后到都不该出错。
+  setGroupThinking: (characterId, thinking) =>
+    set((state) => {
+      const known = state.groupThinking.includes(characterId);
+      if (thinking === known) return {};
+      return {
+        groupThinking: thinking
+          ? [...state.groupThinking, characterId]
+          : state.groupThinking.filter((id) => id !== characterId),
+      };
+    }),
+
+  clearGroupThinking: () =>
+    set((state) => (state.groupThinking.length === 0 ? {} : { groupThinking: [] })),
+
   removeMessage: (msgId) =>
     set((state) => ({
       messages: state.messages.filter((m) => m.id !== msgId),
     })),
 
-  // Swap a client-side temporary id for the server-persisted UUID in place,
-  // preserving message order (issue #10, tickets #12/#13). No-ops silently
-  // when there is no match (stale ack) or the server id already exists
-  // (ack replayed after the conversation was reloaded).
-  replaceMessageId: (clientMessageId, serverId) =>
+  // Swap a client-side temporary id for the server-persisted UUID in place
+  // (issue #10, tickets #12/#13). No-ops silently when there is no match
+  // (stale ack) or the server id already exists (ack replayed after the
+  // conversation was reloaded).
+  //
+  // `seq` comes from `message_ack` (ticket #10). Stamping it is not enough:
+  // the optimistic message was *appended*, and a reply that was persisted
+  // before it (an interjection racing an in-flight member) may already sit
+  // after it — so once the real sequence is known the message is re-placed by
+  // it (ticket #11: "渲染与追加一律以序号为准").
+  replaceMessageId: (clientMessageId, serverId, seq) =>
     set((state) => {
       if (state.messages.some((m) => m.id === serverId)) return {};
-      return {
-        messages: state.messages.map((m) =>
-          m.id === clientMessageId ? { ...m, id: serverId } : m
-        ),
+      const target = state.messages.find((m) => m.id === clientMessageId);
+      if (!target) return {};
+      const renamed: Message = {
+        ...target,
+        id: serverId,
+        seq: seq ?? target.seq ?? null,
       };
+      const rest = state.messages.filter((m) => m.id !== clientMessageId);
+      return { messages: insertBySequence(rest, renamed) };
     }),
 
   setMessages: (msgs) => set({ messages: msgs }),
@@ -154,6 +193,8 @@ export const useChatStore = create<ChatState>((set) => ({
       streamingContent: '',
       isStreaming: false,
       streamingIsProactive: false,
+      // 换会话（尤其离开群聊）时把"正在输入"一起收掉，否则会挂在新会话上
+      groupThinking: [],
       recentTools: [],
       // Retry progress and error bubbles are in-memory only: switching
       // conversations must not leak the previous turn's errors (issue #39).

@@ -27,7 +27,9 @@ export function useWebSocketBridge(conversationId: string | null) {
   const replaceMessageId = useChatStore((s) => s.replaceMessageId);
   const setStreaming = useChatStore((s) => s.setStreaming);
   const setPendingApproval = useChatStore((s) => s.setPendingApproval);
-  const addMessage = useChatStore((s) => s.addMessage);
+  const addGroupMessage = useChatStore((s) => s.addGroupMessage);
+  const setGroupThinking = useChatStore((s) => s.setGroupThinking);
+  const clearGroupThinking = useChatStore((s) => s.clearGroupThinking);
   const pushToolRunning = useChatStore((s) => s.pushToolRunning);
   const finishTool = useChatStore((s) => s.finishTool);
   const setWsBridge = useChatStore((s) => s.setWsBridge);
@@ -79,8 +81,12 @@ export function useWebSocketBridge(conversationId: string | null) {
             case 'done':
               clearRetryState();
               if (!data.message_id && data.group) {
-                // 群轮一批跑完：没有 message_id（每条 group_message 各自落库），
-                // 只把"正在回应"的状态收掉，否则输入框会一直卡在 disabled。
+                // 群轮一批跑完：没有 message_id（每条 group_message 各自落库）。
+                // 只收"正在回应"；**不**清各成员的"正在输入" —— 后端放开 `_turn_task`
+                // 是在发 done **之前**，所以下一批的 group_thinking{true} 可能抢在
+                // 这个 done 前面到达，按 done 清会把刚亮起的指示器误收掉
+                // （ticket #11：不提前收起）。各自的 thinking:false / group_message
+                // 负责收尾，异常路径由 error 与重连兜底。
                 setStreaming(false);
                 bumpConversationList();
                 break;
@@ -144,9 +150,10 @@ export function useWebSocketBridge(conversationId: string | null) {
               break;
             case 'group_message':
               // 群聊里某个角色的一条消息。群轮不流式（"跳过"绝不推送），
-              // 所以整条一起到：落进消息列表并标上说话人。
+              // 所以整条一起到：按 seq 插进消息列表并标上说话人（ticket #11：
+              // 并发下到达顺序不等于发言顺序，位置以序号为准）。
               if (data.message_id) {
-                addMessage({
+                addGroupMessage({
                   id: data.message_id,
                   // 落回这条 socket 自己的会话：用户中途切了对话，消息也不能串到别的列表里
                   conversationId: conversationId ?? '',
@@ -155,21 +162,32 @@ export function useWebSocketBridge(conversationId: string | null) {
                   createdAt: new Date().toISOString(),
                   speakerId: data.character_id ?? null,
                   speakerName: data.speaker ?? null,
+                  seq: data.seq ?? null,
                 });
+                // 这条一落库，该成员的"正在输入"就该收掉
+                // （group_thinking{thinking:false} 随后也会到，store 里是幂等的）
+                if (data.character_id) setGroupThinking(data.character_id, false);
                 bumpConversationList();
               }
               break;
+            case 'group_thinking':
+              // 每个成员各自亮起/收掉"正在输入"：并发时同时显示好几个（ticket #10/#11）
+              if (data.character_id) {
+                setGroupThinking(data.character_id, data.thinking !== false);
+              }
+              break;
             case 'turn_end':
-              // 群轮按轮给信号（审查 P3）：还有插话要跑就保持"正在回应"，
-              // 没有了就按轮收掉，别让指示器一直挂到整批跑完。
-              // 批次结束仍由上面的 group done 兜底（两者都会清，幂等）。
-              if (!data.pending) setStreaming(false);
+              // 自 ticket #10 起只是**信息性**事件（一个用户轮结束）。逐成员的
+              // "正在输入"由 group_thinking 负责，批次结束由 group done 兜底 ——
+              // 不能再按"一轮一收"来处理，否则插话刚排队就把指示器提前收掉。
               break;
             case 'message_ack':
               // Server persisted our user message — swap the temporary
-              // local-* id for the real UUID (ticket #12).
+              // local-* id for the real UUID (ticket #12), and take its
+              // sequence so the user's own message sits on the same
+              // ordering as the members' replies (ticket #10/#11).
               if (data.client_message_id && data.message_id) {
-                replaceMessageId(data.client_message_id, data.message_id);
+                replaceMessageId(data.client_message_id, data.message_id, data.seq);
               }
               break;
             case 'llm_retry':
@@ -187,6 +205,8 @@ export function useWebSocketBridge(conversationId: string | null) {
               console.error('Server error:', data.message);
               clearRetryState();
               setStreaming(false);
+              // 失败的一批不会再有 group_thinking{false}，别让"正在输入"挂住
+              clearGroupThinking();
 
               // The server no longer has this conversation and refuses to
               // persist against it. Recover by opening a fresh conversation;
@@ -219,6 +239,10 @@ export function useWebSocketBridge(conversationId: string | null) {
       socket.onclose = () => {
         setIsConnected(false);
         setConnected(false);
+        // 连接断了就不会再有 group_thinking{false}（后端把那一批取消了）：
+        // 不清的话群里的"正在输入"会一直挂着，直到下一批或换会话。
+        // 只清群聊这份状态（1:1 没有成员指示器，`isStreaming` 的既有行为不动）。
+        clearGroupThinking();
         if (!closingOnPurpose.current && reconnectCount.current < 5) {
           reconnectCount.current++;
           setTimeout(connect, 2000 * reconnectCount.current);
@@ -280,7 +304,9 @@ export function useWebSocketBridge(conversationId: string | null) {
     };
   }, [
     conversationId,
-    addMessage,
+    addGroupMessage,
+    setGroupThinking,
+    clearGroupThinking,
     appendStreamingToken,
     finalizeStreamingMessage,
     replaceMessageId,

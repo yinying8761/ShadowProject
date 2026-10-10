@@ -275,8 +275,7 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
   without a sequence (pre-migration leftovers, hand-built fixtures) counts as 0, so
   an all-legacy table still reads in `created_at` order — the change is a pure
   increment for 1:1.
-- **Pending:** the frontend still renders a single "thinking" state (ticket #11 wires
-  `group_thinking` into per-member indicators and orders arrivals by `seq`).
+- **Pending:** none — tickets #56 / #08 / #09 / #10 / #11 delivered ADR-0009.
 - Daily greeting + proactive are **disabled** for group conversations; group TTS
   is disabled behind a reserved switch.
 - Opening a group conversation schedules a background **extract → compact**
@@ -331,10 +330,20 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
   only the loader differs. Group messages carry `speaker_id`: the history path resolves
   names server-side, live `group_message` events are labelled client-side, and
   `MessageBubble` renders a per-speaker name + stable colour (`utils/speakerStyle.ts`).
-  Group turns are not token-streamed, so the group `done` event (no `message_id`)
-  is what clears the "thinking" state — and `turn_end{pending}` clears it per **user
-  turn** as soon as nothing is queued (review P3). TTS stays off in groups behind
-  `useTTS`'s reserved `GROUP_TTS_ENABLED` switch.
+  Group turns are not token-streamed, so **per-member "typing" comes from
+  `group_thinking`** (ticket #11): `chatStore.groupThinking` holds the members currently
+  thinking and `MessageList` renders one `GroupTypingIndicator` each, so several members
+  can be "typing" at once and each disappears on its own round end (a `<silent>` round
+  clears it too, via `thinking:false`, and a reply clears it as it appears).
+  `turn_end{pending}` is informational and drives no indicator; the group `done` event
+  deliberately does **not** clear them (the driver releases `_turn_task` before it sends
+  `done`, so the next batch's `thinking:true` can overtake it) — `error`, a socket close
+  and `clearMessages` are the fallbacks that do.
+  Live messages are inserted by `seq` (`utils/messageOrder.ts::insertBySequence`, checked
+  by `cd frontend && npm run check:message-order`), not appended — concurrent arrivals
+  and a replayed event land in the right place; the optimistic user message is appended
+  first and then re-placed once `message_ack` supplies its own `seq`.
+  TTS stays off in groups behind `useTTS`'s reserved `GROUP_TTS_ENABLED` switch.
 - **i18n** via `i18n/translations.ts` + `useTranslation` (zh default).
 
 ## 5. Protocols (the contracts you must not break)
@@ -417,7 +426,11 @@ or circuit-breaker failures).
   `monkeypatch` on `memory_service.search`. Test external behavior only, not
   implementation detail. See `backend/tests/test_tool_runtime.py`,
   `test_agent_tools.py`, `test_circuit_breaker.py`, `test_tool_retry.py` for
-  the canonical patterns.
+  the canonical patterns. **Concurrency** needs a *file* DB (`ws_env` / `file_client`)
+  — the in-memory engine uses StaticPool (one shared connection), so a "concurrent"
+  test there proves nothing. The frontend has no test infra (manual acceptance), except
+  one re-runnable check for the message-ordering rule:
+  `cd frontend && node scripts/check_message_order.mjs`.
 - **One transcript renderer**: `core/transcript.py` — the LLM context and the
   history view must render
   messages through the *same* timestamped-transcript formatter (§7 时间戳对话记录)

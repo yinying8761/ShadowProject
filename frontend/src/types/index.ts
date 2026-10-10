@@ -26,6 +26,9 @@ export interface Message {
   speakerId?: string | null;
   /** 群聊：说话人显示名（历史接口已按消息自己的 speaker_id 解析好） */
   speakerName?: string | null;
+  /** 会话内单调序号（ticket #56）：群聊并发下按它排序与插入，不靠到达顺序（ticket #11）。
+   *  乐观插入的用户消息要等 `message_ack` 才补上；1:1 不参与排序。 */
+  seq?: number | null;
 }
 
 export interface ApiMessage {
@@ -40,6 +43,8 @@ export interface ApiMessage {
   speaker?: string | null;
   /** 共享渲染器输出的 `时间 [说话人]: 内容` 行（tool 消息为 null） */
   transcript?: string | null;
+  /** 会话内单调序号（api/conversation.py）：前端据此排序与插入 */
+  seq?: number | null;
 }
 
 export interface ToolCall {
@@ -153,6 +158,7 @@ export interface WsBaseMessage {
     | 'daily_greeting_skip'
     | 'message_ack'
     | 'group_message'
+    | 'group_thinking'
     | 'turn_end';
   content?: string;
   message_id?: string;
@@ -169,14 +175,21 @@ export interface WsBaseMessage {
   client_message_id?: string;
   /** Machine-readable error kind, e.g. `conversation_not_found` (api/chat.py). */
   code?: string;
-  /** Group chat: which member said it (services/group_chat.py `group_message`). */
+  /** Group chat: which member said it — `group_message` / `group_thinking` (services/group_chat.py). */
   character_id?: string;
   /** Group chat: that member's display name, resolved server-side. */
   speaker?: string;
   /** Group chat: marks the turn-burst boundary (every group reply carries none). */
   group?: boolean;
+  /** Group chat `group_thinking`: this member started (`true`) / finished (`false`) a thinking
+   *  round. Several members can be thinking at once, each cleared independently (ticket #10/#11). */
+  thinking?: boolean;
+  /** 会话内单调序号（ticket #56）：`group_message` / `message_ack` 都带它，前端据此排序
+   *  与插入，而不是按到达顺序（ticket #11）。 */
+  seq?: number | null;
   /** Group chat `turn_end`: 队列里还有插话、马上会开下一轮（services/group_chat.py）。
-   *  `false` 只表示"此刻队列是空的"——回调期间用户仍可能插话，之后马上又来一轮。 */
+   *  `false` 只表示"此刻队列是空的"——回调期间用户仍可能插话，之后马上又来一轮。
+   *  自 ticket #10 起只是信息性事件：逐成员的"正在输入"看 `group_thinking`。 */
   pending?: boolean;
 }
 

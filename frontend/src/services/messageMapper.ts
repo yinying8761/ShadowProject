@@ -18,6 +18,8 @@ export function toStoreMessage(api: ApiMessage, conversationId: string): Message
     // 群聊的说话人：接口已按消息自己的 speaker_id 解析成名字（成员被移出群也还在）
     speakerId: api.speaker_id ?? null,
     speakerName: api.speaker ?? null,
+    // 会话内序号：群聊并发下前端据此插入/排序（ticket #11）
+    seq: api.seq ?? null,
   };
 }
 

@@ -251,6 +251,7 @@ const zh: TranslationDict = {
     '可以插话：本轮结束后接着回你',
   'Reconnecting — group replies need the connection':
     '正在重连：群聊的回复要走 WebSocket',
+  'Typing…': '正在输入…',
 };
 
 const en: TranslationDict = {};
