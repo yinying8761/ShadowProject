@@ -39,7 +39,12 @@ def _default_timeout_sec(tool_name: str) -> float:
     if tool_name in _NETWORK_TOOLS or tool_name.startswith("mcp__"):
         return 30.0
     if tool_name in _SCREEN_TOOLS:
-        return 15.0
+        # see_screen is a network call now (MCP vision, with its own retry
+        # chain inside the vision server). The sandbox must NOT be the first
+        # deadline: cancelling the MCP call_tool mid-flight corrupts the SDK
+        # session (ADR-0010). screen_tools.VISION_TIMEOUT_SEC (25s) is the
+        # deadline that actually fires, and it abandons rather than cancels.
+        return 40.0
     return 10.0
 
 

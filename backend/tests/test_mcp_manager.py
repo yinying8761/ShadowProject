@@ -5,7 +5,9 @@ result formatting, and graceful degradation.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.tool_registry import ToolRegistry
+from services import mcp_manager as mcp_manager_module
 from services.mcp_manager import (
     McpManager,
     mcp_tool_name,
@@ -491,6 +494,160 @@ class TestMcpCircuitBreakerIntegration:
         result = await rt.dispatch("mcp__srv__boom", {})
         assert session.call_tool.await_count == calls_before
         assert "Circuit breaker open" in json.loads(result)["error"]
+
+
+# ── Failure isolation — one dead server must not kill the others ────────────
+
+
+def _hang_forever_session() -> AsyncMock:
+    """A session whose handshake never returns (process started, never answers)."""
+    session = _make_mock_session([{"name": "never"}])
+
+    async def _never(*args, **kwargs):
+        await asyncio.sleep(3600)
+
+    session.initialize = _never
+    return session
+
+
+_MINIMAL_MCP_SERVER = '''
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("itest")
+
+
+@mcp.tool()
+def ping() -> str:
+    """Ping."""
+    return "pong"
+
+
+mcp.run()
+'''
+
+
+class TestFailureIsolation:
+    """Regression for the 2026-10-19 MCP outage.
+
+    A server that crashed on import left the caller's anyio state dirty, so
+    every *later* connect in the same task failed too — one broken server took
+    the whole MCP feature down (the app logged ``0 connected, 2 failed``).
+    Each server now owns its own task, and the connect timeout is an anyio
+    scope inside it, so nothing is cancelled from the outside.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hung_server_times_out_without_harming_its_sibling(
+        self, registry: ToolRegistry, manager: McpManager, monkeypatch
+    ):
+        monkeypatch.setattr(mcp_manager_module, "CONNECT_TIMEOUT_SEC", 0.05)
+        good = _make_mock_session([{"name": "ok"}])
+
+        async def fake_connect(cfg):
+            if cfg["name"] == "hung":
+                return MagicMock(), MagicMock(), _hang_forever_session()
+            return MagicMock(), MagicMock(), good
+
+        with patch.object(manager, "_connect_stdio", fake_connect):
+            result = await manager.connect_all(
+                _write_temp_config({
+                    "servers": [
+                        {"name": "hung", "transport": "stdio", "command": "echo"},
+                        {"name": "good", "transport": "stdio", "command": "echo"},
+                    ],
+                })
+            )
+
+        assert result == {"connected": 1, "failed": 1, "tools": 1}
+        assert manager.connected_servers == ["good"]
+
+        names = {d["name"] for d in registry.get_tool_definitions()}
+        assert "mcp__good__ok" in names
+        assert "mcp__hung__never" not in names  # a timed-out server registers nothing
+
+        await manager.disconnect_all()
+
+    @pytest.mark.asyncio
+    async def test_connect_after_a_timeout_still_works(
+        self, registry: ToolRegistry, manager: McpManager, monkeypatch
+    ):
+        """The connect *after* a failure must not inherit the failure."""
+        monkeypatch.setattr(mcp_manager_module, "CONNECT_TIMEOUT_SEC", 0.05)
+
+        async def hung_connect(cfg):
+            return MagicMock(), MagicMock(), _hang_forever_session()
+
+        with patch.object(manager, "_connect_stdio", hung_connect):
+            first = await manager.connect_all(
+                _write_temp_config({
+                    "servers": [{"name": "hung", "transport": "stdio", "command": "echo"}]
+                })
+            )
+        assert first == {"connected": 0, "failed": 1, "tools": 0}
+
+        good = _make_mock_session([{"name": "ok"}])
+
+        async def good_connect(cfg):
+            return MagicMock(), MagicMock(), good
+
+        with patch.object(manager, "_connect_stdio", good_connect):
+            second = await manager.connect_all(
+                _write_temp_config({
+                    "servers": [{"name": "good", "transport": "stdio", "command": "echo"}]
+                })
+            )
+        assert second == {"connected": 1, "failed": 0, "tools": 1}
+        assert "mcp__good__ok" in {d["name"] for d in registry.get_tool_definitions()}
+
+        await manager.disconnect_all()
+
+
+class TestRealServerIsolation:
+    """The same isolation, with real subprocesses.
+
+    The fakes above cannot see the anyio cancel-scope corruption that actually
+    caused the outage (there is no task group in a fake), so this one spawns a
+    real server next to a real crashing one.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dead_process_does_not_kill_a_real_server(
+        self, registry: ToolRegistry, manager: McpManager, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(mcp_manager_module, "CONNECT_TIMEOUT_SEC", 3.0)
+        server_py = tmp_path / "minimal_server.py"
+        server_py.write_text(_MINIMAL_MCP_SERVER, encoding="utf-8")
+
+        result = await manager.connect_all(
+            _write_temp_config({
+                "servers": [
+                    {
+                        # Starts and exits immediately — the shape that used to
+                        # poison every server after it.
+                        "name": "dead",
+                        "transport": "stdio",
+                        "command": sys.executable,
+                        "args": ["-c", "import sys; sys.exit(1)"],
+                    },
+                    {
+                        "name": "real",
+                        "transport": "stdio",
+                        "command": sys.executable,
+                        "args": [str(server_py)],
+                    },
+                ]
+            })
+        )
+
+        assert result == {"connected": 1, "failed": 1, "tools": 1}
+        assert manager.connected_servers == ["real"]
+        assert "mcp__real__ping" in {d["name"] for d in registry.get_tool_definitions()}
+
+        # End-to-end over stdio: the surviving server is actually callable.
+        assert await registry.dispatch("mcp__real__ping", {}) == "pong"
+
+        await manager.disconnect_all()
+        assert manager.connected_servers == []
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

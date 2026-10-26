@@ -1,3 +1,30 @@
 {
-  "_note": "This is a quick-reference. The actual config template lives at data/mcp_servers.example.json — copy it to data/mcp_servers.json and fill in your keys."
+  "_note": "MCP server template. Copy to data/mcp_servers.json (the app reads that path on startup); data/ is gitignored, so your keys stay local. Each entry is its own subprocess, and `command` is resolved against the app's PATH — a bare \"python\" means THE APP'S interpreter.",
+  "_note_venv": "A server that needs a different mcp SDK version runs in its own venv and points `command` at that venv's python.exe by absolute path (see vision). Do not upgrade the app's mcp instead: amap-mcp-server pins mcp==1.8.1, and mcp>=1.30 on Python 3.14 needs starlette>=0.48 while fastapi needs <0.47 — the conflict is structural (ADR-0010).",
+  "_note_vision": "The vision server must be named `vision` unless you set VISION_MCP_TOOL in .env to its actual tool name (e.g. mcp__my-server__analyze_image); otherwise see_screen silently falls back to the legacy vision model.",
+  "_note_vision_env": "deepseek_vision_mcp reads VISION_* (not ZHIPU_API_KEY) and also loads a .env of its own, so pin base_url/model here: the app's .env holds the legacy qwen vision settings and would otherwise win. glm-4.6v-flash is the free Zhipu vision model — it can answer 429/1305 (free-tier congestion) transiently, which is a provider condition, not a wiring problem. PYTHONIOENCODING keeps its Chinese log lines readable on Windows.",
+
+  "servers": [
+    {
+      "name": "amap",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "amap_mcp_server"],
+      "env": {
+        "AMAP_MAPS_API_KEY": "<your-amap-key>"
+      }
+    },
+    {
+      "name": "vision",
+      "transport": "stdio",
+      "command": "F:\\ShadowProject\\.venv-vision\\Scripts\\python.exe",
+      "args": ["-m", "deepseek_vision_mcp"],
+      "env": {
+        "VISION_API_KEY": "<your-zhipu-key>",
+        "VISION_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
+        "VISION_MODEL": "glm-4.6v-flash",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  ]
 }

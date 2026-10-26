@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     vision_model: str = ""
     vision_base_url: str = ""
     vision_api_key: str = ""
+    # Tool name of the MCP vision server (e.g. mcp__vision__analyze_image).
+    # Leave empty for the default; set it when the server is named differently
+    # in data/mcp_servers.json — a mismatch only makes see_screen fall back to
+    # the legacy vision model, so it fails silently (ADR-0010).
+    vision_mcp_tool: str = ""
 
     # ---- Server ----
     host: str = "127.0.0.1"

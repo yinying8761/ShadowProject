@@ -3,7 +3,7 @@
 > Living, agent-facing context document. Read this before working on the code.
 > It is the canonical summary of the current architecture; specs and tickets live
 > in `docs/specs/` and `docs/Tickets/`. Non-trivial design decisions go to
-> `docs/adr/` (see `docs/agents/domain.md`; ADR-0001…0009 so far).
+> `docs/adr/` (see `docs/agents/domain.md`; ADR-0001…0011 so far).
 
 ## 1. What this is
 
@@ -87,7 +87,7 @@ docs/
   specs/                  # PRDs (mark `(done)` once tickets are written)
   Tickets/                # implementation tickets (see §6)
   agents/                 # issue-tracker.md, domain.md (this doc's consumers)
-  adr/                    # architecture decision records (0001–0009)
+  adr/                    # architecture decision records (0001–0011)
 ```
 
 ## 3. Backend: the runtime shape
@@ -180,8 +180,19 @@ pops it and emits `memory_updated`.
   breaks are NOT retried (partial text preserved via `partial_error`).
 - `core/circuit_breaker.py` — pure `CircuitBreaker` (CLOSED→OPEN→HALF_OPEN),
   injectable `clock`, per-tool instance in `ToolRuntime`.
-- `McpManager` — per-server isolation, periodic health check + auto-reconnect +
-  circuit-breaker reset.
+- `McpManager` — **one actor task per server** (`_serve`): that task enters and
+  exits the transport/session context managers, and the connect timeout is an
+  `anyio` scope inside it, so one dead or hung server can never break the others
+  (ADR-0010). The manager never cancels an actor — on timeout it sets a stop
+  event and moves on; servers connect concurrently. Plus periodic health check +
+  auto-reconnect + circuit-breaker reset.
+  **Version isolation is per server, via its own venv**: an entry's `command` may
+  point at a different interpreter by absolute path, so a server that needs a
+  newer `mcp` SDK does not force one on the app (which is pinned to
+  `mcp 1.8.1` by `amap-mcp-server`, and cannot move anyway because
+  `mcp>=1.30` on py3.14 needs `starlette>=0.48` while `fastapi` needs `<0.47`).
+  `data/mcp_servers.json` is local (gitignored); `.venv-vision/` is the vision
+  server's interpreter.
 
 ### 3.6 Persistence
 
@@ -220,7 +231,7 @@ pops it and emits `memory_updated`.
 
 ### 3.7 Group chat (spec shipped: Phase 1 + entities + turns + UI + memory catch-up)
 
-`docs/specs/group-chat.md` defines a **群** (fixed character set + shared
+`docs/specs/group-chat(done).md` defines a **群** (fixed character set + shared
 transcript) whose conversations hold multiple speakers. Delivered so far: the
 shared timestamped-transcript renderer (Phase 1 — `core/transcript.py`, feeding
 both LLM context and the history API), the group data model + rebuild migration

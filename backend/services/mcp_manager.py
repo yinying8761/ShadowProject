@@ -8,6 +8,23 @@ Agent can use them transparently — no code changes needed per tool.
 Supports two transports:
 - stdio: launches a local subprocess (e.g. npx, python)
 - sse: connects to a remote HTTP/SSE endpoint
+
+**One actor task per server** (`_serve`). The transport and session context
+managers are entered *and* exited by that task, and the connect timeout is an
+``anyio`` cancel scope *inside* it. Both rules exist for the same reason: an
+MCP server must be unable to take its neighbours down.
+
+- anyio refuses to exit a cancel scope from a task other than the one that
+  entered it ("Attempted to exit a cancel scope that isn't the current tasks's
+  current cancel scope"). Exiting from the caller used to leave the stdio
+  subprocess and its scope behind; the leaked scope then made *every* later
+  connect in that task fail — one broken server killed the rest (#observed
+  2026-10-19 with a vision server that crashed on import).
+- ``asyncio.wait_for`` cancels the awaited coroutine on timeout. Cancelling
+  inside the SDK's task group leaves it half-torn-down, with the same
+  neighbour-killing effect. So the manager waits on a *result future* instead
+  and, on timeout, asks the actor to unwind via a stop event — it never
+  cancels it.
 """
 
 from __future__ import annotations
@@ -18,6 +35,7 @@ import os as _os
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
@@ -28,6 +46,12 @@ from mcp.types import CallToolResult
 # a stdio server that starts but never answers `initialize` would otherwise
 # freeze the FastAPI lifespan forever (uvicorn never binds the port).
 CONNECT_TIMEOUT_SEC = 20.0
+
+#: How long to wait for a server that is still winding down, and the slack the
+#: manager adds on top of the actor's own timeout before it gives up on a
+#: connect result (the actor's timeout is the one that normally fires).
+CLOSE_TIMEOUT_SEC = 5.0
+READY_SLACK_SEC = 5.0
 
 
 def mcp_tool_name(server_name: str, tool_name: str) -> str:
@@ -68,9 +92,10 @@ def _format_mcp_result(result: CallToolResult) -> str:
 class McpManager:
     """Discover, connect, and manage MCP tool servers.
 
-    Each server gets a persistent ``ClientSession``.  Its tools are
-    registered into *registry* with an ``mcp__<server>__`` prefix so
-    they are easy to spot in logs, approval dialogs, and tool definitions.
+    Each server gets a persistent ``ClientSession`` owned by its own actor
+    task.  Its tools are registered into *registry* with an ``mcp__<server>__``
+    prefix so they are easy to spot in logs, approval dialogs, and tool
+    definitions.
 
     Usage in FastAPI lifespan::
 
@@ -84,6 +109,10 @@ class McpManager:
         # Any → ToolRegistry, but we avoid a circular import by duck-typing.
         self._registry = registry
         self._connections: dict[str, dict[str, Any]] = {}
+        #: server name → the actor task holding its transport + session
+        self._tasks: dict[str, asyncio.Task] = {}
+        #: server name → the event that asks its actor task to wind down
+        self._stops: dict[str, asyncio.Event] = {}
         self._health_task: asyncio.Task | None = None
 
     # ── Public API ──────────────────────────────────────────────────
@@ -116,6 +145,7 @@ class McpManager:
             print("[McpManager] no servers configured")
             return result
 
+        targets: list[dict] = []
         for server_cfg in servers:
             name: str = server_cfg.get("name", "")
             if not name:
@@ -125,25 +155,31 @@ class McpManager:
             if name in self._connections:
                 print(f"[McpManager] server '{name}' already connected")
                 continue
+            targets.append(server_cfg)
 
-            try:
-                count = await asyncio.wait_for(
-                    self._connect_one(server_cfg), timeout=CONNECT_TIMEOUT_SEC
-                )
+        # Connect concurrently: every server is isolated in its own actor task,
+        # so one that hangs until its timeout delays only itself. Connecting
+        # them one by one would cost N x 20s of startup for N dead servers.
+        counts = await asyncio.gather(
+            *(self._connect_server(cfg) for cfg in targets),
+            return_exceptions=True,
+        )
+
+        for server_cfg, count in zip(targets, counts):
+            name = server_cfg["name"]
+            if isinstance(count, BaseException):
+                # Per-server isolation: one dead MCP server must never kill
+                # app startup.
+                if isinstance(count, (KeyboardInterrupt, SystemExit)):
+                    raise count
+                print(f"[McpManager] '{name}' failed: {count!r}", flush=True)
+                count = None
+            if count is None:
+                result["failed"] += 1
+            else:
                 result["connected"] += 1
                 result["tools"] += count
                 print(f"[McpManager] '{name}': {count} tool(s) registered", flush=True)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except BaseException as exc:
-                # Per-server isolation: one dead MCP server must never kill
-                # app startup. The mcp SDK's stdio client can raise
-                # BaseExceptionGroup / CancelledError out of its internal
-                # anyio task group on Windows (a server that exits instantly
-                # poisons the NEXT connect attempt) — plain `except Exception`
-                # lets those escape and crash the FastAPI lifespan.
-                result["failed"] += 1
-                print(f"[McpManager] '{name}' failed: {exc!r}", flush=True)
 
         return result
 
@@ -158,13 +194,11 @@ class McpManager:
         await self.health_check()
         return await self.connect_all(config_path)
 
-
     async def disconnect_all(self) -> None:
         """Disconnect every server and unregister its tools."""
         for name, conn in list(self._connections.items()):
             await self._close_connection(name, conn)
             print(f"[McpManager] '{name}' disconnected")
-
         self._connections.clear()
 
     @property
@@ -210,95 +244,95 @@ class McpManager:
             except Exception as exc:
                 print(f"[McpManager] health check failed: {exc}", flush=True)
 
-    # ── Internals ───────────────────────────────────────────────────
+    # ── Connection lifecycle ────────────────────────────────────────
 
-    async def _close_connection(self, name: str, conn: dict) -> None:
-        """Unregister a server's tools and close its session/transport."""
-        for tool_name in conn["tool_names"]:
-            self._registry.unregister(tool_name)
+    async def _connect_server(self, cfg: dict) -> int | None:
+        """Start one server's actor task and wait for its connect result.
 
-        for mgr_key in ("session_cm", "transport_cm"):
-            try:
-                cm = conn[mgr_key]
-                await cm.__aexit__(None, None, None)
-            except Exception as exc:
-                print(f"[McpManager] error closing {mgr_key} for '{name}': {exc}", flush=True)
-
-    async def _ping(self, conn: dict) -> bool:
-        """Return True when the server's session answers ``list_tools``."""
-        try:
-            await conn["session"].list_tools()
-            return True
-        except Exception:
-            return False
-
-    async def _reconnect(self, name: str, conn: dict) -> bool:
-        """Tear down and re-establish *name*; True on success.
-
-        On failure the closed connection stays tracked (its tools are
-        already unregistered) so the next health check retries it.
+        Returns the tool count, or ``None`` when the server failed (the reason
+        is logged). The actor task is never cancelled from here: on timeout we
+        only ask it to wind down and move on, so the next server is unaffected.
         """
-        cfg = conn.get("cfg")
-        await self._close_connection(name, conn)
+        name: str = cfg.get("name", "")
+        ready: asyncio.Future = asyncio.get_running_loop().create_future()
+        stop = asyncio.Event()
 
-        if cfg is None:
-            return False
-        try:
-            count = await asyncio.wait_for(
-                self._connect_one(cfg), timeout=CONNECT_TIMEOUT_SEC
-            )
-            self._reset_breakers(self._connections[name]["tool_names"])
-            print(f"[McpManager] '{name}' reconnected: {count} tool(s)", flush=True)
-            return True
-        except Exception as exc:
-            print(f"[McpManager] '{name}' reconnect failed: {exc}", flush=True)
-            return False
+        task = asyncio.create_task(self._serve(cfg, ready, stop), name=f"mcp-{name}")
+        self._tasks[name] = task
+        self._stops[name] = stop
+        task.add_done_callback(lambda t, n=name: self._reap(n, t))
 
-    def _reset_breakers(self, tool_names: list[str]) -> None:
-        """Reset the circuit breaker for each *tool_name* (duck-typed registry)."""
-        reset_breaker = getattr(self._registry, "reset_breaker", None)
-        if reset_breaker is None:
-            return
-        for tool_name in tool_names:
-            reset_breaker(tool_name)
+        done, _pending = await asyncio.wait(
+            {ready}, timeout=CONNECT_TIMEOUT_SEC + READY_SLACK_SEC
+        )
+        if ready not in done:
+            # The actor's own timeout is shorter, so this is a safety net:
+            # ask it to unwind (never cancel it) and report the failure.
+            stop.set()
+            print(f"[McpManager] '{name}' failed: connect timed out", flush=True)
+            return None
 
-    async def _connect_one(self, cfg: dict) -> int:
-        """Connect a single server and register its tools.  Returns tool count."""
-        name: str = cfg["name"]
-        transport: str = cfg.get("transport", "stdio")
+        kind, payload = ready.result()
+        if kind != "ok":
+            print(f"[McpManager] '{name}' failed: {payload}", flush=True)
+            return None
+        return payload
 
-        if transport == "stdio":
-            transport_cm, session_cm, session = await self._connect_stdio(cfg)
-        elif transport == "sse":
-            transport_cm, session_cm, session = await self._connect_sse(cfg)
-        else:
-            raise ValueError(f"unknown transport '{transport}'")
-
-        # ── Discover tools ──────────────────────────────────────
-        list_result = await session.list_tools()
+    async def _serve(
+        self, cfg: dict, ready: asyncio.Future, stop: asyncio.Event
+    ) -> None:
+        """Own one server's connection for its whole lifetime (actor task)."""
+        name: str = cfg.get("name", "")
+        transport_cm = session_cm = None
         tool_names: list[str] = []
 
-        for tool in list_result.tools:
-            full_name = mcp_tool_name(name, tool.name)
+        try:
+            transport_cm, session_cm, session = await self._connect_transport(cfg)
+            try:
+                # The handshake is the only part that can hang on a server that
+                # started but never answers, so it is the only part under the
+                # timeout — an anyio scope, which keeps the cancellation here.
+                with anyio.move_on_after(CONNECT_TIMEOUT_SEC) as scope:
+                    await session.initialize()
+                    list_result = await session.list_tools()
 
-            self._registry.register(
-                name=full_name,
-                description=f"[MCP:{name}] {tool.description or ''}",
-                parameters=tool.inputSchema,
-                handler=_make_mcp_handler(session, tool.name),
-                require_approval=True,  # external tools default to approval
-            )
-            tool_names.append(full_name)
+                if scope.cancelled_caught:
+                    self._resolve(
+                        ready,
+                        ("failed", f"no answer within {CONNECT_TIMEOUT_SEC:.0f}s"),
+                    )
+                    return
 
-        self._connections[name] = {
-            "cfg": cfg,
-            "session": session,
-            "transport_cm": transport_cm,
-            "session_cm": session_cm,
-            "tool_names": tool_names,
-        }
+                tool_names = self._register_tools(name, session, list_result.tools)
+                self._connections[name] = {
+                    "cfg": cfg,
+                    "session": session,
+                    "tool_names": tool_names,
+                }
+                self._resolve(ready, ("ok", len(tool_names)))
 
-        return len(tool_names)
+                # Hold the connection open here: entering and exiting the
+                # context managers must both happen in this task.
+                await stop.wait()
+            finally:
+                self._connections.pop(name, None)
+                self._unregister_tools(tool_names)
+                await self._close_transport(name, session_cm, transport_cm)
+        except asyncio.CancelledError:
+            self._resolve(ready, ("failed", "connection cancelled"))
+            raise
+        except BaseException as exc:
+            self._resolve(ready, ("failed", repr(exc)))
+            print(f"[McpManager] '{name}' connection ended: {exc!r}", flush=True)
+
+    async def _connect_transport(self, cfg: dict) -> tuple[Any, Any, ClientSession]:
+        """Open the transport + session for *cfg* (no handshake yet)."""
+        transport: str = cfg.get("transport", "stdio")
+        if transport == "stdio":
+            return await self._connect_stdio(cfg)
+        if transport == "sse":
+            return await self._connect_sse(cfg)
+        raise ValueError(f"unknown transport '{transport}'")
 
     async def _connect_stdio(
         self, cfg: dict
@@ -325,12 +359,8 @@ class McpManager:
         session_cm = ClientSession(read, write)
         try:
             session: ClientSession = await session_cm.__aenter__()
-            await session.initialize()
         except BaseException:
-            try:
-                await transport_cm.__aexit__(None, None, None)
-            except Exception:
-                pass  # teardown errors during cleanup must not mask the cause
+            await self._close_cm("transport", cfg.get("name", ""), transport_cm)
             raise
 
         return transport_cm, session_cm, session
@@ -346,10 +376,132 @@ class McpManager:
         read, write = await transport_cm.__aenter__()
 
         session_cm = ClientSession(read, write)
-        session: ClientSession = await session_cm.__aenter__()
-        await session.initialize()
+        try:
+            session: ClientSession = await session_cm.__aenter__()
+        except BaseException:
+            await self._close_cm("transport", cfg.get("name", ""), transport_cm)
+            raise
 
         return transport_cm, session_cm, session
+
+    def _register_tools(self, name: str, session: ClientSession, tools) -> list[str]:
+        """Register *tools* under ``mcp__<name>__`` and return their names."""
+        tool_names: list[str] = []
+        for tool in tools:
+            full_name = mcp_tool_name(name, tool.name)
+
+            self._registry.register(
+                name=full_name,
+                description=f"[MCP:{name}] {tool.description or ''}",
+                parameters=tool.inputSchema,
+                handler=_make_mcp_handler(session, tool.name),
+                require_approval=True,  # external tools default to approval
+            )
+            tool_names.append(full_name)
+        return tool_names
+
+    def _unregister_tools(self, tool_names: list[str]) -> None:
+        for tool_name in tool_names:
+            self._registry.unregister(tool_name)
+
+    async def _close_transport(
+        self, name: str, session_cm: Any, transport_cm: Any
+    ) -> None:
+        """Exit the session/transport context managers in the actor's task."""
+        await self._close_cm("session", name, session_cm)
+        await self._close_cm("transport", name, transport_cm)
+
+    async def _close_cm(self, label: str, name: str, cm: Any) -> None:
+        """Exit one context manager, in the actor's own task.
+
+        No extra ``CancelScope`` here: anyio requires scopes to be exited in
+        reverse order of entry, so wrapping this in a (shield) scope of our own
+        makes the SDK's own task group *not* the current scope and the exit
+        fails with "Attempted to exit a cancel scope that isn't the current
+        tasks's current cancel scope".
+        """
+        if cm is None:
+            return
+        try:
+            await cm.__aexit__(None, None, None)
+        except Exception as exc:
+            print(f"[McpManager] error closing {label}_cm for '{name}': {exc}", flush=True)
+
+    async def _close_connection(self, name: str, conn: dict) -> None:
+        """Ask *name*'s actor task to unwind and wait for it.
+
+        The actor unregisters its tools and closes its transport in its own
+        task, which is the only place anyio allows it.
+        """
+        stop = self._stops.pop(name, None)
+        if stop is not None:
+            stop.set()
+        task = self._tasks.get(name)
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=CLOSE_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            print(
+                f"[McpManager] '{name}' did not close within {CLOSE_TIMEOUT_SEC:.0f}s",
+                flush=True,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:
+            print(f"[McpManager] '{name}' close error: {exc!r}", flush=True)
+
+    def _reap(self, name: str, task: asyncio.Task) -> None:
+        """Done-callback: drop the actor and consume its exception, if any."""
+        self._tasks.pop(name, None)
+        self._stops.pop(name, None)
+        self._connections.pop(name, None)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            print(f"[McpManager] '{name}' task ended: {exc!r}", flush=True)
+
+    @staticmethod
+    def _resolve(ready: asyncio.Future, outcome: tuple[str, Any]) -> None:
+        """Resolve *ready* once, with a value (never an exception)."""
+        if not ready.done():
+            ready.set_result(outcome)
+
+    async def _ping(self, conn: dict) -> bool:
+        """Return True when the server's session answers ``list_tools``."""
+        try:
+            await conn["session"].list_tools()
+            return True
+        except Exception:
+            return False
+
+    async def _reconnect(self, name: str, conn: dict) -> bool:
+        """Tear down and re-establish *name*; True on success.
+
+        On failure the connection is gone (its tools are already
+        unregistered) so the next health check retries it.
+        """
+        cfg = conn.get("cfg")
+        await self._close_connection(name, conn)
+
+        if cfg is None:
+            return False
+        count = await self._connect_server(cfg)
+        if count is None:
+            print(f"[McpManager] '{name}' reconnect failed", flush=True)
+            return False
+        self._reset_breakers(self._connections[name]["tool_names"])
+        print(f"[McpManager] '{name}' reconnected: {count} tool(s)", flush=True)
+        return True
+
+    def _reset_breakers(self, tool_names: list[str]) -> None:
+        """Reset the circuit breaker for each *tool_name* (duck-typed registry)."""
+        reset_breaker = getattr(self._registry, "reset_breaker", None)
+        if reset_breaker is None:
+            return
+        for tool_name in tool_names:
+            reset_breaker(tool_name)
 
 
 def _make_mcp_handler(session: ClientSession, tool_name: str):

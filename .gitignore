@@ -39,6 +39,8 @@ tools/GPT-SoVITS/
 
 # VENV
 .venv
+# Per-MCP-server venv (the vision MCP server needs mcp>=1.30, the app does not)
+.venv-vision/
 
 # OS
 Thumbs.db
