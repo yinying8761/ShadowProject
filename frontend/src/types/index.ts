@@ -113,7 +113,32 @@ export interface AppConfig {
   language: string;
   ttsEnabled: boolean;
   lastCharacterId: string;
+  /** 当前模型的能力生效值 + 来源（ADR-0011 / ticket 01）。 */
+  capabilities: ModelCapabilities;
+  /** 能力词表（顺序 / 类型 / 可选值），后端下发 —— 前端不再自己抄一份。 */
+  capabilityTable: CapabilityRow[];
 }
+
+/** 能力词表的一行：`kind` 决定控件（三态开关 vs 形状下拉）。 */
+export interface CapabilityRow {
+  name: string;
+  kind: 'boolean' | 'shape';
+  options: string[];
+}
+
+/** 一项能力的来源：用户覆盖 / 预设默认 / 未知（ADR-0011）。 */
+export type CapabilitySource = 'user' | 'preset' | 'unknown';
+
+export interface CapabilityValue {
+  /** 布尔能力是 true/false；形状能力是 api 名（openai/anthropic/…）；null = 未知 */
+  value: boolean | string | null;
+  source: CapabilitySource;
+}
+
+export type ModelCapabilities = Record<string, CapabilityValue>;
+
+/** 能力覆盖写入口：只要用户显式改过的项（缺项 = 跟随预设）。 */
+export type CapabilityOverrides = Record<string, boolean | string | null>;
 
 export interface ApprovalRequest {
   requestId: string;
@@ -285,4 +310,6 @@ export interface LlmConfigUpdate {
   base_url?: string;
   api_key?: string | null;
   custom_providers?: CustomProvider[];
+  /** null = 保持；{} = 清空回到预设；否则整批替换（ADR-0011 / ticket 01）。 */
+  capability_overrides?: CapabilityOverrides | null;
 }

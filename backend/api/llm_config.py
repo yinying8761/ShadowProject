@@ -14,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.capabilities import normalize_overrides
 from services.llm_config import LLMRuntimeConfig, config_store, runtime_config
 from services.llm_service import invalidate_llm_clients
 
@@ -37,6 +38,9 @@ class LlmConfigUpdate(BaseModel):
     base_url: str | None = None
     api_key: str | None = None          # null=keep, ""=clear, else set
     custom_providers: list[dict] | None = None
+    # 当前模型的能力覆盖（ADR-0011 / ticket 01）：**补丁语义** —— 缺项=保持不变，
+    # `{"supports_vision": null}` = 清掉这一项。未知能力名 / 类型不对 / 未知形状 → 400。
+    capability_overrides: dict | None = None
 
 
 class ModelsRequest(BaseModel):
@@ -120,6 +124,15 @@ def _describe_error(exc: Exception) -> str:
 @router.put("/llm-config")
 async def update_llm_config(data: LlmConfigUpdate):
     """Persist the LLM effective config and hot-reload the runtime singleton."""
+    # 能力覆盖**先校验再写**：不合法就整批拒绝，绝不能把 provider/model/key 改了
+    # 却因为一个坏能力项而没落盘（内存与 config.yaml 分叉，重启就"回退"）。
+    capability_patch: dict | None = None
+    if data.capability_overrides is not None:
+        try:
+            capability_patch = normalize_overrides(data.capability_overrides)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     if data.llm_provider is not None:
         runtime_config.provider = data.llm_provider
     if data.llm_model is not None:
@@ -135,6 +148,10 @@ async def update_llm_config(data: LlmConfigUpdate):
         runtime_config.api_key = config_store.get_provider_key(runtime_config.provider)
     if data.custom_providers is not None:
         runtime_config.custom_providers = data.custom_providers
+
+    # 补丁落在**当前模型**上（provider/model 已经就位，所以换模型时是新模型自己的那份）
+    if capability_patch is not None:
+        runtime_config.patch_capabilities(capability_patch)
 
     config_store.save(runtime_config)
     invalidate_llm_clients()

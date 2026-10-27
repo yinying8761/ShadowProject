@@ -2,12 +2,32 @@ import { useEffect, useState } from 'react';
 import { useAppStore } from '../../stores/appStore';
 import { useTranslation } from '../../i18n/useTranslation';
 import { api } from '../../services/api';
-import type { CustomProvider, ProviderPreset } from '../../types';
+import type { CapabilityValue, CustomProvider, ProviderPreset } from '../../types';
+
+/** 能力**标签**（纯展示 / 翻译）。顺序、类型、可选值都以后端下发的词表为准。 */
+const CAPABILITY_LABEL: Record<string, string> = {
+  supports_vision: 'Vision',
+  image_api: 'Image format',
+  native_search: 'Native search',
+  native_fetch: 'Native fetch',
+  search_api: 'Search format',
+};
+
+/** 本地覆盖草稿：'' = 自动（跟随预设），'true'/'false' = 布尔，其余 = 形状。 */
+type OverrideDraft = Record<string, string>;
 
 /**
- * Editable LLM config form (Workflow H). Provider dropdown (built-in presets +
- * custom providers + add-custom), masked key (3-state: empty=keep, clear, set),
- * model dropdown + free text, and pull-models / test / save buttons.
+ * Editable LLM config form (Workflow H) + the model capability table
+ * (ADR-0011 / ticket 01).
+ *
+ * Capabilities show the **effective value and where it came from**
+ * ("Supported · From model preset" vs "Set by you") — a user who overrode an
+ * unknown model must be able to tell why something is on or off. The
+ * vocabulary (order / kind / allowed shapes) comes from the backend
+ * (`capability_table`), so adding a capability never edits this file.
+ * Provider dropdown (built-in presets + custom providers + add-custom), masked
+ * key (3-state: empty=keep, clear, set), model dropdown + free text, and
+ * pull-models / test / save buttons.
  */
 export function ModelSettings() {
   const config = useAppStore((s) => s.config);
@@ -20,6 +40,7 @@ export function ModelSettings() {
   const [model, setModel] = useState(config.llmModel);
   const [apiKey, setApiKey] = useState('');
   const [models, setModels] = useState<string[]>([]);
+  const [overrides, setOverrides] = useState<OverrideDraft>({});
 
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [newProviderName, setNewProviderName] = useState('');
@@ -57,6 +78,55 @@ export function ModelSettings() {
     setModel(config.llmModel);
   }, [config.llmProvider, config.llmModel]);
 
+  // 本地覆盖草稿 = 生效值里「来源是 user」的那些项；其余跟随预设（'' = 自动）。
+  // 依赖里带上「已保存的模型」：切模型后重算（给 A 模型设的开关不该显示成 B 的）。
+  useEffect(() => {
+    const draft: OverrideDraft = {};
+    for (const row of config.capabilityTable ?? []) {
+      const cap = config.capabilities?.[row.name];
+      if (cap && cap.source === 'user' && cap.value !== null) {
+        draft[row.name] = String(cap.value);
+      }
+    }
+    setOverrides(draft);
+  }, [config.capabilities, config.capabilityTable, config.llmModel, config.llmProvider]);
+
+  /** 面板上的「provider:model」是否就是生效值描述的那个模型。 */
+  const capabilitiesMatchDraft =
+    `${provider}:${model}` === `${config.llmProvider}:${config.llmModel}`;
+
+  const buildOverrides = (): Record<string, boolean | string | null> => {
+    const out: Record<string, boolean | string | null> = {};
+    for (const row of config.capabilityTable ?? []) {
+      const raw = overrides[row.name] ?? '';
+      // '' = 自动 → 显式发 null（补丁里表示"清掉这一项"，回到跟随预设）
+      out[row.name] = raw === '' ? null : raw === 'true' ? true : raw === 'false' ? false : raw;
+    }
+    return out;
+  };
+
+  /** 「生效值 · 来源」—— 预设给的和你手动开的必须能分辨。 */
+  const describeCapability = (cap: CapabilityValue | undefined): string => {
+    const value =
+      cap?.value === true
+        ? t('Supported')
+        : cap?.value === false
+          ? t('Not supported')
+          : typeof cap?.value === 'string'
+            ? cap.value
+            : t('Unknown');
+    const source =
+      cap?.source === 'user'
+        ? t('Set by you')
+        : cap?.source === 'preset'
+          ? t('From model preset')
+          : '';
+    return source ? `${value} · ${source}` : value;
+  };
+
+  const setOverride = (name: string, raw: string) =>
+    setOverrides((prev) => ({ ...prev, [name]: raw }));
+
   const resolvedBaseUrl = providers.find((p) => p.id === provider)?.base_url ?? '';
 
   const handleProviderChange = (id: string) => {
@@ -66,6 +136,8 @@ export function ModelSettings() {
     setModels([]);
     setModelsError('');
     setTestResult(null);
+    // 覆盖是给「上一个模型」设的：换模型后回到跟随预设，避免静默套用到新模型
+    setOverrides({});
   };
 
   const handleAddProvider = () => {
@@ -141,6 +213,8 @@ export function ModelSettings() {
         base_url: isCustom ? resolvedBaseUrl : '',
         api_key: apiKey.trim() ? apiKey.trim() : null, // null = keep existing key
         custom_providers: customProviders,
+        // 整批替换：面板显示什么就存什么（'' = 自动的项不会被写进去）
+        capability_overrides: buildOverrides(),
       });
       setConfig({
         llmProvider: provider,
@@ -150,6 +224,12 @@ export function ModelSettings() {
       });
       setApiKey('');
       setMessage(t('Saved'));
+      // 重新拉一次配置：能力表的「生效值 + 来源」在保存后立刻要变（你手动设置/Auto）
+      try {
+        setConfig(await api.fetchConfig());
+      } catch {
+        /* 拉取失败不影响已保存的结果 */
+      }
     } catch (e) {
       setMessage((e as Error).message || t('Failed to save'));
     } finally {
@@ -254,7 +334,12 @@ export function ModelSettings() {
         <input
           list="llm-model-options"
           value={model}
-          onChange={(e) => setModel(e.target.value)}
+          onChange={(e) => {
+            setModel(e.target.value);
+            // 换模型 = 换一份能力覆盖（按模型存）：草稿回到「自动」，别把上一个模型的开
+            // 关静默写到新模型上（ADR-0011：按模型解析）
+            setOverrides({});
+          }}
           placeholder={t('Select or type a model')}
           className="w-full rounded-md border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white/90 placeholder:text-white/30"
         />
@@ -263,6 +348,63 @@ export function ModelSettings() {
             <option key={m} value={m} />
           ))}
         </datalist>
+      </div>
+
+      {/* Capabilities — 生效值 + 来源，可手动覆盖（ADR-0011 / ticket 01）。
+          词表（顺序 / 类型 / 可选值）来自后端 `capability_table`，这里只负责画。 */}
+      <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+        <label className="mb-1 block text-xs text-white/50">{t('Capabilities')}</label>
+        <p className="mb-2 text-[10px] leading-relaxed text-white/35">
+          {t('Follow the model preset, or override it for this model')}
+        </p>
+        {!capabilitiesMatchDraft && (
+          <p className="mb-2 text-[10px] text-amber-400/80">
+            {t('Capabilities are resolved for the selected model after saving')}
+          </p>
+        )}
+        <div className="space-y-1.5">
+          {(config.capabilityTable ?? []).map((row) => {
+            const name = row.name;
+            const cap = config.capabilities?.[name];
+            const choices: Array<[string, string]> =
+              row.kind === 'boolean'
+                ? [
+                    ['', t('Auto')],
+                    ['true', t('Supported')],
+                    ['false', t('Not supported')],
+                  ]
+                : [['', t('Auto')], ...row.options.map((v) => [v, v] as [string, string])];
+            const sourceClass =
+              cap?.source === 'user'
+                ? 'text-companion-accent/80'
+                : cap?.source === 'preset'
+                  ? 'text-white/40'
+                  : 'text-amber-400/80';
+            return (
+              <div key={name} className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-white/60">
+                  {t(CAPABILITY_LABEL[name] ?? name)}
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] ${sourceClass}`}>
+                    {describeCapability(cap)}
+                  </span>
+                  <select
+                    value={overrides[name] ?? ''}
+                    onChange={(e) => setOverride(name, e.target.value)}
+                    className="rounded-md border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-white/80"
+                  >
+                    {choices.map(([value, label]) => (
+                      <option key={value || 'auto'} value={value} className="bg-neutral-900">
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Buttons */}

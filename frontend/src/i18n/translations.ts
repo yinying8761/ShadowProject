@@ -252,6 +252,23 @@ const zh: TranslationDict = {
   'Reconnecting — group replies need the connection':
     '正在重连：群聊的回复要走 WebSocket',
   'Typing…': '正在输入…',
+  // 模型能力表（ADR-0011 / ticket 01）
+  Capabilities: '模型能力',
+  'Follow the model preset, or override it for this model':
+    '默认跟随模型预设；预设不认识的模型可以在这里手动指定',
+  Auto: '自动',
+  Supported: '支持',
+  'Not supported': '不支持',
+  Unknown: '未知',
+  'Set by you': '你手动开启',
+  'From model preset': '来自模型默认',
+  'Capabilities are resolved for the selected model after saving':
+    '能力会按保存后的模型解析',
+  Vision: '视觉（看图）',
+  'Image format': '图片格式',
+  'Native search': '原生搜索',
+  'Native fetch': '原生抓取',
+  'Search format': '搜索格式',
 };
 
 const en: TranslationDict = {};

@@ -5,48 +5,106 @@ BACKEND_DIR = Path(__file__).resolve().parent
 
 # Convenience presets — auto-fill base_url and suggest default model.
 # Users can set LLM_PROVIDER=custom with any LLM_BASE_URL for arbitrary endpoints.
+#
+# 这里同时是 ADR-0011 的**模型能力表**：`supports_vision` / `image_api`（视觉）与
+# `native_search` / `native_fetch` / `search_api`（原生搜索）。字段含义：
+#   - 布尔项三态：True / False / None（Unknown —— 预设没把握，消费者按 ADR-0011 的
+#     不对称规则处理：视觉未知也试一次，原生搜索未知就不走）。
+#   - 形状项只能是 `services.capabilities.IMAGE_APIS` / `SEARCH_APIS` 里的值
+#     （`tests/test_capabilities.py` 会遍历整张表锁住这一点，写歪了会红）。
+# 新增一家厂商 = 填这几个字段；只有形状不在已知三种/四种里时才动 formatter/parser 缝。
 PROVIDER_PRESETS = {
     "anthropic": {
         "base_url": None,
         "default_model": "claude-sonnet-4-20250514",
         "sdk_type": "anthropic",
         "description": "Anthropic Claude",
+        "supports_vision": True,
+        "image_api": "anthropic",
+        "native_search": True,
+        "native_fetch": True,
+        "search_api": "anthropic",
     },
     "openai": {
         "base_url": None,
         "default_model": "gpt-4o",
         "sdk_type": "openai",
         "description": "OpenAI ChatGPT",
+        "supports_vision": True,
+        "image_api": "openai",
+        "native_search": True,
+        "native_fetch": True,
+        "search_api": "openai",
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
         "default_model": "deepseek-v4-pro",
         "sdk_type": "openai",
         "description": "DeepSeek",
+        "supports_vision": True,
+        "image_api": "openai",
+        "native_search": True,
+        "native_fetch": True,
+        "search_api": "deepseek",
+    },
+    "gemini": {
+        # 走 Google 的 OpenAI 兼容端点，所以形状就是 openai（ADR-0011）。
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "default_model": "gemini-2.5-flash",
+        "sdk_type": "openai",
+        "description": "Google Gemini",
+        "supports_vision": True,
+        "image_api": "openai",
+        "native_search": True,
+        "native_fetch": True,
+        "search_api": "openai",
     },
     "qwen": {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "default_model": "qwen-plus",
         "sdk_type": "openai",
         "description": "Qwen / 通义千问",
+        # 同一家厂商里 qwen-vl 能看、qwen-plus 不能 → 不替用户猜
+        "supports_vision": None,
+        "image_api": "openai",
+        "native_search": None,
+        "native_fetch": None,
+        "search_api": None,
     },
     "zhipu": {
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "default_model": "glm-4-flash",
         "sdk_type": "openai",
         "description": "ZhipuAI / 智谱",
+        # glm-4v 能看、glm-4 不能
+        "supports_vision": None,
+        "image_api": "openai",
+        "native_search": None,
+        "native_fetch": None,
+        "search_api": None,
     },
     "moonshot": {
         "base_url": "https://api.moonshot.cn/v1",
         "default_model": "moonshot-v1-8k",
         "sdk_type": "openai",
         "description": "Moonshot / Kimi",
+        "supports_vision": False,
+        "image_api": "openai",
+        "native_search": None,
+        "native_fetch": None,
+        "search_api": None,
     },
     "custom": {
         "base_url": None,
         "default_model": "",
         "sdk_type": "openai",
         "description": "Custom (any OpenAI-compatible API)",
+        # 任意 OpenAI 兼容端点：形状默认 openai，能不能看由用户覆盖
+        "supports_vision": None,
+        "image_api": "openai",
+        "native_search": None,
+        "native_fetch": None,
+        "search_api": None,
     },
 }
 

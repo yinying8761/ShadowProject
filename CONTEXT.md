@@ -31,6 +31,7 @@ Electron renderer talks to `8722` directly (`ws://<host>:8722/ws/chat/<conversat
 backend/
   main.py                 # FastAPI entry: register_tools(), lifespan, singleton wiring
   config.py               # pydantic-settings; provider/vision/embedding/search presets
+                          #   + the model capability table (ADR-0011)
   database.py             # async engine, Base, ADDITIVE_MIGRATIONS, init_db()
   core/                   # agent orchestration (no HTTP)
     agent.py              # Agent: main LLM ↔ tool loop (the orchestrator)
@@ -416,6 +417,18 @@ or circuit-breaker failures).
   `core.tool_registry.tool_registry`, `core.tool_runtime` (via `main.register_tools`).
 - **Async everywhere** in backend handlers/services; use `asyncio.to_thread` for
   blocking calls on the event loop.
+- **Model capabilities are a table, never a branch (ADR-0011).** `config.PROVIDER_PRESETS`
+  carries `supports_vision` / `image_api` / `native_search` / `native_fetch` / `search_api`;
+  `services/capabilities.py` resolves them **user override → preset → unknown** and reports
+  the source, and business code asks `runtime_config.supports_vision()` /
+  `native_search_should_attempt()` — **never** `if provider == "deepseek"`. The only places
+  allowed to know a vendor are the table and the formatter/parser seams. Unknown is a real
+  value: **vision unknown → try it** (then error plainly), **native search unknown → do not
+  attempt** (degrade) — the asymmetry is the decision. Overrides live in `data/config.yaml`
+  under `capabilities:` keyed **`provider:model`** (PATCH semantics, validated before any
+  other field is written; an unknown shape in yaml is ignored on read). `GET /api/config`
+  ships both `capabilities` (value + source) and `capability_table` (the vocabulary: order /
+  kind / allowed shapes), so the panel never re-declares the table.
 - **Never break the `dispatch -> str` contract**: `ToolRuntime.dispatch` returns
   a JSON-encodable string, not raises (except sandbox/retry internals which it
   catches). Schema validation (Workflow F) must follow this too.
@@ -493,6 +506,8 @@ or circuit-breaker failures).
 | 供应商 | Provider | 官方 API 渠道 + 中转站（如 opencode-go、AIcodeMirror）；内置预设硬编码，自定义的可增删。_Avoid_: 提供方、服务商 |
 | 自定义供应商 | Custom provider | 用户自建的供应商条目：名字 + base_url，存于 `config.yaml` 的 `providers:` |
 | 模型 | Model | 实际调用的模型 id 字符串（如 `deepseek-chat`） |
+| 能力 | Capability | 模型能做什么：`supports_vision` / `image_api`（视觉）、`native_search` / `native_fetch` / `search_api`（原生搜索）。按**模型**声明，三态（支持 / 不支持 / 未知），`config.PROVIDER_PRESETS` 提供默认值（ADR-0011）|
+| 能力覆盖 | Capability override | 用户对**当前模型**的手动覆盖（`data/config.yaml` 的 `capabilities:`），优先于预设；设置面板显示生效值与来源（模型预设 / 你手动设置 / 未知）|
 | 模型列表 | Model list | 从供应商 `GET /v1/models` 拉取到的可用模型 id 集合 |
 | 密钥 | API Key | 每供应商一个 `<PROVIDER>_API_KEY`，存于 `.env` |
 | 接口地址 | Base URL | OpenAI 兼容 endpoint 根地址（形如 `…/v1`） |

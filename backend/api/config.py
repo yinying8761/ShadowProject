@@ -7,6 +7,7 @@ from database import get_session
 from models.user_config import UserConfig
 from core.tool_registry import tool_registry
 from config import PROVIDER_PRESETS
+from services.capabilities import capability_schema
 from services.llm_config import runtime_config
 
 router = APIRouter(prefix="/api", tags=["config"])
@@ -66,6 +67,14 @@ async def get_config(session: AsyncSession = Depends(get_session)):
         "has_api_key": bool(runtime_config.api_key),
         # Only the last-4 tail of the key, never the full secret (Workflow H).
         "api_key_hint": runtime_config.api_key[-4:] if runtime_config.api_key else None,
+        # 当前模型的能力**生效值 + 来源**（ADR-0011 / ticket 01）：设置面板据此显示
+        # 「模型默认」还是「你手动开启」，也是"这个模型能看图吗"的唯一来源。
+        "capabilities": {
+            name: cap.as_dict() for name, cap in runtime_config.capabilities().items()
+        },
+        # 能力词表也由后端下发（顺序 / 类型 / 可选值）—— 前端不再自己抄一份，
+        # 加一项能力只改 services/capabilities.py 一处。
+        "capability_table": capability_schema(),
     }
 
 

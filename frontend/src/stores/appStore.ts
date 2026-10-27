@@ -53,6 +53,8 @@ export const useAppStore = create<AppState>((set) => ({
     language: 'zh',
     ttsEnabled: true,
     lastCharacterId: '',
+    capabilities: {},
+    capabilityTable: [],
   },
   isConnected: false,
   showSettings: false,

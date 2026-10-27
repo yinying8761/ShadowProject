@@ -99,3 +99,20 @@ is the same: **facts about a provider were encoded as code, in several places.**
   SearchAgent decides *how*. This ADR governs only the *how*.
 - The table is now the first place to look when a feature "mysteriously"
   degrades on a new model; the second is the formatter / parser seam.
+- **Where the user override lives, and what it is keyed by (ticket 01).** The override
+  is stored in `data/config.yaml` under `capabilities:` (the same file, and the same
+  save path, as provider/model — no DB migration), keyed **`provider:model`**, because
+  this ADR resolves per model: an override set for `openai:gpt-4o` must not silently
+  apply to `openai:gpt-3.5`. Writing is a **PATCH** (absent = keep, `null` = clear one
+  capability) and is validated **before** any other field is touched, so a rejected
+  batch cannot leave the runtime config half-updated. Reading is deliberately tolerant:
+  a hand-edited yaml value that is not a known shape / not a boolean is treated as
+  "not overridden" rather than surfacing garbage — otherwise the panel would render an
+  option it cannot represent and the next save would 400.
+- **No model-name inference.** A provider whose models differ declares `None`
+  ("I don't know") and the user override answers per model. Guessing from the model
+  string (`*vl*`, `*4o*`) is the same name-branching this ADR rejects, one layer down.
+- **The vocabulary is shipped, not duplicated.** `GET /api/config` returns
+  `capability_table` (name / kind / allowed shapes, in display order) next to
+  `capabilities` (value + source), so the settings panel never re-declares the table —
+  adding a capability is still a one-file change.

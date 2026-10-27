@@ -112,6 +112,10 @@ export const api = {
       language: (raw.language as string) ?? 'zh',
       ttsEnabled: (raw.tts_enabled as boolean) ?? true,
       lastCharacterId: (raw.last_character_id as string) ?? '',
+      // 能力生效值 + 来源（ADR-0011）：缺省空表，UI 按"未知"处理
+      capabilities: (raw.capabilities as AppConfig['capabilities']) ?? {},
+      // 词表由后端下发（顺序 / 类型 / 可选值），前端不复制
+      capabilityTable: (raw.capability_table as AppConfig['capabilityTable']) ?? [],
     };
   },
   updateConfig: (data: Record<string, unknown>) =>

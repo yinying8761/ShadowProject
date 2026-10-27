@@ -167,6 +167,153 @@ class TestPutLlmConfig:
         assert store.get_provider_key("deepseek") == "sk-deep"
 
 
+# ── 能力表（ticket 01 / ADR-0011）──────────────────────────────────────────
+
+
+class TestCapabilitiesOverApi:
+    @pytest.mark.asyncio
+    async def test_get_config_reports_effective_values_and_sources(self, llm_config_client):
+        client, cfg, _ = llm_config_client
+        cfg.provider = "deepseek"
+
+        caps = (await client.get("/api/config")).json()["capabilities"]
+        assert caps["supports_vision"] == {"value": True, "source": "preset"}
+        assert caps["image_api"] == {"value": "openai", "source": "preset"}
+        assert caps["native_search"] == {"value": True, "source": "preset"}
+        assert caps["search_api"] == {"value": "deepseek", "source": "preset"}
+
+        # 用户覆盖后来源变成 user —— 面板据此显示「你手动开启」而不是「模型默认」
+        await client.put(
+            "/api/llm-config", json={"capability_overrides": {"supports_vision": False}}
+        )
+        caps = (await client.get("/api/config")).json()["capabilities"]
+        assert caps["supports_vision"] == {"value": False, "source": "user"}
+
+    @pytest.mark.asyncio
+    async def test_get_config_ships_the_capability_vocabulary(self, llm_config_client):
+        """词表由后端下发：前端不再自己抄一份顺序/类型/可选值。"""
+        client, _, _ = llm_config_client
+
+        table = (await client.get("/api/config")).json()["capability_table"]
+        by_name = {row["name"]: row for row in table}
+        assert [row["name"] for row in table][:2] == ["supports_vision", "image_api"]
+        assert by_name["supports_vision"]["kind"] == "boolean"
+        assert by_name["image_api"]["options"] == ["openai", "anthropic", "gemini"]
+        assert by_name["search_api"]["options"] == [
+            "openai", "anthropic", "gemini", "deepseek", "none",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_model_reports_unknown(self, llm_config_client):
+        client, cfg, _ = llm_config_client
+        cfg.provider = "custom"
+        cfg.model = "some-model-nobody-knows"
+
+        caps = (await client.get("/api/config")).json()["capabilities"]
+        assert caps["supports_vision"] == {"value": None, "source": "unknown"}
+        # 形状有预设默认（custom 走 OpenAI 兼容），能力本身仍是未知
+        assert caps["image_api"] == {"value": "openai", "source": "preset"}
+        assert caps["native_search"] == {"value": None, "source": "unknown"}
+
+    @pytest.mark.asyncio
+    async def test_put_persists_overrides_per_model_to_config_yaml(
+        self, llm_config_client
+    ):
+        client, cfg, store = llm_config_client
+
+        resp = await client.put(
+            "/api/llm-config",
+            json={
+                "llm_provider": "custom",
+                "llm_model": "my-model",
+                "capability_overrides": {"supports_vision": True, "image_api": "openai"},
+            },
+        )
+
+        assert resp.status_code == 200
+        assert cfg.current_capability_overrides() == {
+            "supports_vision": True,
+            "image_api": "openai",
+        }
+        # 落进 data/config.yaml，并且不需要重启就能读回（按模型分键）
+        reloaded = store.load()
+        assert reloaded.current_capability_overrides() == {
+            "supports_vision": True,
+            "image_api": "openai",
+        }
+        assert reloaded.capability_overrides["custom:my-model"] == {
+            "supports_vision": True,
+            "image_api": "openai",
+        }
+
+    @pytest.mark.asyncio
+    async def test_overrides_do_not_leak_across_models(self, llm_config_client):
+        """给 A 模型开的开关不作用到 B 模型（ADR-0011：按模型解析）。"""
+        client, cfg, _ = llm_config_client
+        await client.put(
+            "/api/llm-config",
+            json={"llm_model": "model-a", "capability_overrides": {"supports_vision": True}},
+        )
+        assert (await client.get("/api/config")).json()["capabilities"]["supports_vision"] == {
+            "value": True,
+            "source": "user",
+        }
+
+        await client.put("/api/llm-config", json={"llm_model": "model-b"})
+        caps = (await client.get("/api/config")).json()["capabilities"]
+        assert caps["supports_vision"]["source"] != "user"
+
+    @pytest.mark.asyncio
+    async def test_a_patch_only_touches_the_named_capabilities(self, llm_config_client):
+        client, cfg, _ = llm_config_client
+        await client.put(
+            "/api/llm-config",
+            json={"capability_overrides": {"supports_vision": True, "native_search": False}},
+        )
+
+        # 空字典 = 什么都不改（补丁语义，不是整批替换）
+        await client.put("/api/llm-config", json={"capability_overrides": {}})
+        assert cfg.current_capability_overrides() == {
+            "supports_vision": True,
+            "native_search": False,
+        }
+
+        # 只清掉点名的这一项
+        await client.put(
+            "/api/llm-config", json={"capability_overrides": {"native_search": None}}
+        )
+        assert cfg.current_capability_overrides() == {"supports_vision": True}
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_shape_or_type_is_rejected_before_anything_changes(
+        self, llm_config_client
+    ):
+        client, cfg, _ = llm_config_client
+        cfg.provider = "custom"
+        cfg.model = "before"
+        before_overrides = cfg.current_capability_overrides()
+
+        for bad in (
+            {"image_api": "midjourney"},      # 不认识的形状
+            {"supports_vision": "yes"},       # 不是布尔
+            {"nonsense": True},               # 不认识的能力
+        ):
+            resp = await client.put(
+                "/api/llm-config",
+                json={
+                    "llm_provider": "openai",       # 同一请求里还改了 provider/model
+                    "llm_model": "changed",
+                    "capability_overrides": bad,
+                },
+            )
+            assert resp.status_code == 400, bad
+            # **先校验再写**：被拒的请求不能留下半改的内存状态
+            assert cfg.provider == "custom", bad
+            assert cfg.model == "before", bad
+
+        assert cfg.current_capability_overrides() == before_overrides  # 一条都没写进去
+
+
 # ── GET /api/providers ─────────────────────────────────────────────────────
 
 
