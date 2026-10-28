@@ -14,10 +14,19 @@ Key differences from the internal format
 from typing import Any
 
 from services.formatters.base import MessageFormatter
+from services.formatters.images import b64
 
 
 class AnthropicFormatter(MessageFormatter):
     """Message / tool format conversion for the Anthropic SDK."""
+
+    @staticmethod
+    def image_part(data: bytes, mime: str) -> dict:
+        """Claude 的图片块：`source` 里带 media_type + base64（ticket #02）。"""
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": b64(data)},
+        }
 
     # ── Messages ───────────────────────────────────────────────────
 

@@ -503,3 +503,111 @@ class TestSetMcpDispatch:
         set_mcp_dispatch(dispatch)
         set_mcp_dispatch(None)
         assert st_module._mcp_dispatch is None
+
+
+class TestCaptureImages:
+    """ticket 02：把截图**原样**交出去给主模型看，不经过任何视觉模型。
+
+    `capture_images` 与 `try_capture` 共用同一道审批与前端事件，但返回的是
+    `(jpeg_bytes, mime)`；它**不去重**（用户主动说"看看"，同一屏也要真的再看一次）。
+    """
+
+    @staticmethod
+    def _gate(*, approved=True, sent=None):
+        from services import screen_capture_gate as gate_mod
+
+        async def send_json(payload):
+            if sent is not None:
+                sent.append(payload)
+
+        async def approval_callback(tool_name, arguments):
+            return approved
+
+        async def get_user_config():
+            return None
+
+        gate = gate_mod.ScreenCaptureGate(
+            send_json=send_json,
+            approval_callback=approval_callback,
+            get_user_config=get_user_config,
+            fingerprints=gate_mod.ScreenFingerprintStore(maxlen=3),
+        )
+        return gate_mod, gate
+
+    @pytest.mark.asyncio
+    async def test_returns_the_jpeg_bytes_and_never_calls_a_vision_model(
+        self, monkeypatch
+    ):
+        sent: list[dict] = []
+        gate_mod, gate = self._gate(sent=sent)
+        calls = {"capture": 0}
+
+        def fake_capture(monitor_index=0):
+            calls["capture"] += 1
+            return b"fake-jpeg", 1280, 720
+
+        async def boom(*_a, **_kw):
+            raise AssertionError("这条路径不该调用任何视觉模型")
+
+        monkeypatch.setattr(gate_mod, "_capture_sync", fake_capture)
+        monkeypatch.setattr(gate_mod, "dhash_from_jpeg", lambda _bytes: 12345)
+        monkeypatch.setattr(gate_mod, "see_screen", boom)
+
+        assert await gate.capture_images() == (b"fake-jpeg", "image/jpeg")
+        assert calls["capture"] == 1
+        # 前端仍要看到一次工具调用（tool_use → tool_result），否则按钮会一直转
+        kinds = [p.get("type") for p in sent]
+        assert kinds == ["tool_use", "tool_result"]
+        assert sent[-1]["is_error"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_denied_capture_returns_none_and_takes_no_screenshot(
+        self, monkeypatch
+    ):
+        sent: list[dict] = []
+        gate_mod, gate = self._gate(approved=False, sent=sent)
+
+        def never(monitor_index=0):
+            raise AssertionError("用户拒绝了，不该截图")
+
+        monkeypatch.setattr(gate_mod, "_capture_sync", never)
+
+        assert await gate.capture_images() is None
+        assert [p.get("type") for p in sent] == ["tool_result"]
+        assert sent[0]["denied"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_capture_returns_none_with_an_error_result(
+        self, monkeypatch
+    ):
+        sent: list[dict] = []
+        gate_mod, gate = self._gate(sent=sent)
+
+        def broken(monitor_index=0):
+            raise RuntimeError("no display")
+
+        monkeypatch.setattr(gate_mod, "_capture_sync", broken)
+
+        assert await gate.capture_images() is None
+        assert sent[-1]["type"] == "tool_result"
+        assert sent[-1]["is_error"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_same_screen_is_captured_again_without_asking(
+        self, monkeypatch
+    ):
+        """用户发起的看屏幕**永不去重**：同一屏连说两次，两次都真的去拍。"""
+        gate_mod, gate = self._gate()
+        calls = {"capture": 0}
+
+        def fake_capture(monitor_index=0):
+            calls["capture"] += 1
+            return b"same-screen", 800, 600
+
+        monkeypatch.setattr(gate_mod, "_capture_sync", fake_capture)
+        # 指纹从**已经拍到的那张图**算（不再为了指纹多截一次屏）
+        monkeypatch.setattr(gate_mod, "dhash_from_jpeg", lambda _bytes: 999)
+
+        assert await gate.capture_images() is not None
+        assert await gate.capture_images() is not None
+        assert calls["capture"] == 2

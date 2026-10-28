@@ -28,6 +28,7 @@ CONVERSATION_NOT_FOUND_EVENT = {
 from services.screen_capture_gate import detects_screen_intent
 
 
+
 class ChatRequest(BaseModel):
     message: str
     conversation_id: str | None = None
@@ -527,22 +528,39 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
 
         augmented_message = await augment_message(content)
 
-        # ── Screen capture on intent ──────────────────────────────
-        should_capture = force_vision or detects_screen_intent(content)
-        if should_capture:
-            print("[CHAT] screen intent detected, forcing capture", flush=True)
-            description = await screen_gate.try_capture()
-            if description:
-                augmented_message = (
-                    f"{augmented_message}\n\n"
-                    f"[System captured fresh screen context: {description}]\n"
-                    f"Reply naturally based on this description and do not call see_screen again."
+        # ── Screen capture on intent（ticket #02 / spec: multimodal-vision）──
+        # 决策在 services/vision_route，落地在 services/vision_turn：主模型能看图就把
+        # 截图挂到这一轮请求上；明确看不了就走备用视觉模型转述；形状未知则**明确报错**。
+        vision_images: list[tuple[bytes, str]] = []
+        vision_note: str | None = None
+        if force_vision or detects_screen_intent(content):
+            from services.llm_config import runtime_config
+            from services.vision_turn import prepare_vision_turn
+
+            try:
+                vision_turn = await prepare_vision_turn(
+                    gate=screen_gate,
+                    # 未知也试一次的规则在能力表那一处（vision_should_attempt），
+                    # 这里不重复判断
+                    can_see=runtime_config.vision_should_attempt(),
+                    image_api=runtime_config.image_api(),
                 )
-            else:
-                augmented_message = (
-                    f"{augmented_message}\n\n"
-                    f"[Screen capture request did not succeed, likely denied or failed.]"
+            except Exception as e:
+                # 截屏失败不该把这一轮整个吞掉（任务里的异常没人收，用户只会干等）
+                print(f"[CHAT] screen: preparation failed: {e}", flush=True)
+                await websocket.send_json(
+                    {"type": "error", "message": f"截屏没有成功：{e}"}
                 )
+                vision_turn = None
+
+            if vision_turn is not None:
+                vision_images = list(vision_turn.images)
+                vision_note = vision_turn.note
+                if vision_turn.error:
+                    # 形状未知：先明确告诉用户（红色错误气泡），再让角色解释一句
+                    await websocket.send_json(
+                        {"type": "error", "message": vision_turn.error}
+                    )
 
         # LLM retry progress → transient WS event.  The callback fires inside
         # the retry loop's await chain, so it dispatches via create_task rather
@@ -583,6 +601,10 @@ async def ws_chat(websocket: WebSocket, conversation_id: str):
                     approval_callback=approval_callback,
                     client_message_id=client_message_id,
                     on_llm_retry=_on_llm_retry,
+                    # 截图与「看屏幕」的说明只走这一轮请求（ticket #02）：
+                    # 图片不落库、说明不落库，历史里只有用户原话与角色回复。
+                    images=vision_images or None,
+                    vision_note=vision_note,
                 ):
                     await websocket.send_json(event)
                     if event.get("type") == "done":

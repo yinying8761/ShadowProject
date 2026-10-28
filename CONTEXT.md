@@ -318,6 +318,45 @@ list / create group conversation / **delete**), the turn orchestration (ticket #
   speaker, **not** by current group membership — membership is editable). Tool-role
   messages and tool-call carriers never carry a prefix.
 
+### 3.8 Vision: the screenshot rides the turn (ticket #02)
+
+When the user says "看看我屏幕" (or `force_vision`), `api/chat.py` asks
+`services/vision_route.plan_vision_route(supports_vision, image_api)` which of three
+mutually exclusive routes to take:
+
+| Route | When | What happens |
+|---|---|---|
+| **mount** | the model can see (`True` or `None` — unknown is tried) | `ScreenCaptureGate.capture_images()` returns `(jpeg, mime)` (same approval + `tool_use`/`tool_result` events as before) and it becomes image blocks on **this turn's** user message; the main model describes it itself (zero extra calls) |
+| **fallback** | `supports_vision is False` | `try_capture()` → the specialist `vision_service` writes the description, which rides as an LLM-only note |
+| **unavailable** | `image_api` is unknown | nothing is captured; the model is told to say plainly that it cannot look (never a silent text-only request) |
+
+- **Images and their notes are never persisted.** `Agent.run(images=…, vision_note=…)`
+  turns the *current* user message's content into `[text, note, images]` for the request
+  only (`core/agent.py::_attach_vision`) and says so loudly if there is no current user
+  message to attach to; the messages table, the summary and memory keep the user's own
+  words and the reply. That is the 2026-10-20 lesson: a screen description spliced into a
+  user message was recited for days.
+- **The wire shape lives on the formatter seam** (ADR-0011): `MessageFormatter.image_part()`
+  *is* the OpenAI-compatible shape, `AnthropicFormatter` overrides it, `GeminiFormatter`
+  adds the native one — and `formatters.get_image_formatter(image_api)` picks which class
+  to ask, the same way `SEARCH_PARSERS[search_api]` will on the search side. A shape that
+  does not match the underlying SDK (e.g. the native gemini shape on an OpenAI endpoint)
+  is refused by `LLMService.image_part`, so a new vendor is a table row plus — only if its
+  payload differs — one formatter override.
+- **The routing itself lives in two small modules**, not in the WS handler:
+  `services/vision_route.plan_vision_route(can_see, image_api)` (pure: mount / fallback /
+  unavailable) and `services/vision_turn.prepare_vision_turn(gate=…, …)` (captures or asks
+  the specialist, returns `VisionTurn(images, note, error)`; the caller emits `error` when
+  there is one). `can_see` is always `runtime_config.vision_should_attempt()` — the
+  "unknown is tried" rule is not re-implemented. An unknown `image_api` yields an explicit
+  error event (never a silent text-only request).
+- **User-initiated screen capture is never deduped** — the same screen asked twice is
+  captured twice, and the fingerprint is computed from the very bytes that were captured
+  (one screenshot per capture, not two). The proactive watcher keeps its fingerprint dedup
+  + throttle unchanged.
+- Group chats do not mount images (no single character, and the tool path covers them);
+  `see_screen` **as a tool** still goes through the specialist path until ticket #05.
+
 ## 4. Frontend shape
 
 - **Zustand stores**: `appStore` (characters, config, layout mode compact/full,

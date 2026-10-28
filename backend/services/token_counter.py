@@ -39,12 +39,28 @@ def _char_estimate(text: str) -> int:
     return int(cjk * 0.6 + other * 0.25) or 1
 
 
+def _message_text(content: object) -> str:
+    """Message content → 可以计 token 的文本。
+
+    多模态消息的 content 是 content block 列表（ticket #02 的截图）：只数**文本块**，
+    图片块跳过 —— `str([...])` 会把整段 base64 当文字数进去（误差几十万 token），
+    而图片本身按 provider 的图片计价，权威数字由 `usage` 事件带回。
+    """
+    if isinstance(content, list):
+        return " ".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content or "")
+
+
 def estimate_openai_tokens(messages: list[dict], *, encoder=None) -> int:
     """Estimate prompt tokens for OpenAI-compatible providers."""
     enc = encoder if encoder is not None else _openai_encoder()
     total = 0
     for m in messages:
-        text = str(m.get("content") or "")
+        text = _message_text(m.get("content"))
         for tc in m.get("tool_calls") or []:
             text += str(tc.get("function", {}).get("arguments") or "")
         total += len(enc.encode(text)) if enc is not None else _char_estimate(text)

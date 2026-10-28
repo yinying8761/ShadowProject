@@ -61,6 +61,25 @@ DHASH_BITS = 64
 DHASH_THRESHOLD = 10  # Hamming distance: ≤10 = same scene, >10 = new scene
 
 
+def _dhash_of(img) -> int:
+    """一张 PIL 图的 64-bit dHash（`_capture_dhash_sync` 与 `dhash_from_jpeg` 共用）。"""
+    from PIL import Image
+
+    img_gray = img.convert("L")
+    img_small = img_gray.resize((DHASH_COLS, DHASH_ROWS), Image.LANCZOS)
+    pixels = list(img_small.getdata())
+
+    hash_int = 0
+    for row in range(DHASH_ROWS):
+        for col in range(DHASH_COLS - 1):
+            left = pixels[row * DHASH_COLS + col]
+            right = pixels[row * DHASH_COLS + col + 1]
+            if left < right:
+                hash_int |= 1 << (row * (DHASH_COLS - 1) + col)
+
+    return hash_int
+
+
 def _capture_dhash_sync(monitor_index: int = 0) -> int:
     """
     Capture screen and return a 64-bit dHash (perceptual hash).
@@ -84,19 +103,20 @@ def _capture_dhash_sync(monitor_index: int = 0) -> int:
         raw = sct.grab(mon)
         img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
-    img_gray = img.convert("L")
-    img_small = img_gray.resize((DHASH_COLS, DHASH_ROWS), Image.LANCZOS)
-    pixels = list(img_small.getdata())
+    return _dhash_of(img)
 
-    hash_int = 0
-    for row in range(DHASH_ROWS):
-        for col in range(DHASH_COLS - 1):
-            left = pixels[row * DHASH_COLS + col]
-            right = pixels[row * DHASH_COLS + col + 1]
-            if left < right:
-                hash_int |= 1 << (row * (DHASH_COLS - 1) + col)
 
-    return hash_int
+def dhash_from_jpeg(image_bytes: bytes) -> int:
+    """已经拍好的这张图的 dHash（不再为了指纹重新截屏）。
+
+    与 `_capture_dhash_sync` 同一套算法、同一个阈值语义，只是输入换成 JPEG 字节 ——
+    ticket #02 的"把图挂到当轮请求"路径已经拿到图了，不该为了指纹再抓一次屏幕。
+    """
+    import io
+
+    from PIL import Image
+
+    return _dhash_of(Image.open(io.BytesIO(image_bytes)))
 
 
 def hamming_distance(h1: int, h2: int) -> int:

@@ -81,6 +81,33 @@ class LLMService:
         except (NotImplementedError, ValueError):
             return None
 
+    def image_part(self, image_bytes: bytes, mime: str = "image/jpeg") -> dict:
+        """把一张截图变成**当前模型**能接受的 content block（ticket #02）。
+
+        形状按模型的 `image_api` 分派（openai / anthropic / gemini），业务代码永远
+        不自己拼 payload。**不知道形状就报错**：用户明确要求看屏幕，静默发一个纯文本
+        请求等于骗人（ADR-0011 的不对称 —— 视觉报错，搜索才降级）。
+        """
+        from services.formatters.images import image_part
+
+        api = self._runtime.image_api()
+        sdk = self._runtime.get_sdk_type()
+        model = self._runtime.get_model() or "当前模型"
+        if api is None:
+            raise ValueError(
+                f"{model} 的看图方式未知（image_api 未设置或不是已知形状）："
+                "请在 设置 → 模型 → 模型能力 里指定图片格式后重试"
+            )
+        if api != sdk:
+            # 形状必须和底层 SDK 对得上：openai SDK 只认 image_url、Anthropic SDK 只认
+            # source。不一致 = 配置错了（例如把原生 gemini 形状指给 OpenAI 兼容端点），
+            # 与其发出去被对方拒，不如当场说清楚。
+            raise ValueError(
+                f"图片格式 {api} 与底层 SDK {sdk} 不匹配（模型 {model}）："
+                "请把 image_api 设为该供应商实际使用的形状"
+            )
+        return image_part(api, image_bytes, mime)
+
     def _get_openai_client(self):
         if "openai" not in self._clients:
             from openai import AsyncOpenAI
@@ -170,7 +197,9 @@ class LLMService:
             result = await client.messages.count_tokens(**kwargs)
             return result.input_tokens
         except Exception:
-            return sum(_char_estimate(str(m.get("content") or "")) for m in messages)
+            from services.token_counter import _message_text
+
+            return sum(_char_estimate(_message_text(m.get("content"))) for m in messages)
 
     async def chat_sync(
         self,

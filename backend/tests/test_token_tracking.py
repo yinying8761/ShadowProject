@@ -494,3 +494,43 @@ class TestTokenUsageAPI:
         assert body["summary"] == {
             "rounds": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
         }
+
+
+class TestMultimodalEstimate:
+    """ticket 02：截图是 content block，不是文本 —— 估算不能把 base64 当文字数。"""
+
+    class CharEncoder:
+        """每个字符算一个 token（故意的：多算了 base64 会立刻露馅）。"""
+
+        def encode(self, text: str) -> list[str]:
+            return list(text)
+
+    def test_image_blocks_do_not_inflate_the_estimate(self):
+        from services.formatters import MessageFormatter
+        from services.formatters.images import text_part
+
+        encoder = self.CharEncoder()
+        plain = estimate_openai_tokens(
+            [{"role": "user", "content": "你好"}], encoder=encoder
+        )
+        with_image = estimate_openai_tokens(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        text_part("你好"),
+                        MessageFormatter.image_part(b"x" * 100_000, "image/jpeg"),
+                    ],
+                }
+            ],
+            encoder=encoder,
+        )
+
+        assert with_image == plain == 2
+
+    def test_plain_string_content_is_unchanged(self):
+        encoder = self.CharEncoder()
+        assert estimate_openai_tokens(
+            [{"role": "user", "content": "abc"}, {"role": "assistant", "content": None}],
+            encoder=encoder,
+        ) == 3

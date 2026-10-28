@@ -8,12 +8,34 @@ from core.prompt_manager import PromptManager
 from core.conversation_manager import ConversationManager
 from core.tool_runtime import ToolRuntime
 from services.llm_service import LLMService
+from services.formatters.images import text_part
 from services.memory_service import memory_service, pop_memory_notifications
 from services.retry import RetryCallback
 from models.character import CharacterProfile
 from models.conversation import Conversation
 
 ApprovalCallback = Callable[[str, dict], Awaitable[bool]]
+
+
+def _attach_vision(
+    messages: list[dict], image_parts: list[dict], note: str | None
+) -> bool:
+    """把图片块挂到**当轮用户消息**上：文本 → 极短说明 → 图片（就地改这一个 dict）。
+
+    只改这次请求里的 messages，不碰数据库：图片是"一眼"，不是对话内容（ticket #02）。
+    **只在最后一条消息就是 user 时挂** —— 否则宁可报错，也不能把图挂到上一轮某个人
+    的话上（那是"图片属于这一次请求"的边界）。返回是否挂上了；调用方据此决定要不要
+    如实报错（静默丢图的纯文本请求正是 spec 明令禁止的降级）。
+    """
+    last = messages[-1] if messages else None
+    if not last or last.get("role") != "user":
+        return False
+    blocks: list[dict] = [text_part(last.get("content") or "")]
+    if note:
+        blocks.append(text_part(note))
+    blocks.extend(image_parts)
+    last["content"] = blocks
+    return True
 
 
 class Agent:
@@ -49,6 +71,8 @@ class Agent:
         system_suffix: str | None = None,
         memory_query: str | None = None,
         user_nudge: str | None = None,
+        images: list[tuple[bytes, str]] | None = None,
+        vision_note: str | None = None,
     ) -> AsyncIterator[dict]:
         """
         Execute the agent loop, yielding events.
@@ -97,6 +121,16 @@ class Agent:
             DeepSeek thinking mode with 400 "reasoning_content ... must be
             passed back", and a group burst's second request always ends on the
             previous member's reply.
+        images:
+            ``[(jpeg_bytes, mime), …]`` from a screen capture (ticket #02). They
+            ride **only on this turn**: the blocks are appended to the current
+            user message of the request (text first, then a short note, then the
+            images) and are never written to the messages table, the summary or
+            memory. An unknown ``image_api`` raises a plain error event instead
+            of silently sending a text-only request.
+        vision_note:
+            The short LLM-facing note that goes with *images* ("截图已附在本轮…").
+            Not persisted — history keeps the user's own words.
         """
         character = await session.get(CharacterProfile, character_id)
         if not character:
@@ -285,6 +319,27 @@ class Agent:
 
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
+
+        # 截图随这一轮请求走（ticket #02）：形状由当前模型的 `image_api` 决定，
+        # 未知形状**明确报错**而不是静默发一个纯文本请求（ADR-0011 的不对称）。
+        # `vision_note` 也可以单独给（"这次没看成"之类的说明），同样只进这一次请求。
+        if images or vision_note:
+            image_parts: list[dict] = []
+            if images:
+                try:
+                    image_parts = [
+                        self.llm_service.image_part(data, mime) for data, mime in images
+                    ]
+                except ValueError as e:
+                    yield {"type": "error", "message": str(e)}
+                    return
+            if not _attach_vision(messages, image_parts, vision_note):
+                # 没有"当轮用户消息"可挂（主动陪伴/裁剪窗口）→ 如实报错，不静默丢图
+                yield {
+                    "type": "error",
+                    "message": "这一轮没有可附截图的用户消息，截图没有发出去",
+                }
+                return
 
         # In proactive mode, prepend a synthetic user nudge so the
         # OpenAI/Anthropic API has something to respond to even when

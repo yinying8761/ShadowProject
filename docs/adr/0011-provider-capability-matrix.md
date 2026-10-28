@@ -116,3 +116,10 @@ is the same: **facts about a provider were encoded as code, in several places.**
   `capability_table` (name / kind / allowed shapes, in display order) next to
   `capabilities` (value + source), so the settings panel never re-declares the table —
   adding a capability is still a one-file change.
+- **Images: the shape is a formatter method, the choice is a capability (ticket #02).**
+  `MessageFormatter.image_part()` is the OpenAI-compatible payload, `AnthropicFormatter`
+  overrides it, `GeminiFormatter` carries the native shape; `get_image_formatter(image_api)`
+  maps the capability value to the class that owns the shape (no second payload registry).
+  Because the shape must match the wire (`image_url` for the OpenAI SDK, `source` for the
+  Anthropic SDK), `LLMService.image_part()` refuses a capability value that disagrees with
+  the configured SDK instead of shipping a payload the endpoint cannot parse.
