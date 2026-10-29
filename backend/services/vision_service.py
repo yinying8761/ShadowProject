@@ -1,16 +1,28 @@
 """
-Vision specialist agent.
+Vision specialist (fallback only).
 
-Takes raw image bytes + an optional focus question and returns
-a short text description that the character agent can consume
-as a tool result. The character agent never sees the image itself —
-this keeps vision-model tokens isolated from the dialogue context.
+Since ticket #05 the main model looks at the screen itself; this module survives as the
+**specialist fallback** for models that cannot see images. It takes raw image bytes plus
+an optional focus question and returns a short text description.
+
+Contract (deliberate): it either returns a real description or **raises**
+`VisionUnavailable`. It never returns an error string as if it were a description —
+that is exactly how a 429 once got recited as screen content for days (2026-10-20).
+
+The image is never written to disk and never enters the conversation history.
 """
-import base64
 import traceback
+
 from config import settings
+from services.formatters.images import image_part, text_part
 
 
+class VisionUnavailable(RuntimeError):
+    """专家视觉模型用不了（没配置 / 调用失败 / 什么都没返回）。"""
+
+
+#: 观察屏幕用的提示词 —— **唯一一份**：主模型看屏（services/vision_tool.py）与专家
+#: 模型共用。结尾那段"忽略自己的浮窗"很重要，否则模型会去描述它自己。
 DEFAULT_PROMPT = (
     "你是一个屏幕观察助手。请简洁、客观地描述屏幕上的内容，"
     "重点包括：用户正在使用的应用、当前在做什么、屏幕上的关键文字或元素、"
@@ -25,7 +37,7 @@ DEFAULT_PROMPT = (
 
 
 class VisionService:
-    """Lightweight wrapper around a vision-capable LLM."""
+    """Lightweight wrapper around a vision-capable LLM (the specialist)."""
 
     def __init__(self):
         self._clients: dict[str, object] = {}
@@ -55,15 +67,13 @@ class VisionService:
         focus: str | None = None,
         max_tokens: int = 400,
     ) -> str:
-        """
-        Send an image to the vision model. Returns a short text description.
+        """Describe the screen. Returns a description or raises `VisionUnavailable`.
+
         Caller must pre-compress the image to keep token cost down.
         """
         if not settings.vision_enabled():
-            return (
-                "(视觉功能未启用：可通过 MCP 接入免费视觉服务，"
-                "复制 mcp_servers.example.json 为 data/mcp_servers.json 并配置智谱 API Key；"
-                "或在 .env 配置 VISION_API_KEY + VISION_PROVIDER 使用传统方式)"
+            raise VisionUnavailable(
+                "没有配置备用视觉模型（VISION_API_KEY 为空），而当前模型也不能看图"
             )
 
         prompt = DEFAULT_PROMPT
@@ -73,8 +83,11 @@ class VisionService:
         sdk_type = settings.get_vision_sdk_type()
         model = settings.get_vision_model()
 
-        print(f"[VISION] calling model={model} sdk={sdk_type} "
-              f"bytes={len(image_bytes)} focus={focus!r}", flush=True)
+        print(
+            f"[VISION] specialist model={model} sdk={sdk_type} "
+            f"bytes={len(image_bytes)} focus={focus!r}",
+            flush=True,
+        )
 
         try:
             if sdk_type == "anthropic":
@@ -85,12 +98,15 @@ class VisionService:
                 result = await self._describe_openai(
                     image_bytes, mime_type, prompt, model, max_tokens
                 )
-            print(f"[VISION] success: {result[:120]}...", flush=True)
-            return result
         except Exception as e:
             tb = traceback.format_exc()
-            print(f"[VISION] ERROR: {type(e).__name__}: {e}\n{tb}", flush=True)
-            return f"(视觉模型调用失败: {type(e).__name__}: {e})"
+            print(f"[VISION] specialist ERROR: {type(e).__name__}: {e}\n{tb}", flush=True)
+            raise VisionUnavailable(f"视觉模型调用失败（{type(e).__name__}: {e}）") from e
+
+        if not result.strip():
+            raise VisionUnavailable("视觉模型没有返回任何描述")
+        print(f"[VISION] specialist success: {result[:120]}...", flush=True)
+        return result
 
     async def _describe_openai(
         self,
@@ -100,24 +116,14 @@ class VisionService:
         model: str,
         max_tokens: int,
     ) -> str:
-        b64 = base64.b64encode(image_bytes).decode("ascii")
-        data_url = f"data:{mime_type};base64,{b64}"
+        part = image_part("openai", image_bytes, mime_type)
+        # 这张图已经被降采样过；再让 provider 按"低细节"计费，省一半图片 token。
+        part["image_url"]["detail"] = "low"
         client = self._get_openai_client()
         resp = await client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url, "detail": "low"},
-                        },
-                    ],
-                }
-            ],
+            messages=[{"role": "user", "content": [text_part(prompt), part]}],
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -129,7 +135,6 @@ class VisionService:
         model: str,
         max_tokens: int,
     ) -> str:
-        b64 = base64.b64encode(image_bytes).decode("ascii")
         client = self._get_anthropic_client()
         resp = await client.messages.create(
             model=model,
@@ -138,15 +143,8 @@ class VisionService:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime_type,
-                                "data": b64,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
+                        image_part("anthropic", image_bytes, mime_type),
+                        text_part(prompt),
                     ],
                 }
             ],

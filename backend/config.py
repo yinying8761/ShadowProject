@@ -109,36 +109,29 @@ PROVIDER_PRESETS = {
 }
 
 
-# Vision-capable model presets (for the visual specialist agent).
+# 专家视觉模型的预设（ticket 05 之后**只**在主模型看不了时兜底，见 services/vision_tool.py）。
+# 删掉了已停用的 `qwen` / `qwen-vl-max`：那正是"第二个互不相干的预设表让一个退役模型
+# 在产品里留了好几周"的来源（ADR-0011）。base_url / sdk_type 不在这里重复 —— 直接取
+# 同一个供应商在 PROVIDER_PRESETS 里的值（见下方 get_vision_* 的兜底）。
 VISION_PRESETS = {
-    "qwen": {
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "default_model": "qwen-vl-max",
-        "sdk_type": "openai",
-        "description": "Qwen-VL (Alibaba)",
-    },
     "openai": {
-        "base_url": None,
         "default_model": "gpt-4o-mini",
-        "sdk_type": "openai",
         "description": "GPT-4o-mini",
     },
     "anthropic": {
-        "base_url": None,
         "default_model": "claude-haiku-4-5-20251001",
-        "sdk_type": "anthropic",
         "description": "Claude Haiku 4.5",
     },
+    "gemini": {
+        "default_model": "gemini-2.5-flash",
+        "description": "Google Gemini (OpenAI 兼容端点)",
+    },
     "zhipu": {
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "default_model": "glm-4v-flash",
-        "sdk_type": "openai",
         "description": "ZhipuAI GLM-4V",
     },
     "custom": {
-        "base_url": None,
         "default_model": "",
-        "sdk_type": "openai",
         "description": "Custom vision endpoint",
     },
 }
@@ -161,18 +154,13 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_api_key: str = ""
 
-    # ---- Vision (specialist agent for screen understanding) ----
-    # If vision_api_key is empty, the see_screen tool returns an error
-    # so the user knows they need to configure a vision-capable model.
+    # ---- Vision (specialist fallback for screen understanding, ticket #05) ----
+    # 主模型能看图时这些**都不用配**（截图直接进当轮请求）。只有主模型不能看时才用
+    # 这里的专家视觉模型；两者都没有 → see_screen 返回明确的"看不了"错误。
     vision_provider: str = ""
     vision_model: str = ""
     vision_base_url: str = ""
     vision_api_key: str = ""
-    # Tool name of the MCP vision server (e.g. mcp__vision__analyze_image).
-    # Leave empty for the default; set it when the server is named differently
-    # in data/mcp_servers.json — a mismatch only makes see_screen fall back to
-    # the legacy vision model, so it fails silently (ADR-0010).
-    vision_mcp_tool: str = ""
 
     # ---- Server ----
     host: str = "127.0.0.1"
@@ -274,15 +262,17 @@ class Settings(BaseSettings):
     def get_vision_preset(self) -> dict | None:
         return VISION_PRESETS.get(self.vision_provider, VISION_PRESETS.get("custom"))
 
+    def _vision_provider_row(self) -> dict:
+        """同一个供应商在 PROVIDER_PRESETS 里的那一行（base_url / sdk_type 的唯一来源）。"""
+        return PROVIDER_PRESETS.get(self.vision_provider, PROVIDER_PRESETS.get("custom")) or {}
+
     def get_vision_base_url(self) -> str | None:
         if self.vision_base_url:
             return self.vision_base_url
-        preset = self.get_vision_preset()
-        return preset.get("base_url") if preset else None
+        return self._vision_provider_row().get("base_url")
 
     def get_vision_sdk_type(self) -> str:
-        preset = self.get_vision_preset()
-        return preset.get("sdk_type", "openai") if preset else "openai"
+        return self._vision_provider_row().get("sdk_type", "openai")
 
     def get_vision_model(self) -> str:
         if self.vision_model:

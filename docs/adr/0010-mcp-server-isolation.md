@@ -1,5 +1,12 @@
 # MCP servers: one actor task each, one venv each
 
+> **Partially superseded (ticket #05):** the vision server this ADR was written around has
+> been *deleted*, not isolated — `see_screen` now uses the main model (specialist model as
+> fallback), and the single-server adaptation (`VISION_MCP_TOOL`, `vision_mcp_tool`, the
+> 25 s MCP-vision deadline, the failover-to-legacy note) is gone with it. The rules this
+> ADR established — one actor task per server, per-server venv isolation, **no adaptation
+> for a single server's private schema** — stand and are now the only thing MCP has to obey.
+
 The vision MCP server stopped starting (`mcp` 1.8.1 crashes on Python 3.14 while
 registering its tools: `TypeError: issubclass() arg 1 must be a class`, from a
 parameter annotation that arrives as a string), and the app logged

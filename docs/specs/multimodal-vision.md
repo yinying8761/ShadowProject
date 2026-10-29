@@ -1,6 +1,6 @@
 # 视觉能力：从「专家模型转述」改为「主模型自己看图」
 
-> 日期：2026-10-22 | 状态：**待实施** | 关联：`docs/adr/0010-mcp-server-isolation.md`、`docs/adr/0011-provider-capability-matrix.md`、`docs/specs/mcp-integration(done).md`
+> 日期：2026-10-22 | 状态：**已实施（tickets 01 / 02 / 05：能力表、截图进当轮、see_screen 走主模型 + 退役 MCP 视觉）** | 关联：`docs/adr/0010-mcp-server-isolation.md`、`docs/adr/0011-provider-capability-matrix.md`、`docs/specs/mcp-integration(done).md`
 
 ## Problem Statement
 

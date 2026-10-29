@@ -314,13 +314,9 @@ class TestDefaultTimeouts:
         assert _default_timeout_sec("mcp__github__list_issues") == 30.0
 
     def test_screen_tools_40s(self):
-        # 40s, not 15s: see_screen is an MCP network call now, and the sandbox
-        # must not cancel it before its own deadline (25s) fires — a cancelled
-        # call_tool corrupts the MCP session (ADR-0010).
+        # 40s：see_screen 要拍图 + 让模型描述（主模型优先、专家视觉模型兜底，ticket 05），
+        # 是一次真实的网络调用 —— 别让沙箱先砍掉它。
         assert _default_timeout_sec("see_screen") == 40.0
-        from tools.screen_tools import VISION_TIMEOUT_SEC
-
-        assert VISION_TIMEOUT_SEC < 40.0
 
     def test_unknown_tools_10s(self):
         assert _default_timeout_sec("some_future_tool") == 10.0

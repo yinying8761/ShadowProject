@@ -114,8 +114,10 @@ const zh: TranslationDict = {
   'Search Files': '搜索文件',
   'See Screen': '查看屏幕',
   'This will modify a file on your computer.': '此操作将修改您计算机上的文件。',
-  'AI will capture your current screen and send it to the vision model.':
-    'AI 将截取当前屏幕并发送给视觉模型分析。',
+  'AI will capture your current screen to answer this turn.':
+    'AI 将截取你当前的屏幕用于回答这一轮。',
+  'This model cannot see images — the backup vision model will be used.':
+    '当前模型不支持视觉，将使用备用视觉模型。',
   'Target path:': '目标路径：',
   'No specific focus.': '无特定关注点。',
   Focus: '关注点',

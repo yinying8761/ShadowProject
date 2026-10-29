@@ -1,8 +1,10 @@
 import { useChat } from '../../hooks/useChat';
+import { useAppStore } from '../../stores/appStore';
 import { useTranslation } from '../../i18n/useTranslation';
 
 export function ApprovalDialog() {
   const { pendingApproval, sendApprovalResponse } = useChat();
+  const capabilities = useAppStore((s) => s.config.capabilities);
   const { t } = useTranslation();
 
   if (!pendingApproval) return null;
@@ -16,6 +18,8 @@ export function ApprovalDialog() {
     : toolName);
   const hasPath = Boolean(args.path);
   const focusText = typeof args.focus === 'string' && args.focus ? args.focus : t('No specific focus.');
+  // 主模型明确看不了时，审批框里说清楚这一眼会由备用视觉模型来看（spec: 审批文案）。
+  const modelCannotSee = capabilities?.supports_vision?.value === false;
 
   const renderArgValue = (value: unknown): string => {
     if (typeof value === 'string') {
@@ -80,8 +84,11 @@ export function ApprovalDialog() {
 
           {toolName === 'see_screen' ? (
             <div className="space-y-1 rounded-lg border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-[11px] text-amber-400/80">
-              <div>{t('AI will capture your current screen and send it to the vision model.')}</div>
+              <div>{t('AI will capture your current screen to answer this turn.')}</div>
               <div className="text-white/60">{t('Focus')}: {focusText}</div>
+              {modelCannotSee ? (
+                <div>{t('This model cannot see images — the backup vision model will be used.')}</div>
+              ) : null}
             </div>
           ) : null}
         </div>

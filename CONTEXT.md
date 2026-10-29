@@ -57,7 +57,10 @@ backend/
     memory_extractor.py   # LLM memory extraction + dedup + store
     tool_trace_store.py   # async writer for tool_runs
     embedding_service.py  # embeddings (API or local fastembed)
-    vision_service.py     # legacy screen-understanding vision (fallback to MCP)
+    vision_service.py     # specialist vision model (main model cannot see → fallback)
+    vision_route.py       # pure 3-way decision: mount images / specialist / explicit error
+    vision_turn.py        # landing for one "look at my screen" (capture or describe)
+    vision_tool.py        # see_screen: main model first, specialist fallback, else error
     screen_capture_gate.py # gate that asks approval before capturing screen
     message_augmenter.py  # search hint + POI injection before agent.run (ADR-0003)
     tts_service.py, weather_service.py, location_service.py
@@ -192,8 +195,9 @@ pops it and emits `memory_updated`.
   newer `mcp` SDK does not force one on the app (which is pinned to
   `mcp 1.8.1` by `amap-mcp-server`, and cannot move anyway because
   `mcp>=1.30` on py3.14 needs `starlette>=0.48` while `fastapi` needs `<0.47`).
-  `data/mcp_servers.json` is local (gitignored); `.venv-vision/` is the vision
-  server's interpreter.
+  `data/mcp_servers.json` is local (gitignored). The app itself hardcodes nothing
+  about any single server — the former vision-server venv (`.venv-vision/`) and its
+  tool-name/argument adaptation are gone with ticket #05 (ADR-0010).
 
 ### 3.6 Persistence
 
@@ -354,8 +358,19 @@ mutually exclusive routes to take:
   captured twice, and the fingerprint is computed from the very bytes that were captured
   (one screenshot per capture, not two). The proactive watcher keeps its fingerprint dedup
   + throttle unchanged.
-- Group chats do not mount images (no single character, and the tool path covers them);
-  `see_screen` **as a tool** still goes through the specialist path until ticket #05.
+- Group chats do not mount images (no single character, and the tool path covers them).
+  `see_screen` **as a tool** goes through `services/vision_tool.describe_screen()`, which
+  uses the **same** `plan_vision_route` decision as the session path: the main model
+  describes the screenshot and returns text (the contract stays `dispatch -> str`); only a
+  model that **cannot** see falls back to the specialist. A shape problem (unknown /
+  SDK-mismatched `image_api`) or an empty main-model reply is an **explicit error**, never
+  a quiet switch to another model, and with neither backend available the tool returns a
+  "cannot look" error instead of inventing a screen. The specialist either returns a real
+  description or raises `VisionUnavailable` — an error string must never travel as screen
+  content (that is the 2026-10-20 lesson). The per-MCP-server vision adaptation
+  (`_try_mcp_vision`, `VISION_MCP_TOOL`, the `vision_mcp_tool` setting, the `vision` server
+  entry in the example config) is **gone** (ticket #05, ADR-0010): MCP is
+  configuration-only again, and the retired `qwen-vl-max` vision preset is removed.
 
 ## 4. Frontend shape
 

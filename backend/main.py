@@ -282,11 +282,6 @@ def register_tools(registry=None):
 from core.tool_runtime import ToolRuntime
 tool_runtime: ToolRuntime = register_tools(ToolRuntime(enable_circuit_breaker=True))
 
-# Wire MCP dispatch into the screen tool so see_screen() can route
-# vision calls through MCP when a vision server is connected.
-from tools.screen_tools import set_mcp_dispatch
-set_mcp_dispatch(tool_runtime.dispatch)
-
 
 # ---- Lifespan & Seed ----
 

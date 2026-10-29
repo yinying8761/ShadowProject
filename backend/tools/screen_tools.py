@@ -1,12 +1,16 @@
 """
-Screen capture + vision tool.
+Screen capture + vision tool (ticket 05 / spec: multimodal-vision).
 
 Pipeline:
-  mss screenshot -> Pillow resize/compress -> vision_service describes it
-  -> short text returned to the character agent as a tool result.
+  mss screenshot -> Pillow resize/compress -> **主模型**看图（它看不了才用专家视觉模型）
+  -> 描述文字作为工具结果返回（`dispatch -> str` 契约不变）。
 
-The image is held only in memory; it is never written to disk and
-never put into the character agent's conversation history.
+The image is held only in memory; it is never written to disk and never put into
+the character agent's conversation history.
+
+**不为任何单个 MCP server 写适配**（ADR-0010）：这里没有"某个视觉 server 的工具名/
+参数名/环境变量"的知识 —— MCP 是配置即插即拔。之前那套适配（`_try_mcp_vision`、
+`VISION_MCP_TOOL`、`vision_mcp_tool`）随本票删除。
 """
 import asyncio
 import io
@@ -15,7 +19,7 @@ import traceback
 from collections import deque
 from typing import Optional
 
-from services.vision_service import vision_service
+from services.vision_tool import describe_screen
 
 
 MAX_DIMENSION = 1280  # Resize so longest side <= 1280 before JPEG encoding
@@ -165,174 +169,26 @@ class ScreenFingerprintStore:
         return len(self._hashes)
 
 
-# --- MCP vision dispatch (set by main.py) ---
-
-_mcp_dispatch = None
-"""Module-level reference to ToolRuntime.dispatch, set by main.py
-after ToolRuntime and MCP servers are initialised."""
-
-
-def set_mcp_dispatch(dispatch) -> None:
-    """Wire the MCP tool dispatcher so :func:`see_screen` can route
-    vision calls through MCP when available."""
-    global _mcp_dispatch
-    _mcp_dispatch = dispatch
-
-
 # --- Public tool ---
-
-#: Default name of the MCP vision tool. The server name is whatever the user
-#: called it in data/mcp_servers.json, so this is overridable via
-#: ``VISION_MCP_TOOL`` in .env — a mismatch here is silent (the dispatch just
-#: errors and see_screen falls back), which is exactly how the vision path
-#: stayed broken while the MCP server was connecting fine.
-VISION_MCP_TOOL = "mcp__vision__analyze_image"
-
-
-def _vision_mcp_tool() -> str:
-    """Resolve the MCP vision tool name (settings override → default)."""
-    from config import settings
-
-    return settings.vision_mcp_tool or VISION_MCP_TOOL
-
-
-#: Why the last MCP vision attempt produced nothing. ``see_screen`` reports this
-#: to the agent instead of letting a provider error masquerade as a description.
-_last_vision_error: str | None = None
-
-#: Deadline for the MCP vision call. It must stay **below** the sandbox timeout
-#: for ``see_screen`` (40s, ``tool_runtime._default_timeout_sec``): if the
-#: sandbox fires first it cancels the MCP ``call_tool`` mid-flight, and
-#: cancelling inside the SDK is what corrupts its session (ADR-0010). Here the
-#: wait is abandoned instead — see ``_try_mcp_vision``.
-VISION_TIMEOUT_SEC = 25.0
-
-#: Provider-side failures that arrive as *ordinary text* (the vision server
-#: answers a 429 / missing key as a normal tool result, not ``isError``), so
-#: they have to be recognised by content or they get returned as a "description".
-_VISION_ERROR_MARKERS = (
-    "视觉服务链全部失败",
-    "视觉模型调用失败",
-    "视觉请求失败",
-    "余额不足",
-    "访问量过大",
-    "缺少 VISION_API_KEY",
-    "Error code:",
-    "HTTP 400",
-    "HTTP 401",
-    "HTTP 429",
-)
-
-
-def _looks_like_vision_error(text: str) -> bool:
-    """True when *text* is the vision backend complaining, not describing."""
-    return any(marker in text for marker in _VISION_ERROR_MARKERS)
-
-
-def _consume_task_result(task: asyncio.Task) -> None:
-    """Done-callback for an abandoned call: never leave its exception unread."""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        print(f"[SCREEN] late MCP vision result failed: {exc!r}", flush=True)
-
-
-async def _try_mcp_vision(image_bytes: bytes, focus: str | None) -> str | None:
-    """Try to describe *image_bytes* via MCP vision tool.
-
-    Returns the description text, or *None* when the MCP tool is unavailable or
-    the call failed (the reason is left in ``_last_vision_error``).
-
-    The call is awaited with ``asyncio.wait`` instead of ``wait_for``: on
-    timeout it is *abandoned*, never cancelled. A cancelled ``call_tool`` tears
-    the MCP client's anyio scope down exactly like a cancelled connect did, and
-    a hung vision server must not wedge the app's tool loop (2026-10-20: the 15s
-    sandbox timeout fired mid-call and the backend went away).
-    """
-    global _last_vision_error
-    _last_vision_error = None
-
-    if _mcp_dispatch is None:
-        _last_vision_error = "未接入 MCP 视觉服务"
-        return None
-
-    import base64 as _b64
-
-    try:
-        b64 = _b64.b64encode(image_bytes).decode("ascii")
-        # Argument names follow the vision server's own schema
-        # (`analyze_image(image: str, prompt: str | None = None, task=...)`):
-        # an image URL/path/base64 string, not a dict of bytes.
-        task = asyncio.create_task(_mcp_dispatch(
-            _vision_mcp_tool(),
-            {
-                "image": f"data:image/jpeg;base64,{b64}",
-                "prompt": focus or "",
-            },
-        ))
-        done, _pending = await asyncio.wait({task}, timeout=VISION_TIMEOUT_SEC)
-        if task not in done:
-            _last_vision_error = f"视觉服务 {VISION_TIMEOUT_SEC:.0f}s 内没有响应"
-            print(f"[SCREEN] MCP vision timed out: {_last_vision_error}", flush=True)
-            task.add_done_callback(_consume_task_result)
-            return None
-
-        result_str = task.result()
-        # MCP handler returns JSON — try to extract the description
-        try:
-            data = json.loads(result_str)
-            if isinstance(data, dict):
-                # The vision server reports failures *inside* an ordinary tool
-                # result: {"success": false, "result": "<error text>",
-                # "error": "VISION_API_ERROR"}. Its `result` field holds the
-                # provider complaint, so the flags must be honoured *before* any
-                # field is treated as a description (2026-10-22: this exact
-                # shape put a 429 stack into a user message and the character
-                # recited it for days).
-                text = data.get("description") or data.get("result") or data.get("text")
-                failed = data.get("success") is False or bool(data.get("error"))
-                if failed or (text and _looks_like_vision_error(str(text))):
-                    reason = str(text or data.get("error") or "").strip()[:300]
-                    _last_vision_error = reason or "视觉服务返回失败"
-                    print(f"[SCREEN] MCP vision failed: {_last_vision_error}", flush=True)
-                    return None
-                if text:
-                    return str(text)
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # Non-JSON result — use as-is if it looks like a description. A
-        # provider failure also arrives this way, and handing it to the agent as
-        # a "description" is how a 429 turned into "the model saw the screen".
-        if result_str and _looks_like_vision_error(result_str):
-            _last_vision_error = result_str[:300]
-            print(f"[SCREEN] MCP vision failed: {_last_vision_error}", flush=True)
-            return None
-        if result_str and len(result_str) > 10:
-            return result_str
-    except Exception as e:
-        _last_vision_error = f"{type(e).__name__}: {e}"
-        print(f"[SCREEN] MCP vision call failed: {_last_vision_error}", flush=True)
-
-    return None
 
 
 async def see_screen(focus: Optional[str] = None, monitor: int = 0) -> str:
-    """
-    Capture the screen and have the vision agent describe it.
+    """Capture the screen and let a model describe it.
 
-    Tries MCP vision first. When MCP is wired it is authoritative: a failure
-    returns an explicit ``error`` (never the retired legacy model, and never a
-    provider complaint dressed up as a description). The legacy
-    ``VisionService`` is used only when MCP is not configured at all.
+    **主模型优先**（ticket #05）：角色自己中途想看时，用主模型看图，把描述作为文字
+    返回 —— 工具契约不变（`dispatch -> str`，JSON 里带 `description`）。主模型看不了
+    （能力明确为否 / 不知道按哪种形状发图）才回落到专家视觉模型；两者都没有则返回
+    **明确的不可用错误**。
+
+    **不去重**：角色想再看一眼就得真的再截一次（指纹去重只服务主动陪伴那条路）。
 
     Args:
-        focus: Optional question/aspect for the vision agent to focus on,
+        focus: Optional question/aspect for the model to focus on,
                e.g. "用户在玩什么游戏" or "屏幕上有报错吗".
         monitor: Monitor index. 0 = full virtual desktop, 1 = primary, 2+ = others.
 
     Returns:
-        JSON string with the description and metadata.
+        JSON string with the description and metadata, or an ``error`` key.
     """
     try:
         image_bytes, width, height = await asyncio.to_thread(_capture_sync, monitor)
@@ -342,43 +198,33 @@ async def see_screen(focus: Optional[str] = None, monitor: int = 0) -> str:
         print(f"[SCREEN] capture failed: {type(e).__name__}: {e}\n{tb}", flush=True)
         return json.dumps({"error": f"Screen capture failed: {type(e).__name__}: {e}"})
 
-    # ── Try MCP vision ────────────────────────────────────────────
-    mcp_wired = _mcp_dispatch is not None
-    description = await _try_mcp_vision(image_bytes, focus)
-    if description is not None:
-        print(f"[SCREEN] described via MCP vision ({len(description)} chars)", flush=True)
-        return json.dumps({
-            "description": description,
+    try:
+        result = await describe_screen(image_bytes=image_bytes, focus=focus)
+    except Exception as e:
+        print(f"[SCREEN] vision call failed: {type(e).__name__}: {e}", flush=True)
+        return json.dumps(
+            {
+                "error": (
+                    f"视觉调用失败（{type(e).__name__}: {e}）。"
+                    "不要编造屏幕内容；如实告诉用户这次没看成，可以稍后再试。"
+                )
+            },
+            ensure_ascii=False,
+        )
+
+    if result.error or not result.description:
+        reason = (result.error or "视觉没有返回内容").rstrip("。. ")
+        return json.dumps(
+            {"error": f"{reason}。不要编造屏幕内容；如实告诉用户这次没看成。"},
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {
+            "description": result.description,
             "image_size": f"{width}x{height}",
             "bytes": len(image_bytes),
-            "vision_backend": "mcp",
-        }, ensure_ascii=False)
-
-    if mcp_wired:
-        # MCP is the configured vision path, so the legacy model is NOT tried:
-        # .env still names a retired model (qwen-vl-max), and a provider error
-        # must never be handed to the agent as if it were the screen content.
-        # The agent gets an explicit failure and says so honestly.
-        reason = _last_vision_error or "MCP 视觉工具调用失败"
-        print(f"[SCREEN] vision unavailable via MCP: {reason}", flush=True)
-        return json.dumps({
-            "error": (
-                f"视觉服务暂时不可用（{reason}）。"
-                "不要编造屏幕内容；如实告诉用户这次没看成，可以稍后再试。"
-            ),
-        }, ensure_ascii=False)
-
-    # ── Legacy vision_service (only when MCP is not configured at all) ────
-    description = await vision_service.describe_image(
-        image_bytes,
-        mime_type="image/jpeg",
-        focus=focus,
+            "vision_backend": result.backend,
+        },
+        ensure_ascii=False,
     )
-    print("[SCREEN] described via legacy vision model", flush=True)
-
-    return json.dumps({
-        "description": description,
-        "image_size": f"{width}x{height}",
-        "bytes": len(image_bytes),
-        "vision_backend": "legacy",
-    }, ensure_ascii=False)

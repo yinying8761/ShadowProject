@@ -123,3 +123,13 @@ is the same: **facts about a provider were encoded as code, in several places.**
   Because the shape must match the wire (`image_url` for the OpenAI SDK, `source` for the
   Anthropic SDK), `LLMService.image_part()` refuses a capability value that disagrees with
   the configured SDK instead of shipping a payload the endpoint cannot parse.
+- **The tool path follows the same asymmetry (ticket #05).** `see_screen` routes through
+  the same `plan_vision_route` decision as the session path (`services/vision_tool.py`):
+  the main model describes the screenshot, a model that **cannot** see falls back to the
+  specialist, and a shape problem (unknown or SDK-mismatched `image_api`) or an empty
+  main-model reply is reported as an error rather than quietly answered by another model.
+  The specialist either returns a real description or raises, so an error string can never
+  travel as screen content. With that in place the per-MCP-server vision adaptation
+  (`_try_mcp_vision`, `VISION_MCP_TOOL`, `vision_mcp_tool`) and the retired `qwen-vl-max`
+  vision preset are deleted: the only vendor knowledge left is this table plus the
+  formatter/parser seams (ADR-0010's premise restored).
