@@ -137,6 +137,10 @@ VISION_PRESETS = {
 }
 
 
+#: searxng 的默认地址（占位符：没显式选中/改成别的地址时不进搜索链，见 search_tools）。
+SEARXNG_DEFAULT_URL = "http://127.0.0.1:8080"
+
+
 class Settings(BaseSettings):
     # Check backend/.env first, then project root .env
     _env_files = [str(BACKEND_DIR / ".env"), str(BACKEND_DIR.parent / ".env")]
@@ -180,10 +184,14 @@ class Settings(BaseSettings):
     embedding_local: bool = False
 
     # ---- Search ----
-    search_backend: str = "duckduckgo"  # duckduckgo | searxng | bing
-    searxng_url: str = "http://127.0.0.1:8080"
+    search_backend: str = "duckduckgo"  # duckduckgo | bing_web | searxng | bing
+    searxng_url: str = SEARXNG_DEFAULT_URL
     bing_api_key: str = ""
     search_proxy: str = ""  # e.g. http://127.0.0.1:7890 for VPN/proxy
+    # 原生搜索进链首（ticket 03）；关掉即回到纯本地链，用于对照与排障。
+    search_prefer_native: bool = True
+    # 原生搜索的整体超时：超时/失败都只降级到本地链，不抛错。
+    search_timeout: float = 20.0
 
     # ---- Location & Weather ----
     amap_api_key: str = ""  # 高德地图 API Key (Web服务)

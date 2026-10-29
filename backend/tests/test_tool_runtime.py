@@ -308,7 +308,10 @@ class TestDefaultTimeouts:
 
     def test_network_tools_30s(self):
         assert _default_timeout_sec("fetch_url") == 30.0
-        assert _default_timeout_sec("research") == 30.0
+
+    def test_research_gets_a_longer_budget_than_a_single_fetch(self):
+        # research 内部是一条后端链（原生 + 本地抓取逐级降级），30s 会让降级来不及发生
+        assert _default_timeout_sec("research") == 60.0
 
     def test_mcp_tools_30s(self):
         assert _default_timeout_sec("mcp__github__list_issues") == 30.0

@@ -52,18 +52,11 @@ class ScreenDescription:
     error: str | None = None
 
 
-#: 复用一个 LLMService（它内部缓存 SDK client；`invalidate_llm_clients()` 会在换配置时
-#: 清掉那些 client）。每次看屏都新建一个虽不会漏（WeakSet），但白白重建连接池。
-_shared_llm = None
-
-
 def _default_llm():
-    global _shared_llm
-    if _shared_llm is None:
-        from services.llm_service import LLMService
+    """共享的 LLMService（进程内一个实例，缓存 SDK client —— 见 llm_service.shared_llm）。"""
+    from services.llm_service import shared_llm
 
-        _shared_llm = LLMService()
-    return _shared_llm
+    return shared_llm()
 
 
 def _configured_specialist():

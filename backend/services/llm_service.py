@@ -6,6 +6,7 @@ from typing import AsyncIterator, Awaitable, Callable
 from services.formatters import get_formatter, MessageFormatter
 from services.llm_config import LLMRuntimeConfig, default_runtime
 from services.retry import RetryCallback, is_retryable, retry
+from services.search_hits import SearchHit, parse_search_hits, parser_for
 
 # Live LLMService instances (weak refs) — used to invalidate cached SDK
 # clients after a runtime-config change without tracking each call site.
@@ -35,6 +36,13 @@ def _llm_timeout():
         write=LLM_WRITE_TIMEOUT,
         pool=LLM_POOL_TIMEOUT,
     )
+
+
+def _search_timeout() -> float:
+    """原生搜索的整体超时（秒）。失败/超时都只是降级，不抛给调用方。"""
+    from config import settings
+
+    return float(getattr(settings, "search_timeout", 20.0))
 
 
 def _is_retryable_llm_error(exc: Exception) -> bool:
@@ -107,6 +115,97 @@ class LLMService:
                 "请把 image_api 设为该供应商实际使用的形状"
             )
         return image_part(api, image_bytes, mime)
+
+    def _native_api(self) -> str | None:
+        """这次能用哪种原生搜索形状（None = 不尝试）。
+
+        三条都要成立：能力表**明确**支持（`native_search=True`；未知不算 —— 搜索是可选
+        增强，ADR-0011 与视觉相反）、形状有 parser（ticket 03 只落地 openai / anthropic）、
+        形状与底层 SDK 对得上。**不抛错**：任何一条不满足就静默降级到本地链。
+        """
+        if not self._runtime.native_search_should_attempt():
+            return None
+        api = self._runtime.search_api()
+        if api is None or parser_for(api) is None:
+            return None
+        if api != self._runtime.get_sdk_type():
+            print(
+                f"[Search] native skipped: search_api {api!r} does not match "
+                f"SDK {self._runtime.get_sdk_type()!r}",
+                flush=True,
+            )
+            return None
+        return api
+
+    def native_search_available(self) -> bool:
+        """原生搜索此刻是否可用（后端链算顺序时用，与实际调用同一处规则）。"""
+        return self._native_api() is not None
+
+    def native_search_api(self) -> str | None:
+        """`native_search` 会用哪种形状（None = 不走原生；日志用，保证打的是实际值）。"""
+        return self._native_api()
+
+    async def native_search(
+        self, query: str, limit: int = 5
+    ) -> list[SearchHit] | None:
+        """用提供商的原生 web search 搜索（ticket 03）。
+
+        返回统一结构的命中；`None` 表示「不支持 / 本次失败」—— 由调用方降级到本地链，
+        **不向上抛**（全链失败也只是空结果）。
+        """
+        api = self._native_api()
+        if api is None:
+            return None
+        try:
+            response = await asyncio.wait_for(
+                self._native_search_request(api, query, limit), timeout=_search_timeout()
+            )
+            hits = parse_search_hits(api, response)[:limit]
+        except Exception as e:
+            # 请求失败、超时、**或解析崩了**，都只是「这条后端不行」：降级，绝不外抛
+            print(
+                f"[Search] native api={api} failed: {type(e).__name__}: {e}",
+                flush=True,
+            )
+            return None
+
+        if not hits:
+            # 解析不出任何带来源的命中：与"失败"同义 —— 让链继续降级到本地抓取
+            # （spec：解析失败必须降级；空结果交给本地链去补，而不是当成"搜过了没有"）。
+            print(f"[Search] native api={api} parsed no hits; falling back", flush=True)
+            return None
+        print(f"[Search] native api={api} parsed {len(hits)} hits", flush=True)
+        return hits
+
+    async def _native_search_request(self, api: str, query: str, limit: int):
+        """按 `search_api` 发请求（只有形状不同，业务代码不按厂商判断）。
+
+        每种形状 = 一个请求体 + 一个 parser（`services/search_hits.py`）**成对**登记；
+        这里没有"默认落到 anthropic"的兜底 —— 未知形状直接放弃，交给本地链。
+        """
+        model = self._runtime.get_model()
+        if api == "openai":
+            # Responses API：`web_search` 是服务端工具，来源在 url_citation 注解里
+            return await self._get_openai_client().responses.create(
+                model=model,
+                tools=[{"type": "web_search"}],
+                input=query,
+            )
+        if api == "anthropic":
+            # 服务端 web_search 工具，结果在 web_search_tool_result 块里
+            return await self._get_anthropic_client().messages.create(
+                model=model,
+                max_tokens=1024,
+                tools=[
+                    {
+                        "type": "web_search_20250305",
+                        "name": "web_search",
+                        "max_uses": max(1, limit),
+                    }
+                ],
+                messages=[{"role": "user", "content": query}],
+            )
+        raise ValueError(f"no native search request shape for search_api={api!r}")
 
     def _get_openai_client(self):
         if "openai" not in self._clients:
@@ -475,3 +574,17 @@ def invalidate_llm_clients() -> None:
     """
     for llm in list(_instances):
         llm.invalidate_clients()
+
+
+_shared_llm: "LLMService | None" = None
+
+
+def shared_llm() -> LLMService:
+    """进程内共享的 ``LLMService``（缓存 SDK client；换配置时由上面那个函数清）。
+
+    工具路径（看屏幕 / 原生搜索）也要发 LLM 请求，别再各自造一个 —— 一个实例就够了。
+    """
+    global _shared_llm
+    if _shared_llm is None:
+        _shared_llm = LLMService()
+    return _shared_llm

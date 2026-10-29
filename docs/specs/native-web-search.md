@@ -1,6 +1,6 @@
 # 搜索：优先用提供商原生 web search / fetch，本地抓取降级
 
-> 日期：2026-10-22 | 状态：**待实施** | 关联：`docs/adr/0003-search-decision-rights.md`、`docs/specs/search-augmenter-degrade(done).md`
+> 日期：2026-10-22 | 状态：**部分实施（ticket 03：后端链 + 原生搜索 openai/anthropic；ticket 06 待做：原生抓取 + gemini/deepseek 分支）** | 关联：`docs/adr/0003-search-decision-rights.md`、`docs/specs/search-augmenter-degrade(done).md`
 
 ## Problem Statement
 

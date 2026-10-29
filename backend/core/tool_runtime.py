@@ -36,6 +36,10 @@ def _default_timeout_sec(tool_name: str) -> float:
     """Return the default sandbox timeout for *tool_name*."""
     if tool_name in _FILE_TOOLS:
         return 10.0
+    if tool_name == "research":
+        # research 内部是一条**后端链**（原生 20s + ddgs 6s/引擎 + bing_web 15s）再加重试：
+        # 30s 会让"降级"根本没机会发生 —— 沙箱先把它砍了，用户只看到 Timeout（ticket 03）。
+        return 60.0
     if tool_name in _NETWORK_TOOLS or tool_name.startswith("mcp__"):
         return 30.0
     if tool_name in _SCREEN_TOOLS:

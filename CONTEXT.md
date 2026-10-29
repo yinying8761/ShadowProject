@@ -61,6 +61,8 @@ backend/
     vision_route.py       # pure 3-way decision: mount images / specialist / explicit error
     vision_turn.py        # landing for one "look at my screen" (capture or describe)
     vision_tool.py        # see_screen: main model first, specialist fallback, else error
+    search_backends.py    # pure backend-chain order (native → local scrapers)
+    search_hits.py        # native search response → SearchHit, per search_api
     screen_capture_gate.py # gate that asks approval before capturing screen
     message_augmenter.py  # search hint + POI injection before agent.run (ADR-0003)
     tts_service.py, weather_service.py, location_service.py
@@ -371,6 +373,47 @@ mutually exclusive routes to take:
   (`_try_mcp_vision`, `VISION_MCP_TOOL`, the `vision_mcp_tool` setting, the `vision` server
   entry in the example config) is **gone** (ticket #05, ADR-0010): MCP is
   configuration-only again, and the retired `qwen-vl-max` vision preset is removed.
+
+### 3.9 Web search: native first, the local chain as fallback (ticket #03)
+
+`research` → `SearchAgent` → the `search` tool → `search_tools._do_search`, which walks a
+chain instead of a single scraper:
+
+```
+native  →  duckduckgo  →  bing_web  →  searxng  →  bing
+```
+
+- **The order is a pure function** (`services/search_backends.search_backend_order`): drop
+  what cannot work (no `SEARXNG_URL`, no `BING_API_KEY`, native off or unsupported) and put
+  the user's `SEARCH_BACKEND` first among the locals. `SEARCH_PREFER_NATIVE=false` restores
+  the pure-local chain for comparison.
+- **Degradation is the rule, never an exception**: a backend returns `[]` for "no results
+  but it worked" (the chain stops there) and `None` for "failed" (the chain continues);
+  the whole chain failing returns `[]`. That is the deliberate opposite of vision, where an
+  unknown shape must error — search is an optional enhancement (ADR-0011).
+- **Native results are parsed per `search_api`, not per vendor**
+  (`services/search_hits.py`): `openai` ← the Responses `web_search` tool's
+  `url_citation` annotations (or the Chat Completions search models' `message`
+  annotations), `anthropic` ← the server-side `web_search`'s `web_search_result`
+  blocks. Both become `SearchHit(title, url, snippet, source)`; a `search_api` without a
+  parser is **not** attempted. Note the presets: Gemini's row declares the `openai` shape
+  (it goes through Google's OpenAI-compatible endpoint, per the spec) — if that endpoint
+  does not serve `web_search`, the request fails and the chain degrades; the native
+  `gemini` grounding shape (and `deepseek`) arrives with ticket #06. Parsers are
+  defensive: a response with no usable citations yields no hits, and `native_search`
+  turns that into `None` so the chain **degrades** to the local scrapers rather than
+  claiming "searched, found nothing".
+- `LLMService.native_search()` returns `None` for "unsupported or failed" and never
+  raises — the parse happens inside the same try, so a malformed payload degrades too.
+  `native_search_available()` / `native_search_api()` are the one place that decides
+  (capability **explicitly** true — unknown does not attempt — + a parser + a shape that
+  matches the configured SDK), so the chain order and the actual call cannot disagree.
+- **Budget**: `research` gets a 60 s sandbox timeout (not the 30 s network default), so the
+  20 s native timeout plus the local fallbacks can actually finish before the sandbox
+  cancels the tool.
+- **Contracts unchanged** (ADR-0003): the main LLM still decides *whether* to search, the
+  `research` tool's signature/return shape is untouched, and the local scrapers stay as the
+  only path for providers without native search.
 
 ## 4. Frontend shape
 
