@@ -26,6 +26,7 @@ from services.capabilities import (
     apply_overrides,
     resolve_capabilities,
     resolve_api_shape,
+    should_attempt_native_fetch,
     should_attempt_native_search,
     should_attempt_vision,
 )
@@ -173,6 +174,10 @@ class LLMRuntimeConfig:
     def native_search_should_attempt(self) -> bool:
         """只有明确支持才试（搜索是可选增强）。"""
         return should_attempt_native_search(self._capability("native_search"))
+
+    def native_fetch_should_attempt(self) -> bool:
+        """只有明确支持才试（抓取同样是可选增强）。"""
+        return should_attempt_native_fetch(self._capability("native_fetch"))
 
     def copy_from(self, other: "LLMRuntimeConfig") -> None:
         """Overwrite this config's fields from *other*.

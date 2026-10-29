@@ -1,14 +1,18 @@
-"""搜索后端链（ticket 03 / spec S1 + S4）：顺序计算、失败降级、全链失败不抛。
+"""搜索后端链（ticket 03 / 06）：顺序计算、失败降级、全链失败不抛、原生抓取。
 
 `search_backend_order` 是纯函数（能力/配置 → 顺序）；降级用假后端验证真实链路：
-native 失败 → ddgs → bing_web → …，全失败返回空结果（**不抛错**）。
+native 失败 → ddgs → bing_web → …，全失败返回空结果（**不抛错**）。ticket 06 补上
+fetch_url 的原生抓取链路与 gemini / deepseek 两个原生分支。
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from config import settings
+from services.llm_config import LLMRuntimeConfig
+from services.llm_service import LLMService
 from services.search_backends import search_backend_order
 from tools import search_tools
 
@@ -361,3 +365,291 @@ class TestNativeSearchClient:
         )
 
         assert await llm.native_search("python") is None
+
+
+# ── ticket 06：gemini / deepseek 分支 ───────────────────────────────────────
+
+GEMINI_GROUNDING = {
+    "candidates": [
+        {
+            "groundingMetadata": {
+                "groundingChunks": [
+                    {"web": {"uri": "https://www.python.org/downloads/", "title": "Download Python"}}
+                ],
+                "groundingSupports": [],
+            }
+        }
+    ]
+}
+
+class TestNativeSearchBranches:
+    @pytest.mark.asyncio
+    async def test_gemini_uses_native_grounding_over_rest(self):
+        class FakeGemini:
+            def __init__(self):
+                self.calls: list[tuple[str, dict]] = []
+
+            async def generate(self, model, payload):
+                self.calls.append((model, payload))
+                return GEMINI_GROUNDING
+
+        gemini = FakeGemini()
+        llm = LLMService(
+            clients={"gemini": gemini},
+            runtime_config=LLMRuntimeConfig(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                capability_overrides={
+                    "gemini:gemini-2.5-flash": {
+                        "native_search": True,
+                        "search_api": "gemini",
+                    }
+                },
+            ),
+        )
+
+        hits = await llm.native_search("python 3.14")
+
+        assert gemini.calls[0][0] == "gemini-2.5-flash"
+        assert gemini.calls[0][1]["tools"] == [{"google_search": {}}]
+        assert [h.source for h in hits] == ["gemini"]
+
+    @pytest.mark.asyncio
+    async def test_gemini_degrades_when_the_rest_call_fails(self):
+        class BoomGemini:
+            async def generate(self, model, payload):
+                raise RuntimeError("404")
+
+        llm = LLMService(
+            clients={"gemini": BoomGemini()},
+            runtime_config=LLMRuntimeConfig(
+                provider="gemini",
+                model="",
+                capability_overrides={
+                    "gemini:": {"native_search": True, "search_api": "gemini"}
+                },
+            ),
+        )
+
+        assert await llm.native_search("python") is None
+
+    @pytest.mark.asyncio
+    async def test_deepseek_has_no_native_branch_so_it_degrades(self):
+        """DeepSeek 的搜索响应形状官方没公开：不发请求、直接降级（不编一个假形状）。"""
+        class Boom:
+            def __getattr__(self, name):
+                raise AssertionError("DeepSeek 的原生分支还没实现，不该发请求")
+
+        llm = LLMService(
+            clients={"openai": Boom()},
+            runtime_config=LLMRuntimeConfig(provider="deepseek"),
+        )
+
+        assert llm.native_search_available() is False
+        assert await llm.native_search("python") is None
+
+
+class TestGeminiRestUrl:
+    """原生 Gemini 的 URL 由缝拼装：预设的 `/v1beta/openai/` 要还原成 `/v1beta/models/…`。"""
+
+    def test_the_preset_compat_url_is_reduced_to_the_native_one(self):
+        from services.gemini_rest import GeminiRestClient
+
+        client = GeminiRestClient(
+            api_key="k",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+
+        assert client.generate_url("gemini-2.5-flash") == (
+            "https://generativelanguage.googleapis.com/v1beta"
+            "/models/gemini-2.5-flash:generateContent"
+        )
+
+    def test_an_explicit_native_url_is_used_as_is(self):
+        from services.gemini_rest import GeminiRestClient
+
+        client = GeminiRestClient(
+            api_key="k", base_url="https://proxy.example/v1beta/"
+        )
+
+        assert client.generate_url("m") == "https://proxy.example/v1beta/models/m:generateContent"
+
+    def test_the_default_host_is_used_when_none_is_configured(self):
+        from config import GEMINI_NATIVE_BASE_URL
+        from services.gemini_rest import GeminiRestClient
+
+        assert GeminiRestClient(api_key="k").generate_url("m") == (
+            f"{GEMINI_NATIVE_BASE_URL}/models/m:generateContent"
+        )
+
+
+# ── ticket 06：fetch_url 的原生抓取链路 ────────────────────────────────────
+
+FETCH_RESPONSE = {
+    "content": [
+        {
+            "type": "web_fetch_tool_result",
+            "content": {
+                "type": "web_fetch_result",
+                "url": "https://example.com/post",
+                "content": {
+                    "type": "document",
+                    "title": "Example Post",
+                    "text": "这是正文。",
+                },
+            },
+        }
+    ]
+}
+
+
+class TestNativeFetchClient:
+    @pytest.mark.asyncio
+    async def test_anthropic_fetch_returns_page_text(self):
+        class Messages:
+            async def create(self, **kwargs):
+                assert kwargs["tools"][0]["type"] == "web_fetch_20250910"
+                return FETCH_RESPONSE
+
+        llm = LLMService(
+            clients={"anthropic": SimpleNamespace(messages=Messages())},
+            runtime_config=LLMRuntimeConfig(provider="anthropic"),
+        )
+
+        page = await llm.native_fetch("https://example.com/post")
+
+        assert page.title == "Example Post"
+        assert page.text == "这是正文。"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_provider_returns_none(self):
+        class Messages:
+            async def create(self, **kwargs):
+                raise RuntimeError("403")
+
+        llm = LLMService(
+            clients={"anthropic": SimpleNamespace(messages=Messages())},
+            runtime_config=LLMRuntimeConfig(provider="anthropic"),
+        )
+
+        assert await llm.native_fetch("https://example.com/post") is None
+
+    @pytest.mark.asyncio
+    async def test_without_the_capability_the_client_is_never_called(self):
+        class Boom:
+            def __getattr__(self, name):
+                raise AssertionError("不该发起原生抓取")
+
+        llm = LLMService(clients={"openai": Boom()}, runtime_config=LLMRuntimeConfig(provider="custom"))
+
+        assert await llm.native_fetch("https://example.com/post") is None
+
+    @pytest.mark.asyncio
+    async def test_a_shape_without_fetch_support_is_skipped(self):
+        """openai 有原生搜索、但没有"抓一个 URL"的等价能力 → 不尝试，回落本地抽取。"""
+        class Boom:
+            def __getattr__(self, name):
+                raise AssertionError("不该发起原生抓取")
+
+        llm = LLMService(clients={"openai": Boom()}, runtime_config=LLMRuntimeConfig(provider="openai"))
+
+        assert llm.native_fetch_api() is None
+        assert await llm.native_fetch("https://example.com/post") is None
+
+
+class _FakeResponse:
+    def __init__(self, text: str, content_type: str = "text/html"):
+        self.text = text
+        self.headers = {"content-type": content_type}
+        self.url = "https://example.com/post"
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class _FakeFetcher:
+    """假的原生抓取（`native_fetch_api` 给日志用）。"""
+
+    def __init__(self, page):
+        self._page = page
+        self.calls: list[str] = []
+
+    def native_fetch_api(self):
+        return "anthropic"
+
+    async def native_fetch(self, url):
+        self.calls.append(url)
+        return self._page
+
+
+class TestFetchUrlChain:
+    @pytest.mark.asyncio
+    async def test_native_fetch_wins_and_html_is_never_fetched(self, monkeypatch):
+        from services.search_hits import PageText
+
+        fetcher = _FakeFetcher(PageText("Example Post", "原生正文"))
+        monkeypatch.setattr("services.llm_service.shared_llm", lambda: fetcher)
+
+        async def boom(url):
+            raise AssertionError("原生成功时不该抓 HTML")
+
+        monkeypatch.setattr(search_tools._client, "get", boom)
+
+        payload = json.loads(await search_tools.fetch_url("https://example.com/post"))
+
+        assert payload == {
+            "url": "https://example.com/post",
+            "text": "原生正文",
+            "title": "Example Post",
+        }
+        assert fetcher.calls == ["https://example.com/post"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_native_fetch_falls_back_to_extraction(self, monkeypatch):
+        fetcher = _FakeFetcher(None)          # 原生没拿到 → 回落
+        monkeypatch.setattr("services.llm_service.shared_llm", lambda: fetcher)
+
+        async def get(url):
+            return _FakeResponse(
+                "<html><head><title>Page</title></head><body><p>Hello 世界</p></body></html>"
+            )
+
+        monkeypatch.setattr(search_tools._client, "get", get)
+
+        payload = json.loads(await search_tools.fetch_url("https://example.com/post"))
+
+        assert "Hello 世界" in payload["text"]
+        assert payload["title"] == "Page"
+        assert fetcher.calls == ["https://example.com/post"]
+
+    @pytest.mark.asyncio
+    async def test_both_paths_failing_returns_an_error_envelope(self, monkeypatch):
+        fetcher = _FakeFetcher(None)
+        monkeypatch.setattr("services.llm_service.shared_llm", lambda: fetcher)
+
+        async def get(url):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(search_tools._client, "get", get)
+
+        payload = json.loads(await search_tools.fetch_url("https://example.com/post"))
+
+        assert "error" in payload
+        assert "boom" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_extract_text_false_skips_native_fetch(self, monkeypatch):
+        fetcher = _FakeFetcher(None)
+        monkeypatch.setattr("services.llm_service.shared_llm", lambda: fetcher)
+
+        async def get(url):
+            return _FakeResponse("raw body", content_type="text/plain")
+
+        monkeypatch.setattr(search_tools._client, "get", get)
+
+        payload = json.loads(
+            await search_tools.fetch_url("https://example.com/post", extract_text=False)
+        )
+
+        assert payload["text"] == "raw body"
+        assert fetcher.calls == []           # 要原始文本时不走原生抓取

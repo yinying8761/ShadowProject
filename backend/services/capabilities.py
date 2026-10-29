@@ -167,6 +167,16 @@ def should_attempt_vision(capability: CapabilityValue) -> bool:
     return capability.value is not False
 
 
-def should_attempt_native_search(capability: CapabilityValue) -> bool:
-    """要不要尝试原生搜索？**只有明确支持才试**（搜索是可选增强，未知就降级）。"""
+def should_attempt_optional(capability: CapabilityValue) -> bool:
+    """可选增强（原生搜索 / 原生抓取）：**只有明确支持才试**，未知就降级。"""
     return capability.value is True
+
+
+def should_attempt_native_search(capability: CapabilityValue) -> bool:
+    """要不要尝试原生搜索？（搜索是可选增强，未知就降级）"""
+    return should_attempt_optional(capability)
+
+
+def should_attempt_native_fetch(capability: CapabilityValue) -> bool:
+    """要不要尝试原生抓取？（同上：未知就回到本地正文抽取）"""
+    return should_attempt_optional(capability)

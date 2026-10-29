@@ -374,7 +374,7 @@ mutually exclusive routes to take:
   entry in the example config) is **gone** (ticket #05, ADR-0010): MCP is
   configuration-only again, and the retired `qwen-vl-max` vision preset is removed.
 
-### 3.9 Web search: native first, the local chain as fallback (ticket #03)
+### 3.9 Web search: native first, the local chain as fallback (ticket #03, #06)
 
 `research` → `SearchAgent` → the `search` tool → `search_tools._do_search`, which walks a
 chain instead of a single scraper:
@@ -394,15 +394,25 @@ native  →  duckduckgo  →  bing_web  →  searxng  →  bing
 - **Native results are parsed per `search_api`, not per vendor**
   (`services/search_hits.py`): `openai` ← the Responses `web_search` tool's
   `url_citation` annotations (or the Chat Completions search models' `message`
-  annotations), `anthropic` ← the server-side `web_search`'s `web_search_result`
-  blocks. Both become `SearchHit(title, url, snippet, source)`; a `search_api` without a
-  parser is **not** attempted. Note the presets: Gemini's row declares the `openai` shape
-  (it goes through Google's OpenAI-compatible endpoint, per the spec) — if that endpoint
-  does not serve `web_search`, the request fails and the chain degrades; the native
-  `gemini` grounding shape (and `deepseek`) arrives with ticket #06. Parsers are
-  defensive: a response with no usable citations yields no hits, and `native_search`
-  turns that into `None` so the chain **degrades** to the local scrapers rather than
-  claiming "searched, found nothing".
+  annotations), `anthropic` ← the server-side `web_search`'s `web_search_result` blocks,
+  `gemini` ← native `generateContent`'s `groundingMetadata`. All become
+  `SearchHit(title, url, snippet, source)`; a `search_api` without a parser is **not**
+  attempted, and `SHAPE_SDKS` pins which transport owns each shape (a shape declared
+  against the wrong SDK is refused, not sent — `gemini` uses REST and needs no SDK).
+  The native Gemini transport lives in `services/gemini_rest.py` (host / key header /
+  URL composition — vendor knowledge stays in config + the shape seam, ADR-0011), and it
+  turns the preset's `…/v1beta/openai/` base URL back into `…/v1beta/models/{model}:…`.
+  **`deepseek` is not implemented**: its public API has no documented search/fetch
+  response shape, so `search_api=deepseek` degrades straight to the local chain instead of
+  shipping a guessed request. Parsers are defensive: a response with no usable citations
+  yields no hits, and `native_search` turns that into `None` so the chain **degrades**.
+- **`fetch_url` does the same for pages** (ticket #06): `native_fetch` first (the
+  structured Anthropic `web_fetch` result → `PageText(title, text)` truncated to
+  `MAX_PAGE_TEXT`), then the original httpx + BeautifulSoup extraction; both failing
+  returns the error envelope. Shapes with no structured fetch (OpenAI / Gemini) go straight
+  to the local extractor — `native_fetch` is a capability **and** a per-shape parser, so an
+  api that cannot fetch never pretends to. Search and fetch share one shape predicate
+  (`LLMService._shape_api`), so they cannot disagree about what is usable.
 - `LLMService.native_search()` returns `None` for "unsupported or failed" and never
   raises — the parse happens inside the same try, so a malformed payload degrades too.
   `native_search_available()` / `native_search_api()` are the one place that decides

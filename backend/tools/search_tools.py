@@ -24,12 +24,11 @@ from bs4 import BeautifulSoup
 
 from config import SEARXNG_DEFAULT_URL, settings
 from services.search_backends import search_backend_order
-from services.search_hits import SearchHit
+from services.search_hits import MAX_PAGE_TEXT, SearchHit
 
 _proxy = settings.search_proxy or None
 _client = httpx.AsyncClient(timeout=15.0, follow_redirects=True, proxy=_proxy)
 
-MAX_PAGE_TEXT = 6000
 SEARCH_RESULTS = 5
 
 
@@ -267,14 +266,52 @@ async def _do_search(query: str, limit: int = SEARCH_RESULTS) -> list[dict]:
 
 # ── Public tools ────────────────────────────────────────────────────────────
 
+def _native_fetcher():
+    """原生抓取用的共享 LLMService（它自己按能力/形状决定要不要走原生）。"""
+    try:
+        from services.llm_service import shared_llm
+
+        return shared_llm()
+    except Exception as e:
+        print(f"[Fetch] native availability check failed: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
 async def fetch_url(url: str, extract_text: bool = True) -> str:
-    """Fetch a URL and return extracted text content."""
+    """Fetch a URL and return its text.
+
+    **原生抓取优先**（ticket 06）：`native_fetch` 成功就用它的（标题 + 正文）；不支持或
+    失败则回落到原本的 httpx + BeautifulSoup 正文抽取。两条都失败 → 错误信封。
+    `extract_text=False` 表示要原始文本，原生抓取给的是抽取后的正文，所以不走它。
+    """
+    if extract_text:
+        llm = _native_fetcher()
+        if llm is not None:
+            try:
+                page = await llm.native_fetch(url)
+                if page is not None and page.text.strip():
+                    print(
+                        f"[Fetch] backend=native api={llm.native_fetch_api()} "
+                        f"url={url!r} chars={len(page.text)}",
+                        flush=True,
+                    )
+                    return json.dumps(
+                        {"url": url, "text": page.text, "title": page.title},
+                        ensure_ascii=False,
+                    )
+            except Exception as e:      # 原生失败绝不打断抓取
+                print(f"[Fetch] native path failed: {type(e).__name__}: {e}", flush=True)
+
     try:
         resp = await _client.get(url)
         resp.raise_for_status()
         ct = resp.headers.get("content-type", "")
         if "text/html" in ct and extract_text:
             text = _extract_text(resp.text)
+            print(
+                f"[Fetch] backend=beautifulsoup url={url!r} chars={len(text)}",
+                flush=True,
+            )
             return json.dumps(
                 {"url": str(resp.url), "text": text, "title": _extract_title(resp.text)},
                 ensure_ascii=False,

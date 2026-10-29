@@ -140,6 +140,11 @@ VISION_PRESETS = {
 #: searxng 的默认地址（占位符：没显式选中/改成别的地址时不进搜索链，见 search_tools）。
 SEARXNG_DEFAULT_URL = "http://127.0.0.1:8080"
 
+#: 原生 Gemini `generateContent` 的端点与认证头（厂商知识只允许出现在 config 和形状的
+#: 实现里，见 ADR-0011）。
+GEMINI_NATIVE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_API_KEY_HEADER = "x-goog-api-key"
+
 
 class Settings(BaseSettings):
     # Check backend/.env first, then project root .env

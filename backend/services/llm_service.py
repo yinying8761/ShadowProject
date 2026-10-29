@@ -6,7 +6,14 @@ from typing import AsyncIterator, Awaitable, Callable
 from services.formatters import get_formatter, MessageFormatter
 from services.llm_config import LLMRuntimeConfig, default_runtime
 from services.retry import RetryCallback, is_retryable, retry
-from services.search_hits import SearchHit, parse_search_hits, parser_for
+from services.search_hits import (
+    PageText,
+    SearchHit,
+    SHAPE_SDKS,
+    fetch_parser_for,
+    parse_search_hits,
+    parser_for,
+)
 
 # Live LLMService instances (weak refs) — used to invalidate cached SDK
 # clients after a runtime-config change without tracking each call site.
@@ -116,26 +123,34 @@ class LLMService:
             )
         return image_part(api, image_bytes, mime)
 
-    def _native_api(self) -> str | None:
-        """这次能用哪种原生搜索形状（None = 不尝试）。
+    def _shape_api(self, *, attempt: bool, has_parser) -> str | None:
+        """搜索/抓取共用的形状判定：能力**明确**支持 + 有 parser + 形状与 SDK 对得上。
 
-        三条都要成立：能力表**明确**支持（`native_search=True`；未知不算 —— 搜索是可选
-        增强，ADR-0011 与视觉相反）、形状有 parser（ticket 03 只落地 openai / anthropic）、
-        形状与底层 SDK 对得上。**不抛错**：任何一条不满足就静默降级到本地链。
+        `attempt` 来自能力表的 `*_should_attempt()`（未知不算），`has_parser` 是
+        `parser_for` / `fetch_parser_for`。**不抛错**：任何一条不满足就返回 None，
+        调用方据此降级（ADR-0011：搜索/抓取是可选增强）。
         """
-        if not self._runtime.native_search_should_attempt():
+        if not attempt:
             return None
         api = self._runtime.search_api()
-        if api is None or parser_for(api) is None:
+        if api is None or has_parser(api) is None:
             return None
-        if api != self._runtime.get_sdk_type():
+        shape_sdk = SHAPE_SDKS.get(api)
+        if shape_sdk is not None and shape_sdk != self._runtime.get_sdk_type():
             print(
-                f"[Search] native skipped: search_api {api!r} does not match "
-                f"SDK {self._runtime.get_sdk_type()!r}",
+                f"[Search] native skipped: search_api {api!r} needs "
+                f"{shape_sdk!r} but SDK is {self._runtime.get_sdk_type()!r}",
                 flush=True,
             )
             return None
         return api
+
+    def _native_api(self) -> str | None:
+        """这次能用哪种原生搜索形状（None = 不尝试）。"""
+        return self._shape_api(
+            attempt=self._runtime.native_search_should_attempt(),
+            has_parser=parser_for,
+        )
 
     def native_search_available(self) -> bool:
         """原生搜索此刻是否可用（后端链算顺序时用，与实际调用同一处规则）。"""
@@ -205,7 +220,80 @@ class LLMService:
                 ],
                 messages=[{"role": "user", "content": query}],
             )
+        if api == "gemini":
+            # 原生 generateContent + google_search grounding（REST 由 GeminiRestClient 负责）
+            return await self._get_gemini_client().generate(
+                model,
+                {
+                    "contents": [{"parts": [{"text": query}]}],
+                    "tools": [{"google_search": {}}],
+                },
+            )
         raise ValueError(f"no native search request shape for search_api={api!r}")
+
+    def _get_gemini_client(self):
+        if "gemini" not in self._clients:
+            from services.gemini_rest import GeminiRestClient
+
+            self._clients["gemini"] = GeminiRestClient(
+                api_key=self._runtime.api_key,
+                base_url=self._runtime.get_base_url(),
+            )
+        return self._clients["gemini"]
+
+    # ── 原生抓取（ticket 06）─────────────────────────────────────────────
+
+    def _native_fetch_api(self) -> str | None:
+        """这次能不能用原生抓取（None = 回落到本地正文抽取）。与搜索共用 `_shape_api`。"""
+        return self._shape_api(
+            attempt=self._runtime.native_fetch_should_attempt(),
+            has_parser=fetch_parser_for,
+        )
+
+    def native_fetch_api(self) -> str | None:
+        """`native_fetch` 会用哪种形状（None = 不走原生；日志用）。"""
+        return self._native_fetch_api()
+
+    async def native_fetch(self, url: str) -> PageText | None:
+        """用提供商的原生抓取拿网页正文（ticket 06）。
+
+        `None` 表示「不支持 / 本次失败」—— 调用方回落到本地 HTML 抽取，**不向上抛**。
+        """
+        api = self._native_fetch_api()
+        if api is None:
+            return None
+        parser = fetch_parser_for(api)
+        try:
+            response = await asyncio.wait_for(
+                self._native_fetch_request(api, url), timeout=_search_timeout()
+            )
+            page = parser(response) if parser else None
+        except Exception as e:
+            # 请求失败、超时、解析崩了都是「这条后端不行」：回落本地抽取，绝不外抛
+            print(f"[Fetch] native api={api} failed: {type(e).__name__}: {e}", flush=True)
+            return None
+        if page is None or not page.text.strip():
+            print(f"[Fetch] native api={api} returned nothing; falling back", flush=True)
+            return None
+        return page
+
+    async def _native_fetch_request(self, api: str, url: str):
+        """按 `search_api` 发抓取请求（目前只有 Anthropic 有服务端 `web_fetch`）。"""
+        model = self._runtime.get_model()
+        if api == "anthropic":
+            return await self._get_anthropic_client().messages.create(
+                model=model,
+                max_tokens=1024,
+                tools=[
+                    {
+                        "type": "web_fetch_20250910",
+                        "name": "web_fetch",
+                        "max_uses": 1,
+                    }
+                ],
+                messages=[{"role": "user", "content": f"抓取这个网页的正文：{url}"}],
+            )
+        raise ValueError(f"no native fetch shape for search_api={api!r}")
 
     def _get_openai_client(self):
         if "openai" not in self._clients:

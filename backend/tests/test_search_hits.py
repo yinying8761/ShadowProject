@@ -249,12 +249,189 @@ class TestAllHitsAreUniform:
 
 
 class TestDispatch:
-    @pytest.mark.parametrize("api", ["openai", "anthropic"])
+    @pytest.mark.parametrize("api", ["openai", "anthropic", "gemini"])
     def test_known_apis_have_a_parser(self, api):
         assert parser_for(api) is not None
 
-    @pytest.mark.parametrize("api", [None, "", "none", "gemini", "deepseek", "nonsense"])
+    @pytest.mark.parametrize("api", [None, "", "none", "nonsense", "bing_web", "deepseek"])
     def test_unknown_or_missing_api_does_not_try_native(self, api):
         """搜索与视觉相反：不认识的形状**降级**（不抛错、不尝试原生）。"""
         assert parser_for(api) is None
         assert parse_search_hits(api, OPENAI_RESPONSE) == []
+
+
+class TestGeminiShape:
+    """原生 `generateContent` + `google_search`：来源在 groundingMetadata 里。"""
+
+    RESPONSE = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "Python 3.14 已发布。"}]},
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {
+                            "web": {
+                                "uri": "https://www.python.org/downloads/",
+                                "title": "Download Python",
+                            }
+                        },
+                        {"web": {"uri": "https://docs.python.org/3.14/whatsnew/3.14.html"}},
+                    ],
+                    "groundingSupports": [
+                        {
+                            "segment": {"text": "Python 3.14 已发布"},
+                            "groundingChunkIndices": [0],
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    def test_grounding_chunks_become_hits_with_snippets(self):
+        hits = parse_search_hits("gemini", self.RESPONSE)
+
+        assert [h.url for h in hits] == [
+            "https://www.python.org/downloads/",
+            "https://docs.python.org/3.14/whatsnew/3.14.html",
+        ]
+        assert hits[0].title == "Download Python"
+        assert hits[0].snippet == "Python 3.14 已发布"     # groundingSupports 的那段
+        assert hits[0].source == "gemini"
+        assert hits[1].title == hits[1].url                 # 没标题就用 url
+        assert hits[1].snippet == ""
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {},
+            {"candidates": []},
+            {"candidates": [{"content": {"parts": []}}]},
+            {"candidates": [{"groundingMetadata": {"groundingChunks": []}}]},
+            {"candidates": [{"groundingMetadata": {"groundingChunks": [{"web": {}}]}}]},
+        ],
+    )
+    def test_empty_or_partial_shapes_yield_no_hits(self, response):
+        assert parse_search_hits("gemini", response) == []
+
+
+class TestDeepSeekIsNotImplemented:
+    """DeepSeek 的搜索响应形状官方没公开：**不编一个**，直接降级（ticket 06 的诚实缺口）。"""
+
+    def test_deepseek_has_no_parser_so_native_is_not_attempted(self):
+        assert parser_for("deepseek") is None
+        assert parse_search_hits("deepseek", OPENAI_RESPONSE) == []
+
+
+class TestAnthropicFetch:
+    """原生抓取：`web_fetch_tool_result` → PageText（标题 + 截断后的正文）。
+
+    快照是**文档形状**：正文在 `content.source.data`（document 的 text source 里），
+    不在 `content.text` —— 上一版按错误的嵌套写，测试跟着错、线上永远拿不到正文。
+    """
+
+    RESPONSE = {
+        "content": [
+            {"type": "text", "text": "我来看一下。"},
+            {
+                "type": "web_fetch_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": {
+                    "type": "web_fetch_result",
+                    "url": "https://example.com/post",
+                    "retrieved_at": "2026-10-29T00:00:00Z",
+                    "content": {
+                        "type": "document",
+                        "source": {"type": "text", "data": "正文内容" * 10},
+                        "title": "Example Post",
+                    },
+                },
+            },
+        ]
+    }
+
+    def test_a_fetch_result_becomes_page_text(self):
+        from services.search_hits import MAX_PAGE_TEXT, PageText, fetch_parser_for
+
+        page = fetch_parser_for("anthropic")(self.RESPONSE)
+
+        assert isinstance(page, PageText)
+        assert page.title == "Example Post"
+        assert page.text == ("正文内容" * 10)[:MAX_PAGE_TEXT]
+
+    def test_the_body_is_truncated_to_the_shared_limit(self):
+        from services.search_hits import MAX_PAGE_TEXT, fetch_parser_for
+
+        response = {
+            "content": [
+                {
+                    "type": "web_fetch_tool_result",
+                    "content": {
+                        "type": "web_fetch_result",
+                        "content": {
+                            "type": "document",
+                            "source": {"type": "text", "data": "x" * (MAX_PAGE_TEXT * 3)},
+                        },
+                    },
+                }
+            ]
+        }
+
+        assert len(fetch_parser_for("anthropic")(response).text) == MAX_PAGE_TEXT
+
+    def test_an_error_result_yields_none(self):
+        from services.search_hits import fetch_parser_for
+
+        response = {
+            "content": [
+                {
+                    "type": "web_fetch_tool_result",
+                    "content": {
+                        "type": "web_fetch_tool_result_error",
+                        "error_code": "url_not_accessible",
+                    },
+                }
+            ]
+        }
+
+        assert fetch_parser_for("anthropic")(response) is None
+
+    def test_an_empty_document_yields_none(self):
+        from services.search_hits import fetch_parser_for
+
+        response = {
+            "content": [
+                {
+                    "type": "web_fetch_tool_result",
+                    "content": {
+                        "type": "web_fetch_result",
+                        "content": {
+                            "type": "document",
+                            "source": {"type": "text", "data": "   "},
+                        },
+                    },
+                }
+            ]
+        }
+
+        assert fetch_parser_for("anthropic")(response) is None
+
+    @pytest.mark.parametrize("api", [None, "", "openai", "deepseek", "gemini", "nonsense"])
+    def test_only_shapes_with_a_fetch_parser_attempt_native_fetch(self, api):
+        from services.search_hits import fetch_parser_for
+
+        assert fetch_parser_for(api) is None
+
+
+class TestShapeSdks:
+    def test_every_parser_has_a_transport(self):
+        from services.search_hits import SHAPE_SDKS
+
+        for api in ("openai", "anthropic", "gemini"):
+            assert api in SHAPE_SDKS, api
+
+    def test_gemini_needs_no_sdk_and_deepseek_is_not_shipped(self):
+        from services.search_hits import SHAPE_SDKS
+
+        assert SHAPE_SDKS["gemini"] is None
+        assert "deepseek" not in SHAPE_SDKS
