@@ -551,6 +551,55 @@ class TestCaseTable:
         assert {c.id for c in default} >= {c.id for c in EVAL_CASES if c.category in {"multi_turn", "recovery"}}
 
 
+class TestGroupInvariantCases:
+    """ticket 08：群聊不变量用例是数据，且真能跑出结论（零模型调用）。"""
+
+    def test_every_invariant_case_names_a_known_scenario_and_invariants(self):
+        from eval.group_turn_eval import INVARIANTS, SCENARIOS
+
+        cases = [c for c in EVAL_CASES if c.kind == "invariant"]
+
+        assert len(cases) == 6
+        for case in cases:
+            assert case.scenario in SCENARIOS, case.id
+            assert case.invariants, case.id
+            for name in case.invariants:
+                assert name in INVARIANTS, (case.id, name)
+            assert case.expected_tools is None, case.id
+            assert not case.live, case.id
+
+    @pytest.mark.asyncio
+    async def test_an_invariant_case_runs_without_any_model_call(self):
+        from eval import runner as runner_mod
+
+        case = next(c for c in EVAL_CASES if c.id == "G01")
+
+        report = await runner_mod._run_invariant_case(case)
+
+        assert report.verdict.passed, report.verdict.reasons
+        assert report.trace.model_calls == 0
+        assert report.trace.tokens == 0
+        # 3 人 × K=3 = 9 条落库（正好撞上全局预算）
+        assert "9 条落库消息" in report.trace.reply
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_scenario_is_reported_as_a_failure(self):
+        from eval import runner as runner_mod
+
+        report = await runner_mod._run_invariant_case(
+            EvalCase(
+                id="GX",
+                kind="invariant",
+                scenario="no_such_scenario",
+                invariants=["all_members_start"],
+                category="group",
+            )
+        )
+
+        assert not report.verdict.passed
+        assert report.trace.error and "no_such_scenario" in report.trace.error
+
+
 class TestExistingCasesStillScore:
     """回归：现有单轮用例的期望字段没被 v2 改坏（默认选择的完整性在 selection 测试里）。"""
 

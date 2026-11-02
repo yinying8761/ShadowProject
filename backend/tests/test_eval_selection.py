@@ -78,14 +78,28 @@ class TestCategories:
 
 
 class TestRealCaseTable:
-    def test_the_default_selection_keeps_every_shipped_case(self):
-        """默认命令仍要跑完现有用例（ticket 04/07 的第一条验收）。"""
+    def test_the_default_selection_runs_every_non_invariant_case(self):
+        """默认命令跑完行为类用例；群聊不变量要 --group（ticket 04/07/08）。"""
         selected = select_cases(EVAL_CASES)
 
-        assert len(selected) == 28 == len(EVAL_CASES)
-        assert [c.id for c in selected] == [c.id for c in EVAL_CASES]
+        assert len(EVAL_CASES) == 34          # 15 单轮 + 6 多轮 + 7 恢复 + 5 不变量
+        assert len(selected) == 28
+        assert [c.id for c in selected] == [
+            c.id for c in EVAL_CASES if c.kind != "invariant"
+        ]
+
+    def test_group_flag_adds_the_invariant_cases(self):
+        selected = select_cases(EVAL_CASES, include_group=True)
+
+        assert len(selected) == 34
+        assert [c.id for c in selected if c.kind == "invariant"] == [
+            "G01", "G02", "G03", "G04", "G05", "G06",
+        ]
 
     def test_category_filter_works_on_the_real_table(self):
         assert _ids(select_cases(EVAL_CASES, categories=["memory"])) == ["T14", "T15"]
         assert len(select_cases(EVAL_CASES, categories=["multi_turn"])) == 6
         assert len(select_cases(EVAL_CASES, categories=["recovery"])) == 7
+        assert len(
+            select_cases(EVAL_CASES, categories=["group"], include_group=True)
+        ) == 6

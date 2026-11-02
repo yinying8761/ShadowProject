@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,6 +71,7 @@ from eval.report import CaseReport, render_report  # noqa: E402
 from eval.scoring import CaseTrace, score_case  # noqa: E402
 from eval.selection import INVARIANT_KIND, select_cases  # noqa: E402
 from eval.test_cases import EVAL_CASES, EvalCase  # noqa: E402
+from eval.scoring import CaseVerdict  # noqa: E402
 from services.memory_service import memory_service  # noqa: E402
 from services.usage_store import LLMUsageStore  # noqa: E402
 
@@ -306,6 +308,76 @@ async def _usage_rows(session_factory, conversation_id: str | None):
         return []
 
 
+async def _run_invariant_case(case: EvalCase) -> CaseReport:
+    """群聊不变量用例：脚本化假模型 + 临时文件库（隔离，且能真正并发）。
+
+    零 token、零网络；断言的是调度语义（ADR-0009），不是文本。
+    """
+    from eval.group_turn_eval import SCENARIOS, check_invariants, run_scenario
+
+    scenario = SCENARIOS.get(case.scenario)
+    if scenario is None:
+        invalid = CaseTrace(error=f"unknown scenario {case.scenario!r}")
+        return CaseReport(
+            case=case, trace=invalid, verdict=CaseVerdict(checks={"scenario": False})
+        )
+    if list(case.user_turns) != list(scenario.user_messages):
+        invalid = CaseTrace(
+            error=(
+                f"case/turns 与场景不一致：{list(case.user_turns)} != "
+                f"{list(scenario.user_messages)}"
+            )
+        )
+        return CaseReport(
+            case=case, trace=invalid, verdict=CaseVerdict(checks={"scenario": False})
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{Path(tmp) / 'eval-group.db'}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            factory = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
+            observation = await run_scenario(scenario, factory)
+        except Exception as exc:      # 场景自身崩了：报成失败用例，不带走整轮评测
+            _safe_print(f"  [FATAL] scenario failed: {type(exc).__name__}: {exc}")
+            crash = CaseTrace(error=f"{type(exc).__name__}: {exc}")
+            return CaseReport(
+                case=case, trace=crash, verdict=CaseVerdict(checks={"run": False})
+            )
+        finally:
+            await engine.dispose()
+
+    try:
+        checks, messages = check_invariants(case.invariants, observation)
+    except ValueError as exc:      # 用例里写了不认识的不变量名：报成失败，不是崩掉整轮
+        _safe_print(f"  [invalid case] {exc}")
+        invalid = CaseTrace(error=f"invalid case: {exc}")
+        return CaseReport(
+            case=case, trace=invalid, verdict=CaseVerdict(checks={"scenario": False})
+        )
+
+    for message in messages:
+        _safe_print(f"  [invariant] {message}")
+    _safe_print(
+        f"  [observation] rounds={len(observation.rounds)} "
+        f"persisted={len(observation.persisted)} events={len(observation.events)}"
+    )
+    trace = CaseTrace(
+        reply=(
+            f"{len(observation.rounds)} 次思考 / "
+            f"{len([r for r in observation.persisted if r.role == 'assistant'])} 条落库消息"
+        ),
+        model_calls=0,      # 不变量用例零模型调用
+        tokens=0,
+        # 失败原因进报告（报告会把它渲染成 Error 那一行）
+        error="; ".join(messages) if messages else None,
+    )
+    return CaseReport(case=case, trace=trace, verdict=CaseVerdict(checks=checks))
+
+
 async def run_eval(cases: list[EvalCase], *, llm_service=None) -> list[CaseReport]:
     """Run *cases* against the model and return scored results."""
     engine = _create_eval_engine()
@@ -322,6 +394,10 @@ async def run_eval(cases: list[EvalCase], *, llm_service=None) -> list[CaseRepor
         for case in cases:
             _safe_print(f"\n{'=' * 60}")
             _safe_print(f"[Eval] {case.id}: {case.description}")
+            if getattr(case, "kind", "") == INVARIANT_KIND:
+                _safe_print(f"[Eval] Scenario: {case.scenario}  Invariants: {case.invariants}")
+                reports.append(await _run_invariant_case(case))
+                continue
             _safe_print(
                 f"[Eval] Turns: {len(case.user_turns)}  Category: {case.category}"
                 f"  faults={case.fail_tools or '-'}  deny={case.deny_tools or '-'}"
@@ -459,21 +535,7 @@ def main(argv: list[str] | None = None) -> int:
     _safe_print(f"  Model: {model}")
     _safe_print(f"  Started: {started_at.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
-    invariant_cases = [
-        c for c in cases if getattr(c, "kind", "") == INVARIANT_KIND
-    ]
-    runnable = [c for c in cases if getattr(c, "kind", "") != INVARIANT_KIND]
-
-    if not runnable:
-        _safe_print(
-            "  [skip] 选中的只有群聊不变量用例，而它的 runner 随 ticket 08 落地；本次没有可跑的用例。"
-        )
-        return 2
-
-    reports = asyncio.run(run_eval(runnable))
-
-    # The invariant runner (scripted fake model) arrives with ticket 08.
-    skipped = [f"{c.id}(invariant)" for c in invariant_cases]
+    reports = asyncio.run(run_eval(cases))
 
     payload = baseline_payload(
         reports, model=model, generated_at=started_at.isoformat(),
@@ -500,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
         model=model,
         started_at=started_at,
         baseline_diff=baseline_diff,
-        skipped=skipped,
+        skipped=[],
         note=None if args.live else "live 用例未包含（默认不跑贵用例）",
     )
 

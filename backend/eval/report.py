@@ -153,16 +153,20 @@ def _render_summary(lines: list[str], reports: Sequence[CaseReport]) -> None:
     )
     lines.append("")
 
-    # 逐项检查的通过率（工具/参数/回答/must_cite/预算），便于一眼看出退在哪儿
+    # 逐项检查的通过率（工具/参数/回答/must_cite/预算，以及不变量名），便于一眼看出退在哪儿
     lines.append("### Check breakdown\n")
     lines.append("| Check | Pass | Total |")
     lines.append("|---|---|---|")
-    for check in CHECK_ORDER:
+    known = [c for c in CHECK_ORDER if any(c in r.verdict.checks for r in reports)]
+    extra = sorted(
+        {c for r in reports for c in r.verdict.checks if c not in CHECK_ORDER}
+    )
+    for check in [*known, *extra]:
         applicable = [r for r in reports if check in r.verdict.checks]
         if not applicable:
             continue
         passed = sum(1 for r in applicable if r.verdict.checks[check])
-        lines.append(f"| {CHECK_LABELS[check]} | {passed} | {len(applicable)} |")
+        lines.append(f"| {CHECK_LABELS.get(check, check)} | {passed} | {len(applicable)} |")
     lines.append("")
 
 
@@ -244,25 +248,24 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
 
     lines.append(f"### {case.id} — {case.description}\n")
     turns = getattr(case, "user_turns", None) or [getattr(case, "query", "")]
+    if getattr(case, "kind", "") == "invariant":
+        lines.append(f"**Scenario:** `{getattr(case, 'scenario', '')}`\n")
     if len(turns) == 1:
         lines.append(f"**Query:** {turns[0]}\n")
-    else:
+    elif turns:
         lines.append("**Turns:**\n")
         for index, turn in enumerate(turns, start=1):
             lines.append(f"{index}. {turn}")
         lines.append("")
 
-    exp_tools = (
-        "（不检查）"
-        if case.expected_tools is None
-        else ", ".join(f"`{t}`" for t in case.expected_tools) or "(none)"
-    )
-    act_tools = ", ".join(f"`{t}`" for t in trace.tools) or "(none)"
-    lines.append("| | Tools |")
-    lines.append("|---|---|")
-    lines.append(f"| Expected | {exp_tools} |")
-    lines.append(f"| Actual | {act_tools} |")
-    lines.append("")
+    if case.expected_tools is not None:
+        exp_tools = ", ".join(f"`{t}`" for t in case.expected_tools) or "(none)"
+        act_tools = ", ".join(f"`{t}`" for t in trace.tools) or "(none)"
+        lines.append("| | Tools |")
+        lines.append("|---|---|")
+        lines.append(f"| Expected | {exp_tools} |")
+        lines.append(f"| Actual | {act_tools} |")
+        lines.append("")
 
     if case.expected_args_contain:
         lines.append("**Argument checks:**")
@@ -308,11 +311,12 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
         )
         lines.append("")
 
-    checks = [c for c in CHECK_ORDER if c in verdict.checks]
-    lines.append("| " + " | ".join(CHECK_LABELS[c] for c in checks) + " |")
-    lines.append("|" + "---|" * len(checks))
-    lines.append("| " + " | ".join(_check_mark(verdict.checks[c]) for c in checks) + " |")
-    lines.append("")
+    checks = [c for c in verdict.checks]
+    if checks:
+        lines.append("| " + " | ".join(CHECK_LABELS.get(c, c) for c in checks) + " |")
+        lines.append("|" + "---|" * len(checks))
+        lines.append("| " + " | ".join(_check_mark(verdict.checks[c]) for c in checks) + " |")
+        lines.append("")
 
     if len(turns) > 1 and trace.turn_replies:
         lines.append("**Turn replies:**")

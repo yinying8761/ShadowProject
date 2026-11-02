@@ -1,6 +1,6 @@
 # Agent Eval v2：复杂场景 + 群聊不变量
 
-> 日期：2026-10-22 | 状态：**部分实施（ticket 04：用例结构 + 纯函数 runner + 报告 + 基线 + 开关；ticket 07：多轮 + 失败恢复用例）。视觉/搜索用例与群聊不变量分别随 #09/#08** | 关联：`docs/specs/agent-eval(done).md`、`docs/adr/0009-concurrent-group-turns.md`
+> 日期：2026-10-22 | 状态：**部分实施（ticket 04：用例结构 + 纯函数 runner + 报告 + 基线 + 开关；ticket 07：多轮 + 失败恢复；ticket 08：群聊不变量 + 脚本化假模型）。视觉/搜索用例随 #09** | 关联：`docs/specs/agent-eval(done).md`、`docs/adr/0009-concurrent-group-turns.md`
 
 ## Problem Statement
 
@@ -61,7 +61,9 @@ class EvalCase:
 
 ### 不变量注册表（群聊）
 
-`backend/eval/invariants.py`：名字 → 断言函数，输入是「一次群聊用户轮的事件流 + 落库结果」。至少覆盖 ADR-0009 的承诺：
+`backend/eval/group_turn_eval.py`（实施位置；本 spec 最初写的 `eval/invariants.py` 最终合并进了这个模块）：名字 → 断言函数，输入是一次场景的观测（每成员的思考轮 + 事件流 + 落库结果）。
+
+用例在 `EvalCase` 上用 `kind="invariant"` + `scenario`（场景名，`SCENARIOS` 里的键）+ `invariants`（要检查的名字）描述，**只写数据**。至少覆盖 ADR-0009 的承诺：
 
 | 名字 | 断言 |
 |---|---|
@@ -75,7 +77,7 @@ class EvalCase:
 | `no_cancel_in_flight` | 在途轮次从不被取消（以开始/结束事件配对验证） |
 
 - 用**脚本化假模型**驱动：每个成员按预设脚本返回文本或 `<silent>`，调度用真实的 `GroupTurnOrchestrator`，只是 `speak` 换成脚本。这样测的是**调度语义**，不是模型。
-- 用例示例：3 人、全员首轮说话、次轮互唤醒、第 4 条触发 M 上界；4 人、其中两人沉默；用户插话重置。
+- 用例示例：3 人、全员首轮说话、次轮互唤醒、第 4 条触发 M 上界；4 人、其中两人沉默；用户插话重置（`interject_after`：在出现 N 条角色消息时把第二条用户消息塞进队列，旧的在途思考必须说完）。
 
 ### 行为类用例扩容
 

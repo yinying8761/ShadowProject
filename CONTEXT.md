@@ -449,9 +449,20 @@ testable without a model:
 - CLI: `python -m eval.runner [--only cat[,cat]] [--live] [--group] [--baseline PATH]
   [--out PATH] [--baseline-out PATH] [--dry-run]`. Default = every shipped non-live,
   non-invariant case; `--dry-run` lists the selection without touching DB/model/files.
-- **Cases are data only** (tickets #04/#07): the table ships 28 cases — 15 single-turn, 6
-  multi-turn (`kind="multi_turn"` + `turns`) and 7 recovery (`kind="recovery"` +
-  `fail_tools` / `deny_tools`). Adding a case never edits the runner.
+- **Cases are data only** (tickets #04/#07/#08): the table ships 33 cases — 15 single-turn, 6
+  multi-turn (`kind="multi_turn"` + `turns`), 7 recovery (`kind="recovery"` + `fail_tools` /
+  `deny_tools`) and 5 group invariants (`kind="invariant"` + `scenario` + `invariants`).
+  Adding a case never edits the runner.
+- **Group-chat invariants run the real scheduler with a scripted model** (ticket #08,
+  `eval/group_turn_eval.py`): `GroupChatSession` + `GroupTurnOrchestrator` are real (so the
+  ADR-0009 scheduling is what gets tested), the "model" is a per-member script and the DB is
+  a throwaway file database — **zero tokens, no network, under 2 s**. The registry
+  (`INVARIANTS`) covers `all_members_start`, `per_member_rounds` (K=3 for N≤4, 2 above),
+  `global_messages` (M=9), `silent_not_persisted`, `sequence_monotonic`,
+  `wake_excludes_speaker`, `new_turn_resets`, `no_cancel_in_flight`; every one has a
+  "deliberately violate it → it goes red" self-test, because an always-green assertion
+  proves nothing. Invariant cases are selected only with `--group` and count as zero-cost
+  in the report.
 - **Multi-turn answers are judged on the final turn** (`answer_scope="final"`, the default;
   `"all"` joins every turn). That is what makes "did turn 2 reuse turn 1?" assertable:
   `CaseTrace.turn_replies` keeps each turn's reply and the report prints them per turn.
@@ -465,11 +476,14 @@ testable without a model:
   runner injects a `LLMUsageStore` bound to the eval DB), so no extra instrumentation — and
   eval runs no longer write usage rows into the real `data/companion.db`. A case that dies
   mid-run still reports the cost it already burned.
-- `invariant` cases (group-chat scheduling, ADR-0009) are selected only with `--group`; the
-  scripted fake-model runner lands with ticket #08, so they are reported as skipped today.
+- `invariant` cases are selected only with `--group` and are driven by
+  `eval/group_turn_eval.run_scenario()` (real scheduler, scripted model, throwaway DB);
+  their verdicts are the invariant checks themselves, so the report shows them per case and
+  in the check breakdown.
 - The old "eval must not depend on pytest" decision is **retired**: scoring / report /
-  baseline / selection / faults are pure functions (or thin, injectable seams) covered by
-  `tests/test_eval_*.py`, while the real-model cases stay manual (cost + non-determinism).
+  baseline / selection / faults / invariants are pure functions (or thin, injectable seams)
+  covered by `tests/test_eval_*.py`, while the real-model cases stay manual (cost +
+  non-determinism).
 
 ## 4. Frontend shape
 

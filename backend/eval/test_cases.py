@@ -1,18 +1,20 @@
 """
 Hand-annotated eval cases for Agent tool-calling accuracy.
 
-28 cases across 7 categories:
+34 cases across 8 categories:
 - tool_selection (4) / argument_accuracy (3) / answer_quality (3) / edge_case (3) /
   memory (2): the original single-turn set.
 - multi_turn (6, ticket 07): pronoun reference, correction, cross-turn tool chains.
 - recovery (7, ticket 07): tool error / timeout / empty result / circuit open /
   approval denied — the assertion is "degrades honestly", never "must succeed".
+- group (6, ticket 08): ADR-0009 invariants, driven by a scripted model against the
+  real scheduler (zero tokens, no network).
 
 Cases are **data only**: multi-turn is `turns`, fault injection is `fail_tools`,
 approval refusal is `deny_tools`; adding a case never touches the runner.
 
-Since ticket 04 (eval v2) a case can also describe group-chat **invariants**
-(`kind="invariant"` + `invariants`), which land with ticket 08.
+Group-chat **invariants** (`kind="invariant"` + `scenario` + `invariants`) run the real
+scheduler with a scripted model (ticket 08).
 """
 
 from dataclasses import dataclass, field
@@ -43,7 +45,10 @@ class EvalCase:
     #: 回答断言看哪一轮：多轮用例默认只看**最后一轮**的回复（"第二轮引用第一轮"的判定点）
     answer_scope: Literal["final", "all"] = "final"
     must_cite: bool = False                     # 回答里必须出现来源 URL（search 类）
-    invariants: list[str] = field(default_factory=list)  # invariant: 注册在 eval.invariants 里的名字
+    #: invariant: 注册在 eval.group_turn_eval.INVARIANTS 里的名字
+    invariants: list[str] = field(default_factory=list)
+    #: invariant: 场景名（`eval.group_turn_eval.SCENARIOS` 里的键）
+    scenario: str = ""
     max_model_calls: int | None = None          # 这条用例允许多少次模型调用
     #: recovery: 给这些工具注入故障（名字 → error / timeout / empty / circuit_open）
     fail_tools: dict[str, str] = field(default_factory=dict)
@@ -400,5 +405,103 @@ EVAL_CASES: list[EvalCase] = [
         fail_tools={"fetch_url": "timeout"},
         answer_should_contain_any=["超时", "失败", "无法", "没能", "没抓到"],
         category="recovery",
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Category: group (6 cases, ticket 08) —— 群聊不变量
+    # 脚本化假模型 + 真实调度器：零 token、零网络、秒级。
+    # 期望不是"说了什么"，而是 ADR-0009 的上界与顺序。
+    # ═══════════════════════════════════════════════════════════════════
+
+    EvalCase(
+        id="G01",
+        kind="invariant",
+        scenario="three_all_speak",
+        turns=["你们都在吗？"],
+        description="3 人全员开口：全员起跑、每轮 ≤K、全局 ≤M、序号单调、沉默不落库、在途不取消",
+        expected_tools=None,
+        invariants=[
+            "all_members_start",
+            "per_member_rounds",
+            "global_messages",
+            "silent_not_persisted",
+            "sequence_monotonic",
+            "wake_excludes_speaker",
+            "no_cancel_in_flight",
+        ],
+        category="group",
+    ),
+
+    EvalCase(
+        id="G02",
+        kind="invariant",
+        scenario="four_two_silent",
+        turns=["有人吗？"],
+        description="4 人里两位沉默：沉默消耗轮次但不落库、不推送",
+        expected_tools=None,
+        invariants=[
+            "all_members_start",
+            "per_member_rounds",
+            "silent_not_persisted",
+            "global_messages",
+            "sequence_monotonic",
+        ],
+        category="group",
+    ),
+
+    EvalCase(
+        id="G03",
+        kind="invariant",
+        scenario="five_members",
+        turns=["开会了，都说说"],
+        description="5 人：K 降到 2（开口的两人各用满两轮；全局 M 由 G01/G04 覆盖）",
+        expected_tools=None,
+        invariants=["all_members_start", "per_member_rounds", "global_messages"],
+        category="group",
+    ),
+
+    EvalCase(
+        id="G04",
+        kind="invariant",
+        scenario="two_turns",
+        turns=["第一件事：你们怎么看？", "第二件事呢？"],
+        description="新用户消息 → K/M 重置且全员被唤醒",
+        expected_tools=None,
+        invariants=[
+            "new_turn_resets",
+            "per_member_rounds",
+            "global_messages",
+            "sequence_monotonic",
+        ],
+        category="group",
+    ),
+
+    EvalCase(
+        id="G05",
+        kind="invariant",
+        scenario="slow_members",
+        turns=["慢慢说，别急"],
+        description="慢生成交错完成：在途轮次从不被取消",
+        expected_tools=None,
+        invariants=["no_cancel_in_flight", "all_members_start"],
+        category="group",
+    ),
+
+    EvalCase(
+        id="G06",
+        kind="invariant",
+        scenario="interjected",
+        turns=["先说说你们的看法", "等一下，我补充一句"],
+        description="用户插话：旧的思考说完（不取消），插话后开启新一轮且 K/M 重置",
+        expected_tools=None,
+        invariants=[
+            "no_cancel_in_flight",
+            "new_turn_resets",
+            "per_member_rounds",
+            "global_messages",
+            "sequence_monotonic",
+            "silent_not_persisted",
+        ],
+        category="group",
     ),
 ]
