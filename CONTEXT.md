@@ -443,19 +443,33 @@ testable without a model:
 | `eval/report.py` | **pure** | `render_report(...)` → `eval_results.md`: per-category summary, check breakdown, cost (calls/tokens per case), failed-case **minimal repro**, baseline diff |
 | `eval/baseline.py` | **pure** + file I/O | `baseline_payload` / `validate_baseline` / `write_baseline` / `read_baseline` / `diff_baselines` (new fail / new pass / still fail / added / removed; an unknown format version is a clear `ValueError`, never a silent misread) |
 | `eval/selection.py` | **pure** | `select_cases(cases, categories=…, include_live=…, include_group=…)` — live and invariant cases are **off by default** |
+| `eval/faults.py` | seam | `FaultInjectingRuntime` — per-case fault injection (error / timeout / empty / circuit_open) for recovery cases |
 | `eval/runner.py` | I/O only | builds an in-memory DB, runs the Agent (multi-turn = several `run()` calls in one conversation), reads per-case calls/tokens from `llm_usage`, writes the report + `eval_baseline.json` |
 
 - CLI: `python -m eval.runner [--only cat[,cat]] [--live] [--group] [--baseline PATH]
   [--out PATH] [--baseline-out PATH] [--dry-run]`. Default = every shipped non-live,
   non-invariant case; `--dry-run` lists the selection without touching DB/model/files.
+- **Cases are data only** (tickets #04/#07): the table ships 28 cases — 15 single-turn, 6
+  multi-turn (`kind="multi_turn"` + `turns`) and 7 recovery (`kind="recovery"` +
+  `fail_tools` / `deny_tools`). Adding a case never edits the runner.
+- **Multi-turn answers are judged on the final turn** (`answer_scope="final"`, the default;
+  `"all"` joins every turn). That is what makes "did turn 2 reuse turn 1?" assertable:
+  `CaseTrace.turn_replies` keeps each turn's reply and the report prints them per turn.
+- **Recovery uses injected faults, not real network luck** (`eval/faults.py`):
+  `FaultInjectingRuntime` overrides `dispatch` for the tools a case names —
+  `error` / `timeout` / `empty` / `circuit_open` return the *same envelopes as the real
+  failures*, so the Agent's own degradation path is what gets tested; `deny_tools` makes the
+  per-case approval callback refuse (nothing is written, no retry storm). Everything else
+  passes straight through, and the default run stays offline (no case is `live`).
 - Per-case cost comes from `LLMUsage` rows (the Agent persists one row per round and the
   runner injects a `LLMUsageStore` bound to the eval DB), so no extra instrumentation — and
-  eval runs no longer write usage rows into the real `data/companion.db`.
+  eval runs no longer write usage rows into the real `data/companion.db`. A case that dies
+  mid-run still reports the cost it already burned.
 - `invariant` cases (group-chat scheduling, ADR-0009) are selected only with `--group`; the
   scripted fake-model runner lands with ticket #08, so they are reported as skipped today.
 - The old "eval must not depend on pytest" decision is **retired**: scoring / report /
-  baseline / selection are pure functions covered by `tests/test_eval_*.py`, while the
-  real-model cases stay manual (cost + non-determinism).
+  baseline / selection / faults are pure functions (or thin, injectable seams) covered by
+  `tests/test_eval_*.py`, while the real-model cases stay manual (cost + non-determinism).
 
 ## 4. Frontend shape
 

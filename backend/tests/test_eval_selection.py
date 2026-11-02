@@ -79,11 +79,13 @@ class TestCategories:
 
 class TestRealCaseTable:
     def test_the_default_selection_keeps_every_shipped_case(self):
-        """默认命令仍要跑完现有单轮用例（ticket 04 的第一条验收）。"""
+        """默认命令仍要跑完现有用例（ticket 04/07 的第一条验收）。"""
         selected = select_cases(EVAL_CASES)
 
-        assert len(selected) == 15
+        assert len(selected) == 28 == len(EVAL_CASES)
         assert [c.id for c in selected] == [c.id for c in EVAL_CASES]
 
     def test_category_filter_works_on_the_real_table(self):
         assert _ids(select_cases(EVAL_CASES, categories=["memory"])) == ["T14", "T15"]
+        assert len(select_cases(EVAL_CASES, categories=["multi_turn"])) == 6
+        assert len(select_cases(EVAL_CASES, categories=["recovery"])) == 7

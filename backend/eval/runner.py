@@ -65,6 +65,7 @@ from core.agent import Agent  # noqa: E402
 from core.tool_registry import ToolRegistry  # noqa: E402
 from core.tool_runtime import ToolRuntime  # noqa: E402
 from eval.baseline import baseline_payload, diff_baselines, read_baseline, write_baseline  # noqa: E402
+from eval.faults import FaultInjectingRuntime, validate_case  # noqa: E402
 from eval.report import CaseReport, render_report  # noqa: E402
 from eval.scoring import CaseTrace, score_case  # noqa: E402
 from eval.selection import INVARIANT_KIND, select_cases  # noqa: E402
@@ -180,11 +181,6 @@ def _safe_print(*args, **kwargs) -> None:
         print(*safe, **kwargs)
 
 
-async def _auto_approve(tool_name: str, arguments: dict) -> bool:
-    """Approve every tool call — eval runs headless with no user."""
-    return True
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Running one case
 # ═══════════════════════════════════════════════════════════════════════
@@ -192,22 +188,33 @@ async def _auto_approve(tool_name: str, arguments: dict) -> bool:
 async def _run_case(
     case: EvalCase,
     session_factory: async_sessionmaker[AsyncSession],
-    tool_runtime: ToolRuntime,
+    registry: ToolRegistry,
     *,
     llm_service=None,
 ) -> CaseTrace:
     """跑一条用例（单轮或多轮），把它**实际发生了什么**采集出来。
 
-    token / 模型调用数从 `llm_usage` 表读（Agent 每轮落一行），不额外埋点；**即使这一轮
-    崩了也照读**，否则失败用例的成本会被低报成 0。任何异常都折成 `trace.error` ——
-    一条用例崩掉不该带走整轮评测。
-
-    `llm_service` 可注入（测试用假模型；生产走 Agent 的默认构造）。
+    - 工具故障 / 审批拒绝都由**用例数据**声明（`fail_tools` / `deny_tools`），runner 不
+      为某条用例写代码；
+    - token / 模型调用数从 `llm_usage` 表读（Agent 每轮落一行），不额外埋点；**即使这一轮
+      崩了也照读**，否则失败用例的成本会被低报成 0；
+    - `llm_service` 可注入（测试用假模型；生产走 Agent 的默认构造）。
     """
+    tool_runtime = FaultInjectingRuntime(
+        registry=registry,
+        faults=case.fail_tools,
+        enable_tracing=False,
+        enable_sandbox=False,
+    )
+
+    async def approve(tool_name: str, arguments: dict) -> bool:
+        """审批：`deny_tools` 里的工具一律拒绝（模拟用户点了"拒绝"）。"""
+        return tool_name not in case.deny_tools
+
     tools: list[str] = []
     args: dict[str, dict] = {}
     calls: list[tuple[str, dict]] = []
-    replies: list[str] = []
+    turn_replies: list[str] = []
     error: str | None = None
     conversation_id: str | None = None
 
@@ -231,33 +238,36 @@ async def _run_case(
             for turn in case.user_turns:
                 turn_text = ""
                 _safe_print(f"  [turn] {turn[:80]}")
-                async for event in agent.run(
-                    session=session,
-                    user_message=turn,
-                    conversation_id=conv.id,
-                    character_id=EVAL_CHAR_ID,
-                    approval_callback=_auto_approve,
-                ):
-                    if event["type"] == "tool_use":
-                        tools.append(event["name"])
-                        args[event["name"]] = event.get("arguments", {})
-                        calls.append((event["name"], event.get("arguments", {})))
-                        _safe_print(
-                            f"  [tool_use] {event['name']}("
-                            f"{json.dumps(event.get('arguments', {}), ensure_ascii=False)})"
-                        )
-                    elif event["type"] == "token":
-                        turn_text += event["content"]
-                    elif event["type"] == "tool_result":
-                        marker = " [ERROR]" if event.get("is_error") else ""
-                        preview = str(event.get("result", ""))[:100]
-                        _safe_print(f"  [tool_result] {event['name']}{marker}: {preview}")
-                    elif event["type"] == "error":
-                        error = event.get("message", "Unknown error")
-                        _safe_print(f"  [ERROR] {error}")
-                    elif event["type"] == "done":
-                        _safe_print(f"  [done] message_id={event.get('message_id', '?')}")
-                replies.append(turn_text.strip())
+                try:
+                    async for event in agent.run(
+                        session=session,
+                        user_message=turn,
+                        conversation_id=conv.id,
+                        character_id=EVAL_CHAR_ID,
+                        approval_callback=approve,
+                    ):
+                        if event["type"] == "tool_use":
+                            tools.append(event["name"])
+                            args[event["name"]] = event.get("arguments", {})
+                            calls.append((event["name"], event.get("arguments", {})))
+                            _safe_print(
+                                f"  [tool_use] {event['name']}("
+                                f"{json.dumps(event.get('arguments', {}), ensure_ascii=False)})"
+                            )
+                        elif event["type"] == "token":
+                            turn_text += event["content"]
+                        elif event["type"] == "tool_result":
+                            marker = " [ERROR]" if event.get("is_error") else ""
+                            preview = str(event.get("result", ""))[:100]
+                            _safe_print(f"  [tool_result] {event['name']}{marker}: {preview}")
+                        elif event["type"] == "error":
+                            error = event.get("message", "Unknown error")
+                            _safe_print(f"  [ERROR] {error}")
+                        elif event["type"] == "done":
+                            _safe_print(f"  [done] message_id={event.get('message_id', '?')}")
+                finally:
+                    # 一轮崩了也留下（可能为空的）回复，逐轮数据才与 turns 对齐
+                    turn_replies.append(turn_text.strip())
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         _safe_print(f"  [FATAL] {error}")
@@ -268,7 +278,8 @@ async def _run_case(
         tools=tuple(tools),
         args=args,
         calls=tuple(calls),
-        reply="\n".join(r for r in replies if r),
+        turn_replies=tuple(turn_replies),
+        reply="\n".join(r for r in turn_replies if r),
         model_calls=len(rows),
         tokens=sum(int(r.total_tokens or 0) for r in rows),
         error=error,
@@ -303,21 +314,33 @@ async def run_eval(cases: list[EvalCase], *, llm_service=None) -> list[CaseRepor
         session_factory = await _setup_eval_db(engine)
         _install_memory_stub()
 
-        inner_registry = ToolRegistry()
-        tool_runtime = ToolRuntime(
-            registry=inner_registry,
-            enable_tracing=False,
-            enable_sandbox=False,
-        )
+        # 一个注册表 + 每条用例一个运行时（故障注入按用例数据走）
+        registry = ToolRegistry()
         from main import register_tools
-        register_tools(tool_runtime)
+        register_tools(ToolRuntime(registry=registry))
 
         for case in cases:
             _safe_print(f"\n{'=' * 60}")
             _safe_print(f"[Eval] {case.id}: {case.description}")
-            _safe_print(f"[Eval] Turns: {len(case.user_turns)}  Category: {case.category}")
+            _safe_print(
+                f"[Eval] Turns: {len(case.user_turns)}  Category: {case.category}"
+                f"  faults={case.fail_tools or '-'}  deny={case.deny_tools or '-'}"
+            )
+            try:
+                # 用例的故障声明必须与真实工具表对得上；对不上就报成失败用例
+                # （而不是静默失效、也不是把整轮评测带走）
+                validate_case(case, registry)
+            except ValueError as exc:
+                _safe_print(f"  [invalid case] {exc}")
+                invalid = CaseTrace(error=f"invalid case: {exc}")
+                reports.append(
+                    CaseReport(
+                        case=case, trace=invalid, verdict=score_case(case, invalid)
+                    )
+                )
+                continue
             trace = await _run_case(
-                case, session_factory, tool_runtime, llm_service=llm_service
+                case, session_factory, registry, llm_service=llm_service
             )
             verdict = score_case(case, trace)
             _safe_print(

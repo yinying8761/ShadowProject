@@ -24,6 +24,7 @@ from eval.scoring import (
     CHECK_TOOLS,
     CaseTrace,
     CaseVerdict,
+    answer_text,
     cited_urls,
     dump_args,
 )
@@ -251,7 +252,11 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
             lines.append(f"{index}. {turn}")
         lines.append("")
 
-    exp_tools = ", ".join(f"`{t}`" for t in case.expected_tools) or "(none)"
+    exp_tools = (
+        "（不检查）"
+        if case.expected_tools is None
+        else ", ".join(f"`{t}`" for t in case.expected_tools) or "(none)"
+    )
     act_tools = ", ".join(f"`{t}`" for t in trace.tools) or "(none)"
     lines.append("| | Tools |")
     lines.append("|---|---|")
@@ -272,7 +277,8 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
                 )
         lines.append("")
 
-    lowered_text = (trace.reply or "").lower()
+    # 与评分用同一段文字（多轮只看最后一轮）—— 否则报告会与结论自相矛盾
+    lowered_text = answer_text(case, trace).lower()
     _render_keyword_checks(
         lines,
         "**Answer checks (should contain):**",
@@ -307,6 +313,13 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
     lines.append("|" + "---|" * len(checks))
     lines.append("| " + " | ".join(_check_mark(verdict.checks[c]) for c in checks) + " |")
     lines.append("")
+
+    if len(turns) > 1 and trace.turn_replies:
+        lines.append("**Turn replies:**")
+        for index, turn_reply in enumerate(trace.turn_replies, start=1):
+            snippet = (turn_reply or "（空）").replace("\n", " ")[:SNIPPET_CHARS]
+            lines.append(f"{index}. {snippet}")
+        lines.append("")
 
     if not verdict.passed:
         lines.append(f"**Failed checks:** {', '.join(verdict.reasons)}\n")

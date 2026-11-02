@@ -11,6 +11,7 @@ import pytest
 
 from eval.report import CaseReport, category_rows, render_report
 from eval.scoring import CaseTrace, cited_urls, score_case
+from eval.selection import select_cases
 from eval.test_cases import EVAL_CASES, EvalCase
 
 
@@ -427,6 +428,128 @@ class TestReportRendering:
         assert "**Skipped**: G1(invariant)" in text
         assert "**Note**: live 用例未包含" in text
 
+    def test_the_report_judges_the_same_turn_as_the_score(self):
+        """报告里的 ✓/✗ 必须与评分用同一段文字（多轮只看最后一轮）。
+
+        反例：第一轮说了关键词、第二轮没接上 —— 评分挂，报告也必须显示 ❌。
+        """
+        case = _case(
+            kind="multi_turn",
+            turns=["我叫小影", "我叫什么？"],
+            answer_should_contain=["小影"],
+        )
+        trace = CaseTrace(turn_replies=("我是小影", "不知道"), reply="我是小影\n不知道")
+        report = _report(case, trace)
+
+        assert not report.verdict.passed
+
+        text = render_report([report], model="m", started_at=datetime.now(timezone.utc))
+
+        assert "| `小影`: ❌ |" in text or "`小影`: ❌" in text
+        assert "**Failed checks:** answer" in text
+        assert "**Turn replies:**" in text and "不知道" in text
+
+    def test_an_invalid_case_is_reported_as_a_failed_case(self):
+        """用例声明与工具表对不上时报成失败用例（带原因），而不是静默通过或崩掉。"""
+        report = _report(
+            _case(id="BAD", fail_tools={"no_such_tool": "error"}),
+            CaseTrace(error="invalid case: BAD: fail_tools 里有未注册的工具"),
+        )
+        text = render_report([report], model="m", started_at=datetime.now(timezone.utc))
+
+        assert "- **BAD** (tool_selection): run" in text
+        assert "invalid case" in text
+
+
+class TestAnswerScope:
+    """多轮用例的回答断言只看**最后一轮**（"第二轮有没有引用第一轮"的判定点）。"""
+
+    def test_multi_turn_answer_checks_the_final_turn(self):
+        case = _case(
+            kind="multi_turn",
+            turns=["我叫小影", "我叫什么？"],
+            answer_should_contain=["小影"],
+        )
+        # 第一轮答出来了，但第二轮答非所问 → 挂
+        failed = score_case(
+            case, CaseTrace(turn_replies=("你好小影", "不知道"), reply="你好小影\n不知道")
+        )
+        assert not failed.passed and "answer" in failed.reasons
+
+        passed = score_case(
+            case,
+            CaseTrace(turn_replies=("你好小影", "你叫小影"), reply="你好小影\n你叫小影"),
+        )
+        assert passed.passed
+
+    def test_answer_scope_all_checks_every_turn(self):
+        case = _case(
+            kind="multi_turn",
+            turns=["a", "b"],
+            answer_should_contain=["小影"],
+            answer_scope="all",
+        )
+
+        assert score_case(
+            case,
+            CaseTrace(turn_replies=("我叫小影", "还有什么"), reply="我叫小影\n还有什么"),
+        ).passed
+
+    def test_without_turn_replies_it_falls_back_to_the_joined_reply(self):
+        case = _case(answer_should_contain=["小影"])
+
+        assert score_case(case, CaseTrace(reply="我是小影")).passed
+
+    def test_none_expected_tools_skips_the_tool_check(self):
+        """`expected_tools=None` = 不关心工具（只断言回答）；`[]` 才是"必须不调用"。"""
+        case = _case(expected_tools=None, answer_should_contain=["小影"])
+
+        assert score_case(case, CaseTrace(tools=("save_memory",), reply="小影")).passed
+        assert not score_case(
+            _case(expected_tools=[]), CaseTrace(tools=("x",), reply="ok")
+        ).passed
+
+
+class TestCaseTable:
+    """ticket 07：新增的多轮 / 恢复用例是**纯数据**，默认运行不联网。"""
+
+    def test_the_table_has_the_expected_categories(self):
+        multi = [c for c in EVAL_CASES if c.kind == "multi_turn"]
+        recovery = [c for c in EVAL_CASES if c.category == "recovery"]
+
+        assert len(multi) >= 6
+        assert len(recovery) >= 5
+
+    def test_multi_turn_cases_have_at_least_two_turns(self):
+        for case in EVAL_CASES:
+            if case.kind == "multi_turn":
+                assert len(case.turns) >= 2, case.id
+                assert case.query == "", f"{case.id} 应该只写 turns"
+
+    def test_recovery_cases_declare_a_failure_source(self):
+        sources = set()
+        for case in EVAL_CASES:
+            if case.category != "recovery":
+                continue
+            assert case.fail_tools or case.deny_tools, case.id
+            sources.update(case.fail_tools.values())
+            if case.deny_tools:
+                sources.add("deny")
+        # 至少四种失败来源
+        assert len(sources) >= 4, sources
+
+    def test_every_recovery_case_asserts_honest_degradation(self):
+        for case in EVAL_CASES:
+            if case.category != "recovery":
+                continue
+            assert case.answer_should_contain_any or case.answer_should_contain, case.id
+
+    def test_no_new_case_is_live_so_the_default_run_stays_offline(self):
+        default = select_cases(EVAL_CASES)
+
+        assert all(not case.live for case in default)
+        assert {c.id for c in default} >= {c.id for c in EVAL_CASES if c.category in {"multi_turn", "recovery"}}
+
 
 class TestExistingCasesStillScore:
     """回归：现有单轮用例的期望字段没被 v2 改坏（默认选择的完整性在 selection 测试里）。"""
@@ -444,6 +567,25 @@ class TestExistingCasesStillScore:
         )
 
         assert verdict.passed
+
+
+class TestCaseTableMatchesTheRealTools:
+    """用例里的 fail_tools / deny_tools 必须与**真实工具表**对得上。
+
+    打错工具名、或对不需要审批的工具写 deny，都会让恢复用例静默失效 —— 在 CI 里挡掉。
+    """
+
+    def test_every_fault_and_denial_names_a_real_tool(self):
+        from core.tool_registry import ToolRegistry
+        from core.tool_runtime import ToolRuntime
+        from eval.faults import validate_case
+        from main import register_tools
+
+        registry = ToolRegistry()
+        register_tools(ToolRuntime(registry=registry))
+
+        for case in EVAL_CASES:
+            validate_case(case, registry)
 
 
 class FakeUsageLLM:
@@ -480,13 +622,10 @@ class TestRunnerWiring:
     """
 
     @staticmethod
-    def _tool_runtime():
+    def _registry():
         from core.tool_registry import ToolRegistry
-        from core.tool_runtime import ToolRuntime
 
-        return ToolRuntime(
-            registry=ToolRegistry(), enable_tracing=False, enable_sandbox=False
-        )
+        return ToolRegistry()
 
     @staticmethod
     def _quiet_memory(monkeypatch):
@@ -508,7 +647,7 @@ class TestRunnerWiring:
         trace = await runner_mod._run_case(
             EvalCase(id="X1", query="1+1 等于几？", description="smoke"),
             factory,
-            self._tool_runtime(),
+            self._registry(),
             llm_service=FakeUsageLLM(["答案是 2"]),
         )
         await engine.dispose()
@@ -536,13 +675,14 @@ class TestRunnerWiring:
                 description="multi-turn smoke",
             ),
             factory,
-            self._tool_runtime(),
+            self._registry(),
             llm_service=fake,
         )
         await engine.dispose()
 
         assert fake.rounds == 2
         assert trace.model_calls == 2 and trace.tokens == 30
+        assert trace.turn_replies == ("第一轮回答", "第二轮回答")
         assert "第一轮回答" in trace.reply and "第二轮回答" in trace.reply
         # 第二轮真的看到了第一轮：否则"多轮"只是把两条消息各问一遍
         second_round = "\n".join(str(m.get("content", "")) for m in fake.seen[1])
@@ -574,7 +714,7 @@ class TestRunnerWiring:
                 description="crash smoke",
             ),
             factory,
-            self._tool_runtime(),
+            self._registry(),
             llm_service=ExplodingLLM(["第一轮回答"]),
         )
         await engine.dispose()
@@ -583,3 +723,147 @@ class TestRunnerWiring:
         assert trace.model_calls == 1
         assert trace.tokens == 15
         assert "第一轮回答" in trace.reply
+
+
+class FakeToolCallLLM(FakeUsageLLM):
+    """第一轮要求调用一个工具，第二轮根据工具结果作答。"""
+
+    def __init__(self, tool: str, arguments: dict, reply: str):
+        super().__init__([reply])
+        self._tool = tool
+        self._arguments = arguments
+
+    async def stream_chat(self, messages, tools=None, model=None, on_retry=None):
+        self.seen.append(list(messages))
+        if self.rounds == 0:
+            self.rounds += 1
+            yield {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": self._tool,
+                "arguments": self._arguments,
+            }
+            yield {
+                "type": "usage",
+                "model": "fake",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            }
+            return
+        self.rounds += 1
+        yield {"type": "token", "content": self._replies[0]}
+        yield {
+            "type": "usage",
+            "model": "fake",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+
+
+class TestRecoveryWiring:
+    """ticket 07：故障注入与审批拒绝都要真的走 Agent 的工具链路（不是换个假答案）。"""
+
+    @staticmethod
+    def _quiet_memory(monkeypatch):
+        FakeUsageLLM  # 保持与 TestRunnerWiring 同一套桩
+        import services.memory_service as memory_mod
+
+        async def no_memories(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(memory_mod.memory_service, "search", no_memories)
+
+    @pytest.mark.asyncio
+    async def test_an_injected_fault_reaches_the_model_as_a_tool_error(self, monkeypatch):
+        from core.tool_registry import ToolRegistry
+        from eval import runner as runner_mod
+
+        self._quiet_memory(monkeypatch)
+        engine = runner_mod._create_eval_engine()
+        factory = await runner_mod._setup_eval_db(engine)
+
+        async def read_file(**_kwargs) -> str:
+            raise AssertionError("注入故障后不该真的执行工具")
+
+        registry = ToolRegistry()
+        registry.register(
+            name="read_file",
+            description="read a file",
+            parameters={"type": "object", "properties": {}},
+            handler=read_file,
+        )
+        fake = FakeToolCallLLM("read_file", {"path": "F:/nope.md"}, "读不到")
+
+        trace = await runner_mod._run_case(
+            EvalCase(
+                id="R1",
+                query="读 F:/nope.md",
+                description="fault smoke",
+                fail_tools={"read_file": "error"},
+            ),
+            factory,
+            registry,
+            llm_service=fake,
+        )
+        await engine.dispose()
+
+        assert trace.tools == ("read_file",)
+        # Agent 拿来喂模型的工具结果里带着注入的失败（说明真的走完了 dispatch）
+        tool_messages = "\n".join(
+            str(m.get("content", "")) for m in fake.seen[1] if m.get("role") == "tool"
+        )
+        assert "injected fault" in tool_messages
+
+    @pytest.mark.asyncio
+    async def test_a_denied_tool_call_is_reported_as_denied_and_writes_nothing(
+        self, monkeypatch, tmp_path
+    ):
+        from core.tool_registry import ToolRegistry
+        from eval import runner as runner_mod
+
+        self._quiet_memory(monkeypatch)
+        engine = runner_mod._create_eval_engine()
+        factory = await runner_mod._setup_eval_db(engine)
+        target = tmp_path / "denied.txt"
+        calls: list[dict] = []
+
+        async def write_file(**kwargs) -> str:
+            calls.append(kwargs)          # 真被调用就说明拒绝没生效
+            return "written"
+
+        registry = ToolRegistry()
+        registry.register(
+            name="write_file",
+            description="write a file",
+            parameters={"type": "object", "properties": {}},
+            handler=write_file,
+            require_approval=True,        # 审批型工具才会走到"拒绝"分支
+        )
+        fake = FakeToolCallLLM(
+            "write_file",
+            {"path": str(target), "content": "hello"},
+            "没有写",
+        )
+
+        trace = await runner_mod._run_case(
+            EvalCase(
+                id="R2",
+                query="写到 denied.txt",
+                description="deny smoke",
+                deny_tools=["write_file"],
+            ),
+            factory,
+            registry,
+            llm_service=fake,
+        )
+        await engine.dispose()
+
+        assert trace.tools == ("write_file",)
+        tool_messages = "\n".join(
+            str(m.get("content", "")) for m in fake.seen[1] if m.get("role") == "tool"
+        )
+        assert "denied" in tool_messages.lower()
+        assert calls == []                 # 审批拒绝后工具一次都没执行
+        assert not target.exists()         # 也没写盘

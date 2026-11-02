@@ -37,6 +37,8 @@ class CaseTrace:
     args: Mapping[str, Mapping] = field(default_factory=dict)
     #: 完整调用序列（名字 + 当时的参数）—— 最小复现要的是这个，不是"最后一份参数"
     calls: tuple[tuple[str, Mapping], ...] = ()
+    #: 每一轮的用户消息对应的回复（多轮用例的断言看最后一轮）
+    turn_replies: tuple[str, ...] = ()
     reply: str = ""
     #: 报了 usage 的轮数（= `llm_usage` 行数；流式报错的那一轮不会有行）
     model_calls: int = 0
@@ -85,6 +87,18 @@ def _answer_ok(case, lowered_text: str) -> bool:
     )
 
 
+def answer_text(case, trace: CaseTrace) -> str:
+    """回答断言要检查的那段文字。
+
+    多轮用例默认只看**最后一轮**的回复（"第二轮有没有引用第一轮"的判定点）；`all`
+    则把每轮回复拼起来。没有逐轮数据时退回 `reply`（单轮 / 旧快照）。
+    """
+    replies = trace.turn_replies or ((trace.reply,) if trace.reply else ())
+    if getattr(case, "answer_scope", "final") == "all":
+        return "\n".join(replies)
+    return replies[-1] if replies else ""
+
+
 def score_case(case, trace: CaseTrace) -> CaseVerdict:
     """给一条用例的表现打分（纯函数）。"""
     checks: dict[str, bool] = {}
@@ -92,8 +106,11 @@ def score_case(case, trace: CaseTrace) -> CaseVerdict:
 
     checks[CHECK_RUN] = trace.error is None
 
-    # `ordered` 只对单轮用例有意义（多轮的"顺序"是轮次之间的事）
-    if case.ordered and getattr(case, "kind", "single_turn") == "single_turn":
+    # `expected_tools=None` = 这条用例不关心调了哪些工具（比如只测"记住了没有"）；
+    # `[]` = 必须**不**调用任何工具；默认是集合比较（ordered 时比顺序）
+    if case.expected_tools is None:
+        checks[CHECK_TOOLS] = True
+    elif case.ordered and getattr(case, "kind", "single_turn") == "single_turn":
         checks[CHECK_TOOLS] = list(trace.tools) == list(case.expected_tools)
     else:
         checks[CHECK_TOOLS] = set(trace.tools) == set(case.expected_tools)
@@ -111,8 +128,9 @@ def score_case(case, trace: CaseTrace) -> CaseVerdict:
         args_ok = args_ok and all(s in payload for s in (substrings or []))
     checks[CHECK_ARGS] = args_ok
 
-    checks[CHECK_ANSWER] = _answer_ok(case, reply.lower())
+    checks[CHECK_ANSWER] = _answer_ok(case, answer_text(case, trace).lower())
 
+    # 引用检查看整段对话（来源可能在任意一轮给出）
     if case.must_cite:
         checks[CHECK_CITATION] = bool(_URL_RE.search(reply))
 
