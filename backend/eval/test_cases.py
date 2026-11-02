@@ -1,15 +1,20 @@
 """
 Hand-annotated eval cases for Agent tool-calling accuracy.
 
-15 cases across 5 categories:
-- tool_selection (4): Does the Agent pick the right tool?
-- argument_accuracy (3): Are the arguments correct?
-- answer_quality (3): Is the final response accurate and well-formed?
-- edge_case (3): No-tool queries, multi-tool chains, ambiguous intents.
-- memory (2): Memory save and recall via save_memory / search_memory.
+15 single-turn cases across 5 categories (tool_selection / argument_accuracy /
+answer_quality / edge_case / memory).
+
+Since ticket 04 (eval v2) a case can also describe **multi-turn** conversations,
+**failure recovery** expectations, and **group-chat invariants** — see the
+`EvalCase` fields below. New behavioural cases themselves land with the later
+tickets; this module stays data-only.
 """
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+#: 用例形态：单轮 / 多轮 / 失败恢复 / 群聊不变量（脚本化假模型）
+EvalKind = Literal["single_turn", "multi_turn", "recovery", "invariant"]
 
 
 @dataclass
@@ -17,14 +22,37 @@ class EvalCase:
     """A single hand-annotated test case for Agent evaluation."""
 
     id: str                                     # unique identifier, e.g. "T01"
-    query: str                                  # user input
-    description: str                            # what this case tests
-    expected_tools: list[str] = field(default_factory=list)   # expected tool names (order-sensitive for chains)
+    query: str = ""                             # single_turn 的用户输入
+    description: str = ""                       # what this case tests
+    kind: EvalKind = "single_turn"
+    turns: list[str] = field(default_factory=list)  # multi_turn: 依次发送的用户消息
+    expected_tools: list[str] = field(default_factory=list)   # 集合比较（ordered=True 时比顺序）
+    ordered: bool = False                       # 期望工具**按顺序**出现（默认集合语义）
+    forbidden_tools: list[str] = field(default_factory=list)  # 这些工具一个都不许出现
     expected_args_contain: dict[str, list[str]] = field(default_factory=dict)  # tool_name → substrings in args JSON
     answer_should_contain: list[str] = field(default_factory=list)    # keywords that MUST ALL appear (AND)
     answer_should_contain_any: list[str] = field(default_factory=list)  # keywords where ANY must appear (OR); empty = always true
     answer_should_not_contain: list[str] = field(default_factory=list)  # keywords that MUST NOT appear (NOT)
-    category: str = "tool_selection"            # tool_selection | argument_accuracy | answer_quality | edge_case | memory
+    must_cite: bool = False                     # 回答里必须出现来源 URL（search 类）
+    invariants: list[str] = field(default_factory=list)  # invariant: 注册在 eval.invariants 里的名字
+    max_model_calls: int | None = None          # 这条用例允许多少次模型调用
+    live: bool = False                          # 需要真外网/真并发，默认不跑
+    category: str = "tool_selection"            # tool_selection | argument_accuracy | answer_quality | edge_case | memory | …
+
+    @property
+    def user_turns(self) -> list[str]:
+        """这次用例要依次发送的用户消息。
+
+        单轮用例**只发一条**（spec: single_turn 取 turns[0]）：优先 `query`，
+        没写 query 时退到 `turns[:1]`；多轮用例按 `turns` 逐条发。
+        """
+        if self.kind == "single_turn":
+            if self.query:
+                return [self.query]
+            return list(self.turns[:1])
+        if self.turns:
+            return list(self.turns)
+        return [self.query] if self.query else []
 
 
 EVAL_CASES: list[EvalCase] = [

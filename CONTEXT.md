@@ -77,7 +77,7 @@ backend/
                           #   user_config, user_profile, tool_run
   tools/                  # tool handlers: file_tools, search_tools, memory_tools,
                           #   screen_tools, time_tools
-  eval/                   # hand-annotated test cases + runner
+  eval/                   # behaviour eval: pure scoring/report/baseline/selection + runner
   tests/                  # pytest suite (mirrors core/services seams)
 frontend/
   electron/               # main.cjs (entry), preload*.cjs, floating.html
@@ -430,6 +430,32 @@ native  →  duckduckgo  →  bing_web  →  searxng  →  bing
 - **Contracts unchanged** (ADR-0003): the main LLM still decides *whether* to search, the
   `research` tool's signature/return shape is untouched, and the local scrapers stay as the
   only path for providers without native search.
+
+### 3.10 Agent eval (v2 framework, ticket #04)
+
+`backend/eval/` is the behaviour eval. The runner is deliberately split so the *rules* are
+testable without a model:
+
+| Module | Kind | Responsibility |
+|---|---|---|
+| `eval/test_cases.py` | data | `EvalCase` (kind/category/turns/expected & forbidden tools/args/answer rules/`must_cite`/`invariants`/`max_model_calls`/`live`) + the shipped cases |
+| `eval/scoring.py` | **pure** | `score_case(case, trace) -> CaseVerdict` (per-check verdicts + machine-readable failure reasons) |
+| `eval/report.py` | **pure** | `render_report(...)` → `eval_results.md`: per-category summary, check breakdown, cost (calls/tokens per case), failed-case **minimal repro**, baseline diff |
+| `eval/baseline.py` | **pure** + file I/O | `baseline_payload` / `validate_baseline` / `write_baseline` / `read_baseline` / `diff_baselines` (new fail / new pass / still fail / added / removed; an unknown format version is a clear `ValueError`, never a silent misread) |
+| `eval/selection.py` | **pure** | `select_cases(cases, categories=…, include_live=…, include_group=…)` — live and invariant cases are **off by default** |
+| `eval/runner.py` | I/O only | builds an in-memory DB, runs the Agent (multi-turn = several `run()` calls in one conversation), reads per-case calls/tokens from `llm_usage`, writes the report + `eval_baseline.json` |
+
+- CLI: `python -m eval.runner [--only cat[,cat]] [--live] [--group] [--baseline PATH]
+  [--out PATH] [--baseline-out PATH] [--dry-run]`. Default = every shipped non-live,
+  non-invariant case; `--dry-run` lists the selection without touching DB/model/files.
+- Per-case cost comes from `LLMUsage` rows (the Agent persists one row per round and the
+  runner injects a `LLMUsageStore` bound to the eval DB), so no extra instrumentation — and
+  eval runs no longer write usage rows into the real `data/companion.db`.
+- `invariant` cases (group-chat scheduling, ADR-0009) are selected only with `--group`; the
+  scripted fake-model runner lands with ticket #08, so they are reported as skipped today.
+- The old "eval must not depend on pytest" decision is **retired**: scoring / report /
+  baseline / selection are pure functions covered by `tests/test_eval_*.py`, while the
+  real-model cases stay manual (cost + non-determinism).
 
 ## 4. Frontend shape
 

@@ -1,6 +1,6 @@
 # Agent Eval v2：复杂场景 + 群聊不变量
 
-> 日期：2026-10-22 | 状态：**待实施** | 关联：`docs/specs/agent-eval(done).md`、`docs/adr/0009-concurrent-group-turns.md`
+> 日期：2026-10-22 | 状态：**部分实施（ticket 04：用例结构 + 纯函数 runner + 报告 + 基线 + 开关；多轮/恢复/视觉/搜索用例与群聊不变量分别随 #07/#08/#09）** | 关联：`docs/specs/agent-eval(done).md`、`docs/adr/0009-concurrent-group-turns.md`
 
 ## Problem Statement
 
