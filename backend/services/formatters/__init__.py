@@ -14,12 +14,10 @@ same arrangement as ``SEARCH_PARSERS[search_api]`` on the search side.
 
 from services.formatters.base import MessageFormatter
 from services.formatters.anthropic_formatter import AnthropicFormatter
-from services.formatters.gemini_formatter import GeminiFormatter
 
 __all__ = [
     "MessageFormatter",
     "AnthropicFormatter",
-    "GeminiFormatter",
     "get_formatter",
     "get_image_formatter",
 ]
@@ -46,14 +44,13 @@ def get_image_formatter(image_api: str | None) -> type[MessageFormatter] | None:
     |---|---|---|
     | `openai` | `image_url` + data URL | `MessageFormatter` 基类（默认形状） |
     | `anthropic` | `source` + base64 | `AnthropicFormatter` |
-    | `gemini` | `inline_data` | `GeminiFormatter` |
 
     返回的是**类**：图片形状与消息格式化无关，不需要实例化（基类是抽象类）。
+    原生 Gemini 的 `inline_data` 形状没有登记：`sdk_type` 只有 openai / anthropic，
+    它永远过不了 `LLMService.image_part` 的 SDK 一致性检查（Gemini 走 OpenAI 兼容端点）。
     """
     if image_api == "openai":
         return MessageFormatter
     if image_api == "anthropic":
         return AnthropicFormatter
-    if image_api == "gemini":
-        return GeminiFormatter
     return None

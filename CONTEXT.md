@@ -343,12 +343,13 @@ mutually exclusive routes to take:
   words and the reply. That is the 2026-10-20 lesson: a screen description spliced into a
   user message was recited for days.
 - **The wire shape lives on the formatter seam** (ADR-0011): `MessageFormatter.image_part()`
-  *is* the OpenAI-compatible shape, `AnthropicFormatter` overrides it, `GeminiFormatter`
-  adds the native one — and `formatters.get_image_formatter(image_api)` picks which class
-  to ask, the same way `SEARCH_PARSERS[search_api]` will on the search side. A shape that
-  does not match the underlying SDK (e.g. the native gemini shape on an OpenAI endpoint)
-  is refused by `LLMService.image_part`, so a new vendor is a table row plus — only if its
-  payload differs — one formatter override.
+  *is* the OpenAI-compatible shape, `AnthropicFormatter` overrides it — and
+  `formatters.get_image_formatter(image_api)` picks which class to ask, the same way
+  `SEARCH_PARSERS[search_api]` does on the search side. A shape that does not match the
+  underlying SDK is refused by `LLMService.image_part`, so a new vendor is a table row
+  plus — only if its payload differs — one formatter override. (The native Gemini
+  `inline_data` shape was removed: `sdk_type` is only openai/anthropic, so it could never
+  pass that check; Gemini uses its OpenAI-compatible endpoint.)
 - **The routing itself lives in two small modules**, not in the WS handler:
   `services/vision_route.plan_vision_route(can_see, image_api)` (pure: mount / fallback /
   unavailable) and `services/vision_turn.prepare_vision_turn(gate=…, …)` (captures or asks
@@ -395,22 +396,27 @@ native  →  duckduckgo  →  bing_web  →  searxng  →  bing
   (`services/search_hits.py`): `openai` ← the Responses `web_search` tool's
   `url_citation` annotations (or the Chat Completions search models' `message`
   annotations), `anthropic` ← the server-side `web_search`'s `web_search_result` blocks,
-  `gemini` ← native `generateContent`'s `groundingMetadata`. All become
-  `SearchHit(title, url, snippet, source)`; a `search_api` without a parser is **not**
-  attempted, and `SHAPE_SDKS` pins which transport owns each shape (a shape declared
-  against the wrong SDK is refused, not sent — `gemini` uses REST and needs no SDK).
-  The native Gemini transport lives in `services/gemini_rest.py` (host / key header /
-  URL composition — vendor knowledge stays in config + the shape seam, ADR-0011), and it
-  turns the preset's `…/v1beta/openai/` base URL back into `…/v1beta/models/{model}:…`.
-  **`deepseek` is not implemented**: its public API has no documented search/fetch
-  response shape, so `search_api=deepseek` degrades straight to the local chain instead of
-  shipping a guessed request. Parsers are defensive: a response with no usable citations
+  `gemini` ← native `generateContent`'s `groundingMetadata`, `deepseek` ← the Responses
+  `web_search_call` items whose `action.type` is `open_page` (take `action.url`, strip the
+  `#ws_call_id=…` fragment; DeepSeek supplies no title/snippet, so the title is derived
+  from the URL). All become `SearchHit(title, url, snippet, source)`; a `search_api`
+  without a parser is **not** attempted, and `SHAPE_SDKS` pins which transport owns each
+  shape (a shape declared against the wrong SDK is refused, not sent — `gemini` uses REST
+  and needs no SDK, `deepseek` rides the OpenAI SDK). The native Gemini transport lives in
+  `services/gemini_rest.py` (host / key header / URL composition — vendor knowledge stays
+  in config + the shape seam, ADR-0011), and it turns the preset's `…/v1beta/openai/` base
+  URL back into `…/v1beta/models/{model}:…`.
+  **DeepSeek runs `web_search` only on some models** (v4-pro does; v4-flash accepts the
+  tool and silently does nothing), so its preset keeps `native_search=None` and the user
+  enables it per model in Settings; `native_fetch` is `False` because the fetched page
+  text never comes back to us. Parsers are defensive: a response with no usable citations
   yields no hits, and `native_search` turns that into `None` so the chain **degrades**.
 - **`fetch_url` does the same for pages** (ticket #06): `native_fetch` first (the
   structured Anthropic `web_fetch` result → `PageText(title, text)` truncated to
   `MAX_PAGE_TEXT`), then the original httpx + BeautifulSoup extraction; both failing
-  returns the error envelope. Shapes with no structured fetch (OpenAI / Gemini) go straight
-  to the local extractor — `native_fetch` is a capability **and** a per-shape parser, so an
+  returns the error envelope. Shapes with no structured fetch (OpenAI / Gemini / DeepSeek)
+  go straight to the local extractor — `native_fetch` is a capability **and** a per-shape
+  parser, so an
   api that cannot fetch never pretends to. Search and fetch share one shape predicate
   (`LLMService._shape_api`), so they cannot disagree about what is usable.
 - `LLMService.native_search()` returns `None` for "unsupported or failed" and never

@@ -179,7 +179,10 @@ class TestCapabilitiesOverApi:
         caps = (await client.get("/api/config")).json()["capabilities"]
         assert caps["supports_vision"] == {"value": True, "source": "preset"}
         assert caps["image_api"] == {"value": "openai", "source": "preset"}
-        assert caps["native_search"] == {"value": True, "source": "preset"}
+        # 原生搜索是否执行取决于模型（v4-pro 会、v4-flash 不会）→ 预设不替用户猜
+        assert caps["native_search"] == {"value": None, "source": "unknown"}
+        # DeepSeek 不回传网页正文 → 原生抓取明确不可用
+        assert caps["native_fetch"] == {"value": False, "source": "preset"}
         assert caps["search_api"] == {"value": "deepseek", "source": "preset"}
 
         # 用户覆盖后来源变成 user —— 面板据此显示「你手动开启」而不是「模型默认」
@@ -198,7 +201,7 @@ class TestCapabilitiesOverApi:
         by_name = {row["name"]: row for row in table}
         assert [row["name"] for row in table][:2] == ["supports_vision", "image_api"]
         assert by_name["supports_vision"]["kind"] == "boolean"
-        assert by_name["image_api"]["options"] == ["openai", "anthropic", "gemini"]
+        assert by_name["image_api"]["options"] == ["openai", "anthropic"]
         assert by_name["search_api"]["options"] == [
             "openai", "anthropic", "gemini", "deepseek", "none",
         ]

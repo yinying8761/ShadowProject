@@ -1,6 +1,6 @@
 # 搜索：优先用提供商原生 web search / fetch，本地抓取降级
 
-> 日期：2026-10-22 | 状态：**已实施（ticket 03：后端链 + 原生搜索；ticket 06：原生抓取 + gemini 分支）。DeepSeek 的原生搜索/抓取因官方未公开响应形状而**未实现**（`search_api=deepseek` 直接降级，见 `services/search_hits.py`）** | 关联：`docs/adr/0003-search-decision-rights.md`、`docs/specs/search-augmenter-degrade(done).md`
+> 日期：2026-10-22 | 状态：**已实施（ticket 03：后端链 + 原生搜索；ticket 06：原生抓取 + gemini 分支；2026-10-31：DeepSeek 原生搜索 parser）** | 关联：`docs/adr/0003-search-decision-rights.md`、`docs/specs/search-augmenter-degrade(done).md`
 
 ## Problem Statement
 
@@ -64,23 +64,37 @@ research(query) → SearchAgent
 | `openai` | Responses/Chat 的 `web_search` 工具调用，取 `url_citation` 注解 | OpenAI GPT 系列、任何提供该工具的 OpenAI 兼容端点 |
 | `anthropic` | 服务端工具 `web_search`，解析 `web_search_result` 块 | Claude |
 | `gemini` | `google_search` grounding（`groundingMetadata` 里带 `uri`/`title`），或走 Gemini 的 **OpenAI 兼容端点**复用 `openai` 分支 | Gemini |
-| `deepseek` | DeepSeek 官方搜索接口 | DeepSeek |
+| `deepseek` | OpenAI 兼容的 `/responses` + `web_search` 工具；来源取 `output[].web_search_call` 里 `action.type == "open_page"` 的 `action.url` | DeepSeek（只有部分模型真的执行） |
 | `none` | 不尝试原生，直接进本地链 | 其余 |
 
 **Gemini 的默认策略**同视觉：优先走它的 OpenAI 兼容端点；只有用户显式用原生 `generateContent` 时才需要 `gemini` 这一支。
 
 ```python
 SEARCH_PARSERS = {
-    "openai":    _parse_openai_citations,
-    "anthropic": _parse_anthropic_blocks,
-    "gemini":    _parse_gemini_grounding,
-    "deepseek":  _parse_deepseek_search,
+    "openai":    _parse_openai,              # url_citation 注解（Responses/Chat 两种形态）
+    "anthropic": _parse_anthropic,           # web_search_result 块
+    "gemini":    _parse_gemini,              # groundingMetadata
+    "deepseek":  _parse_deepseek_search,     # web_search_call.action.open_page.url
 }
 ```
 
 - 统一超时（`search_timeout`，默认 20s）与错误折叠：任何异常 → 返回 `None` + 一条日志，**不向上抛**（保证链能继续）。
 - 未知/缺失 `search_api` → 视为不支持，**直接降级**（搜索是可选能力，不该因为配置缺项而报错；这与视觉相反，视觉必须显式报错，因为用户明确要求"看"）。
 - `native_fetch` 同理：返回 `(title, text)`，`text` 截断到 `MAX_PAGE_TEXT`。
+
+### DeepSeek 实测（2026-10-29）
+
+- `/responses` + `tools=[{"type": "web_search"}]` 能用，并返回标准 Responses 信封；
+  但 `message.content[].annotations` **永远是空的**（没有 `url_citation`），
+  `_parse_openai` 因此拿到 0 条。真正的来源在 `output[]` 的 `web_search_call` 里：
+  取 `action.type == "open_page"` 的 `action.url`，且 URL 末尾带 `#ws_call_id=…`
+  内部标记（解析时去掉）。
+- **执行与否取决于模型**：`deepseek-v4-pro` 真的会搜（`output` 里有多条
+  `web_search_call`，`usage.server_tool_use` 有计数）；`deepseek-v4-flash` 接受工具
+  却什么都不做（200，无 `web_search_call`）。所以能力表的 `deepseek.native_search`
+  只能写 `None`（未知），由用户按模型覆盖打开 —— 不按模型名猜（ADR-0011）。
+- **原生抓取不可用**：DeepSeek 抓到的页面正文只进模型自己的上下文，**不回传给我们**
+  （我们拿不到正文），所以 `native_fetch=False`，`fetch_url` 直接走本地正文抽取。
 
 ### 与既有契约的关系
 
@@ -93,13 +107,17 @@ SEARCH_PARSERS = {
 
 - 能力表驱动：设置页显示「当前模型：原生搜索 ✓ / 本地抓取」。
 - `search_proxy`、`SEARXNG_URL`、`BING_API_KEY` 语义不变。
+- **searxng 的进链规则**（`tools/search_tools.py::_searxng_available`）：只有
+  `SEARXNG_URL` 不是默认占位符，或 `SEARCH_BACKEND=searxng` 时，searxng 才进链。
+  这是**有意为之**：默认地址指向一个多半没启动的本地实例，跟着链去试只会白等一次
+  超时（`test_search_chain.py::TestSearxngAvailability` 锁住了这条规则）。
 
 ## Testing Decisions
 
 | Seam | 形态 | 测什么 |
 |---|---|---|
 | **S1 后端链计算** | 纯函数 | 能力/配置组合 → 期望链；`search_prefer_native=False` → 链里没有 native；缺 key → 对应项被剔除 |
-| **S2 原生响应解析** | 纯函数（每种 `search_api` 一份固定响应体快照） | `openai`（url_citation）/ `anthropic`（result 块）/ `gemini`（groundingMetadata）/ `deepseek` 四种 → 统一 `SearchHit`；空结果、缺字段、带引用 |
+| **S2 原生响应解析** | 纯函数（每种 `search_api` 一份固定响应体快照） | `openai`（url_citation）/ `anthropic`（result 块）/ `gemini`（groundingMetadata）/ `deepseek`（`web_search_call.action.open_page.url`，含 `#ws_call_id=` 清理）四种 → 统一 `SearchHit`；空结果、缺字段、带引用 |
 | **S3 `search_api` 分派** | 纯函数 | 已知 api → 对应 parser；`none` / 缺失 / 未知 → 不尝试原生、直接进本地链（不报错） |
 | **S4 降级** | 假后端 | native 抛错/返回 None → 落到 ddgs；ddgs 也失败 → 落到 bing_web；全失败 → 返回明确的空结果（不抛） |
 | **S5 fetch 降级** | 假后端 | `native_fetch` 返回 None → BeautifulSoup 抽取；两者都失败 → 工具返回错误信封 |

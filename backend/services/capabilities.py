@@ -39,8 +39,10 @@ BOOLEAN_CAPABILITIES: tuple[str, ...] = (
     "native_fetch",
 )
 
-#: 图片载荷形状（与厂商名无关：三种形状覆盖所有已知厂商）。
-IMAGE_APIS: tuple[str, ...] = ("openai", "anthropic", "gemini")
+#: 图片载荷形状（与厂商名无关：两种形状覆盖所有实际可用的厂商）。
+#: 不含 `gemini`：`sdk_type` 只有 openai / anthropic，原生 `generateContent` 形状
+#: 永远过不了 `LLMService.image_part` 的 SDK 一致性检查（Gemini 走 OpenAI 兼容端点）。
+IMAGE_APIS: tuple[str, ...] = ("openai", "anthropic")
 
 #: 原生搜索的响应形状；`none` = 明确不尝试原生（直接降级）。
 SEARCH_APIS: tuple[str, ...] = ("openai", "anthropic", "gemini", "deepseek", "none")

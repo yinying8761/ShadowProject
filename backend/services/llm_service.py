@@ -99,7 +99,7 @@ class LLMService:
     def image_part(self, image_bytes: bytes, mime: str = "image/jpeg") -> dict:
         """把一张截图变成**当前模型**能接受的 content block（ticket #02）。
 
-        形状按模型的 `image_api` 分派（openai / anthropic / gemini），业务代码永远
+        形状按模型的 `image_api` 分派（openai / anthropic），业务代码永远
         不自己拼 payload。**不知道形状就报错**：用户明确要求看屏幕，静默发一个纯文本
         请求等于骗人（ADR-0011 的不对称 —— 视觉报错，搜索才降级）。
         """
@@ -115,7 +115,7 @@ class LLMService:
             )
         if api != sdk:
             # 形状必须和底层 SDK 对得上：openai SDK 只认 image_url、Anthropic SDK 只认
-            # source。不一致 = 配置错了（例如把原生 gemini 形状指给 OpenAI 兼容端点），
+            # source。不一致 = 配置错了（例如把 anthropic 形状指给 OpenAI 兼容端点），
             # 与其发出去被对方拒，不如当场说清楚。
             raise ValueError(
                 f"图片格式 {api} 与底层 SDK {sdk} 不匹配（模型 {model}）："
@@ -196,11 +196,13 @@ class LLMService:
         """按 `search_api` 发请求（只有形状不同，业务代码不按厂商判断）。
 
         每种形状 = 一个请求体 + 一个 parser（`services/search_hits.py`）**成对**登记；
+        `openai` / `deepseek` 共用同一个 Responses 请求体，但响应形状不同（各有 parser）。
         这里没有"默认落到 anthropic"的兜底 —— 未知形状直接放弃，交给本地链。
         """
         model = self._runtime.get_model()
-        if api == "openai":
-            # Responses API：`web_search` 是服务端工具，来源在 url_citation 注解里
+        if api in ("openai", "deepseek"):
+            # Responses API：`web_search` 是服务端工具。DeepSeek 兼容这个请求体，
+            # 但来源在 `output[].web_search_call` 里，不在 url_citation 注解里。
             return await self._get_openai_client().responses.create(
                 model=model,
                 tools=[{"type": "web_search"}],

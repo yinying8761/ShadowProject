@@ -43,8 +43,12 @@ PROVIDER_PRESETS = {
         "description": "DeepSeek",
         "supports_vision": True,
         "image_api": "openai",
-        "native_search": True,
-        "native_fetch": True,
+        # `/responses` + `web_search` 能用，但**执行与否取决于模型**（实测 v4-pro 会搜、
+        # v4-flash 接受工具却什么都不做）。不按模型名猜（ADR-0011）→ 留未知，由用户在
+        # 设置里按模型打开；形状先登记好，打开后 `_native_search_request` 才走得到。
+        "native_search": None,
+        # 抓到的正文只进模型自己的上下文，**不回传给我们** → 没有可用的原生抓取。
+        "native_fetch": False,
         "search_api": "deepseek",
     },
     "gemini": {

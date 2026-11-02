@@ -59,21 +59,20 @@ LLM_PRESETS = {
 ```
 
 - `supports_vision` 三态：`True` / `False` / `None`（未知，由用户或模型名推断）。
-- 设置里新增 **模型级覆盖** `llm_supports_vision: bool | None`（写进 `user_config` / `.env`），优先于预设。用户填了一个预设不知道的新模型时，这一个开关说了算。
+- 设置里新增 **模型级覆盖**：写在 `data/config.yaml` 的 `capabilities:` 下、按 `provider:model` 归档（PATCH 语义，缺项=不改、`null`=清除），优先于预设。用户填了一个预设不知道的新模型时，这几个开关说了算（实现见 `services/llm_config.py:132-160`，约定见 ADR-0011:102-111）。
 - 暴露 `runtime_config.supports_vision()`；**业务代码只能调这一个函数**，禁止按 provider 名字写 `if`。
 - `VISION_PRESETS`（fallback 专家模型）保留 `openai` / `anthropic` / `zhipu` / `custom`，补上可用的 Gemini 条目，**删除 `qwen`**（模型已停用）。
 
 ### 图片载荷：按 `image_api` 分叉，而不是按厂商
 
-各家的图片块形状只有**三种**，与厂商名无关：
+各家的图片块形状只有**两种**，与厂商名无关：
 
 | `image_api` | 形状 | 用于 |
 |---|---|---|
 | `openai` | `{"type": "image_url", "image_url": {"url": "data:<mime>;base64,..."}}` | DeepSeek、OpenAI、智谱、通义、Moonshot、以及**任何 OpenAI 兼容端点** |
 | `anthropic` | `{"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}` | Claude |
-| `gemini` | `{"inline_data": {"mime_type": ..., "data": ...}}`（`generateContent` 原生） | 仅当不走 OpenAI 兼容层时 |
 
-**Gemini 的默认策略**：优先使用它提供的 **OpenAI 兼容端点**（`https://generativelanguage.googleapis.com/v1beta/openai/`），这样 `image_api="openai"` 即可，不必新增第三种形状。只有用户显式配置原生 `generateContent` 时，才需要 `gemini` 这一支（放进 formatter registry，不写进业务代码）。
+**Gemini 的默认策略**：使用它提供的 **OpenAI 兼容端点**（`https://generativelanguage.googleapis.com/v1beta/openai/`），因此 `image_api="openai"` 即可。原生 `generateContent` 的 `inline_data` 形状**没有登记**：`sdk_type` 只有 openai / anthropic，它永远过不了 `LLMService.image_part` 的 SDK 一致性检查（这个从未可达的选项已删除，见 `services/capabilities.IMAGE_APIS`）。
 
 「加一家新厂商」的完整动作因此只有两步：**在预设里填 `supports_vision` + `image_api`**；如果它连 OpenAI 兼容都不兼容，再在 formatter registry 里加一个 builder。**不改 Agent、不改驱动、不改 `see_screen`。**
 
@@ -146,21 +145,21 @@ class MessageFormatter(Protocol):
 
 LLM 配置面板在当前模型旁显示能力来源：**「支持视觉（模型默认）」**、**「支持视觉（你手动开启）」**、**「不支持视觉」**。三态必须能分辨，否则用户不知道是自己覆盖的还是预设给的。
 
-- 提供「强制开启/关闭视觉」开关（写 `llm_supports_vision`），用于预设不认识的自定义模型。
+- 提供「强制开启/关闭视觉」开关（写模型级能力覆盖 `supports_vision`），用于预设不认识的自定义模型。
 - 不支持视觉时，`see_screen` 的审批文案附带一句「当前模型不支持视觉，将使用备用视觉模型」。
 
 ## Testing Decisions
 
 | Seam | 形态 | 测什么 |
 |---|---|---|
-| **S1 formatter registry** | 纯函数（表驱动） | `openai` / `anthropic` / `gemini` 三种 builder 的结构；data URL 前缀；mime 透传；**未知 `image_api` 抛错**（不静默丢图） |
-| **S2 能力解析** | 纯函数 | 预设默认 → 生效值；`llm_supports_vision` 覆盖预设；`None`（未知）的兜底策略；三态组合 |
+| **S1 formatter registry** | 纯函数（表驱动） | `openai` / `anthropic` 两种 builder 的结构；data URL 前缀；mime 透传；**未知 `image_api` 抛错**（不静默丢图） |
+| **S2 能力解析** | 纯函数 | 预设默认 → 生效值；模型级能力覆盖优先于预设；`None`（未知）的兜底策略；三态组合 |
 | **S3 能力分派** | 假 Agent + 假 LLMService | `supports_vision` 真/假 → 走「挂载图片」还是「vision_service」；只有一条分支被调用 |
 | **S4 see_screen 三态** | 假主模型 + 假 vision_service | 主模型视觉可用 → 不碰 vision_service；不支持 → 调 fallback；都没有 → 明确错误 |
 | **S5 不落库** | 内存 SQLite | 一轮带图对话后 `messages` 里没有 base64、没有「已附上截图」之类注记；历史长度与不带图时一致 |
 | **S6 换厂商不改业务代码** | 结构断言 | 用 `custom` + `supports_vision=True` + `image_api="openai"` 配一个假端点 → 走主模型视觉分支（证明新厂商无需改代码） |
 
-- 回归：1:1 文本对话的请求体与响应不变；群聊路径复用同一分派（群成员也能看屏幕，但不引入新的并发问题）。
+- 回归：1:1 文本对话的请求体与响应不变；**群聊不复用会话级挂载** —— `api/chat.py` 在群聊分支提前 `return`（交给群轮驱动），走不到 `prepare_vision_turn`，所以群轮不会挂图；群成员要看屏幕只能通过 `see_screen` **工具**（工具内部仍走主模型视觉，不引入新的并发问题）。
 - 手工验收：切换模型（多模态 / 非多模态）各看一次屏幕，日志应打出实际走的分支。
 
 ## Out of Scope

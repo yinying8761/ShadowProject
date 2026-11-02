@@ -201,7 +201,6 @@ class TestPresetTable:
     @pytest.mark.parametrize(
         "provider,image_api,search_api",
         [
-            ("deepseek", "openai", "deepseek"),
             ("openai", "openai", "openai"),
             ("anthropic", "anthropic", "anthropic"),
             ("gemini", "openai", "openai"),  # 走 OpenAI 兼容端点（ADR-0011）
@@ -218,6 +217,18 @@ class TestPresetTable:
         assert preset["native_search"] is True
         assert preset["native_fetch"] is True
         assert preset["search_api"] == search_api
+
+    def test_deepseek_does_not_claim_a_native_search_that_may_never_run(self):
+        """实测 v4-pro 会执行 `web_search`、v4-flash 接受工具却不搜：不按模型名猜。"""
+        from config import PROVIDER_PRESETS
+
+        preset = PROVIDER_PRESETS["deepseek"]
+        assert preset["supports_vision"] is True
+        assert preset["image_api"] == "openai"
+        assert preset["native_search"] is None   # 未知：只有用户显式打开才尝试
+        assert preset["native_fetch"] is False   # 不回传网页正文
+        # 形状保留：用户按模型打开 native_search 后，请求与解析才走得到
+        assert preset["search_api"] == "deepseek"
 
     def test_providers_without_a_default_stay_unknown(self):
         """同一家厂商里也有不支持视觉的模型 —— 没把握就不许替用户猜。"""

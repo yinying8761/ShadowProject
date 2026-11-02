@@ -382,6 +382,32 @@ GEMINI_GROUNDING = {
     ]
 }
 
+DEEPSEEK_RESPONSE = {
+    "output": [
+        {
+            "type": "web_search_call",
+            "id": "call_02_abc",
+            "status": "completed",
+            "action": {"type": "search", "queries": ["python 3.14"]},
+        },
+        {
+            "type": "web_search_call",
+            "id": "call_03_def",
+            "status": "completed",
+            "action": {
+                "type": "open_page",
+                "url": "https://www.jiemian.com/article/15257226.html#ws_call_id=call_02_abc",
+            },
+        },
+        {
+            "type": "message",
+            "content": [
+                {"type": "output_text", "text": "Python 3.14 已发布。", "annotations": []}
+            ],
+        },
+    ]
+}
+
 class TestNativeSearchBranches:
     @pytest.mark.asyncio
     async def test_gemini_uses_native_grounding_over_rest(self):
@@ -434,11 +460,11 @@ class TestNativeSearchBranches:
         assert await llm.native_search("python") is None
 
     @pytest.mark.asyncio
-    async def test_deepseek_has_no_native_branch_so_it_degrades(self):
-        """DeepSeek 的搜索响应形状官方没公开：不发请求、直接降级（不编一个假形状）。"""
+    async def test_deepseek_is_unknown_by_default_and_never_requests(self):
+        """预设 `native_search=None`（只有部分模型真会搜）→ 不猜，直接降级。"""
         class Boom:
             def __getattr__(self, name):
-                raise AssertionError("DeepSeek 的原生分支还没实现，不该发请求")
+                raise AssertionError("预设未知的 DeepSeek 不该发原生搜索请求")
 
         llm = LLMService(
             clients={"openai": Boom()},
@@ -447,6 +473,32 @@ class TestNativeSearchBranches:
 
         assert llm.native_search_available() is False
         assert await llm.native_search("python") is None
+
+    @pytest.mark.asyncio
+    async def test_deepseek_uses_the_responses_shape_when_enabled_per_model(self):
+        """用户在设置里给这个模型打开 native_search 后才走；来源解析 open_page。"""
+        class Responses:
+            async def create(self, **kwargs):
+                assert kwargs["tools"] == [{"type": "web_search"}]
+                assert kwargs["input"] == "python 3.14"
+                return DEEPSEEK_RESPONSE
+
+        llm = LLMService(
+            clients={"openai": SimpleNamespace(responses=Responses())},
+            runtime_config=LLMRuntimeConfig(
+                provider="deepseek",
+                capability_overrides={
+                    "deepseek:deepseek-v4-pro": {"native_search": True}
+                },
+            ),
+        )
+
+        hits = await llm.native_search("python 3.14")
+
+        assert [h.url for h in hits] == [
+            "https://www.jiemian.com/article/15257226.html"
+        ]
+        assert hits[0].source == "deepseek"
 
 
 class TestGeminiRestUrl:

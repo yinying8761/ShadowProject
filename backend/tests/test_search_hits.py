@@ -1,8 +1,9 @@
 """原生搜索响应 → 统一结构（ticket 03 / spec S2 + S3）。
 
 每份固定响应体都是**真实的形状**（OpenAI Responses 的 `url_citation` 注解 /
-Anthropic 的 `web_search_tool_result` 块），解析器必须防御性地处理缺字段与空结果 ——
-厂商的私有契约不受我们控制，解析失败只能降级，不能抛错，更不能把错误当结果。
+Anthropic 的 `web_search_tool_result` 块 / DeepSeek 的 `web_search_call`），解析器必须
+防御性地处理缺字段与空结果 —— 厂商的私有契约不受我们控制，解析失败只能降级，不能
+抛错，更不能把错误当结果。
 """
 
 from types import SimpleNamespace
@@ -65,6 +66,49 @@ ANTHROPIC_RESPONSE = {
                     "encrypted_content": "…",
                     "page_age": "2 days",
                 },
+            ],
+        },
+    ],
+}
+
+
+#: DeepSeek `/responses` 的真实形状（实测 2026-10-29）：没有 url_citation，来源在
+#: `web_search_call.action.open_page.url` 里，带 `#ws_call_id=…` 内部标记。
+DEEPSEEK_RESPONSE = {
+    "id": "resp_ds",
+    "output": [
+        {
+            "type": "web_search_call",
+            "id": "call_02_abc",
+            "status": "completed",
+            "action": {"type": "search", "queries": ["python 3.14"]},
+        },
+        {
+            "type": "web_search_call",
+            "id": "call_03_def",
+            "status": "completed",
+            "action": {
+                "type": "open_page",
+                "url": "https://www.jiemian.com/article/15257226.html#ws_call_id=call_02_abc",
+            },
+        },
+        {
+            "type": "web_search_call",
+            "id": "call_04_ghi",
+            "status": "completed",
+            "action": {
+                "type": "open_page",
+                "url": "https://docs.python.org/3/whatsnew/3.14.html",
+            },
+        },
+        {
+            "type": "message",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Python 3.14 已发布。",
+                    "annotations": [],          # 实测：永远是空数组
+                }
             ],
         },
     ],
@@ -241,19 +285,23 @@ class TestAnthropicShape:
 
 
 class TestAllHitsAreUniform:
-    def test_both_shapes_produce_dicts_with_the_same_keys(self):
+    def test_every_shape_produces_dicts_with_the_same_keys(self):
         keys = {"title", "url", "snippet", "source"}
-        for api, response in (("openai", OPENAI_RESPONSE), ("anthropic", ANTHROPIC_RESPONSE)):
+        for api, response in (
+            ("openai", OPENAI_RESPONSE),
+            ("anthropic", ANTHROPIC_RESPONSE),
+            ("deepseek", DEEPSEEK_RESPONSE),
+        ):
             hits = parse_search_hits(api, response)
             assert hits and all(set(h.as_dict()) == keys for h in hits)
 
 
 class TestDispatch:
-    @pytest.mark.parametrize("api", ["openai", "anthropic", "gemini"])
+    @pytest.mark.parametrize("api", ["openai", "anthropic", "gemini", "deepseek"])
     def test_known_apis_have_a_parser(self, api):
         assert parser_for(api) is not None
 
-    @pytest.mark.parametrize("api", [None, "", "none", "nonsense", "bing_web", "deepseek"])
+    @pytest.mark.parametrize("api", [None, "", "none", "nonsense", "bing_web"])
     def test_unknown_or_missing_api_does_not_try_native(self, api):
         """搜索与视觉相反：不认识的形状**降级**（不抛错、不尝试原生）。"""
         assert parser_for(api) is None
@@ -315,12 +363,61 @@ class TestGeminiShape:
         assert parse_search_hits("gemini", response) == []
 
 
-class TestDeepSeekIsNotImplemented:
-    """DeepSeek 的搜索响应形状官方没公开：**不编一个**，直接降级（ticket 06 的诚实缺口）。"""
+class TestDeepSeekShape:
+    """DeepSeek `/responses`：来源只在 `web_search_call.action.open_page.url` 里。"""
 
-    def test_deepseek_has_no_parser_so_native_is_not_attempted(self):
-        assert parser_for("deepseek") is None
-        assert parse_search_hits("deepseek", OPENAI_RESPONSE) == []
+    def test_open_page_actions_become_hits_and_the_fragment_is_stripped(self):
+        hits = parse_search_hits("deepseek", DEEPSEEK_RESPONSE)
+
+        assert [h.url for h in hits] == [
+            "https://www.jiemian.com/article/15257226.html",
+            "https://docs.python.org/3/whatsnew/3.14.html",
+        ]
+        assert hits[0].source == "deepseek"
+        # 不给标题/摘要：标题由 URL 拼出来，摘要留空
+        assert hits[0].title == "www.jiemian.com · 15257226"
+        assert hits[0].snippet == ""
+        assert hits[1].title == "docs.python.org · 3.14"
+
+    def test_empty_annotations_do_not_hide_the_sources(self):
+        """annotations 永远是空的 —— 只依赖 url_citation 的解析确实拿不到命中。"""
+        assert parse_search_hits("openai", DEEPSEEK_RESPONSE) == []
+        assert parse_search_hits("deepseek", DEEPSEEK_RESPONSE) != []
+
+    def test_search_actions_and_duplicate_pages_do_not_produce_extra_hits(self):
+        response = {
+            "output": [
+                {"type": "web_search_call", "action": {"type": "search", "queries": ["q"]}},
+                {
+                    "type": "web_search_call",
+                    "action": {"type": "open_page", "url": "https://a.example/x"},
+                },
+                {
+                    "type": "web_search_call",
+                    "action": {
+                        "type": "open_page",
+                        "url": "https://a.example/x#ws_call_id=call_1",
+                    },
+                },
+            ]
+        }
+
+        assert [h.url for h in parse_search_hits("deepseek", response)] == [
+            "https://a.example/x"
+        ]
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {},
+            {"output": []},
+            {"output": [{"type": "message", "content": []}]},
+            {"output": [{"type": "web_search_call"}]},
+            {"output": [{"type": "web_search_call", "action": {"type": "open_page"}}]},
+        ],
+    )
+    def test_empty_or_partial_shapes_yield_no_hits(self, response):
+        assert parse_search_hits("deepseek", response) == []
 
 
 class TestAnthropicFetch:
@@ -427,11 +524,11 @@ class TestShapeSdks:
     def test_every_parser_has_a_transport(self):
         from services.search_hits import SHAPE_SDKS
 
-        for api in ("openai", "anthropic", "gemini"):
+        for api in ("openai", "anthropic", "gemini", "deepseek"):
             assert api in SHAPE_SDKS, api
 
-    def test_gemini_needs_no_sdk_and_deepseek_is_not_shipped(self):
+    def test_gemini_needs_no_sdk_and_deepseek_rides_the_openai_sdk(self):
         from services.search_hits import SHAPE_SDKS
 
         assert SHAPE_SDKS["gemini"] is None
-        assert "deepseek" not in SHAPE_SDKS
+        assert SHAPE_SDKS["deepseek"] == "openai"

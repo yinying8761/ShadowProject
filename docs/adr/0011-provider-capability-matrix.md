@@ -1,5 +1,7 @@
 # Provider capabilities: one model-level table, two-step onboarding
 
+> **Partially superseded (2026-11-02):** Native Gemini image payloads (`inline_data`) are not supported or registered. The app's SDK types are only `openai` and `anthropic`, so that payload could not pass the SDK/image-shape consistency check. Gemini vision uses its OpenAI-compatible endpoint and `image_api="openai"`. This supersedes only the ADR's native Gemini image-shape references; Gemini native search via REST (`search_api="gemini"`) remains supported.
+
 Three features now need per-model facts that business code must not branch on:
 the shape of an image payload, the shape of a native-search response, and (already
 today) the wire quirks of an SDK. Today those facts are scattered:
@@ -24,7 +26,7 @@ is the same: **facts about a provider were encoded as code, in several places.**
 
 - **One table, and it is model-level.** `config.LLM_PRESETS` entries carry, next
   to `sdk_type` / `base_url` / `default_model`:
-  - `supports_vision: bool | None` + `image_api: "openai" | "anthropic" | "gemini"`
+  - `supports_vision: bool | None` + `image_api: "openai" | "anthropic"`
   - `native_search: bool` + `native_fetch: bool` + `search_api: "openai" | "anthropic" | "gemini" | "deepseek" | "none"`
   Provider presets supply **defaults**; the effective value is resolved per model
   (user override → preset → unknown). The same vendor really does ship both
@@ -36,9 +38,9 @@ is the same: **facts about a provider were encoded as code, in several places.**
   *optional* enhancement — unknown resolves to "do not attempt native, go to the
   local chain". **The asymmetry is the decision, not an oversight.**
 - **Wire shapes live behind the existing seams**, never at call sites:
-  - images → `MessageFormatter.image_part(bytes, mime)` (base = OpenAI shape,
-    `AnthropicFormatter` overrides, a future `GeminiFormatter` adds the native
-    one — the seam `docs/specs/message-formatter(done).md` already reserved).
+  - images → `MessageFormatter.image_part(bytes, mime)` (base = OpenAI-compatible
+    shape, `AnthropicFormatter` overrides it). Native Gemini `inline_data` is not
+    registered; Gemini vision uses its OpenAI-compatible endpoint.
   - search hits → `SEARCH_PARSERS[search_api]`, each returning the single
     `SearchHit` structure.
 - **Onboarding a vendor is two fields.** Fill `supports_vision` + `image_api`
@@ -48,9 +50,10 @@ is the same: **facts about a provider were encoded as code, in several places.**
 - **Providers may be described by shape, not by name.** Business code must not
   contain `if provider == "deepseek"`; the only places allowed to know a vendor
   are `config.py` (the table) and the seam implementations (formatter / parser).
-- **Gemini defaults to its OpenAI-compatible endpoint** for both images and
-  search, so it uses the `openai` shape; the native `generateContent` /
-  `google_search` grounding variants are optional branches behind the same seams.
+- **Gemini vision uses its OpenAI-compatible endpoint** and the `openai` image
+  shape. Gemini native search via `generateContent` / `google_search` grounding
+  remains an optional branch behind the search seam; it uses `search_api="gemini"`.
+  Native Gemini image payloads are not part of the supported image shapes.
 - **SDK-behaviour quirks stay out of the table.** DeepSeek's thinking-mode
   `user_nudge` changes *how a request is framed*, not *what the model can do*; it
   remains an explicit parameter at the call site rather than a capability flag.
@@ -86,7 +89,7 @@ is the same: **facts about a provider were encoded as code, in several places.**
 - `runtime_config` gains a capabilities accessor; the LLM settings panel must show
   whether a capability came from the preset or from the user's override, otherwise
   users cannot tell why something is unavailable.
-- Three image shapes and four search parsers become maintained surface, each
+- Two image shapes and four search parsers become maintained surface, each
   needing a fixed-response snapshot test: the wire formats are vendor contracts we
   do not control, so a change must surface as a failing test, not a silent
   paragraph of error text.
@@ -117,12 +120,14 @@ is the same: **facts about a provider were encoded as code, in several places.**
   `capabilities` (value + source), so the settings panel never re-declares the table —
   adding a capability is still a one-file change.
 - **Images: the shape is a formatter method, the choice is a capability (ticket #02).**
-  `MessageFormatter.image_part()` is the OpenAI-compatible payload, `AnthropicFormatter`
-  overrides it, `GeminiFormatter` carries the native shape; `get_image_formatter(image_api)`
-  maps the capability value to the class that owns the shape (no second payload registry).
+  `MessageFormatter.image_part()` is the OpenAI-compatible payload and
+  `AnthropicFormatter` overrides it; `get_image_formatter(image_api)` maps the capability
+  value to the class that owns the shape (no second payload registry). Native Gemini
+  `inline_data` is not registered: Gemini vision uses its OpenAI-compatible endpoint.
   Because the shape must match the wire (`image_url` for the OpenAI SDK, `source` for the
   Anthropic SDK), `LLMService.image_part()` refuses a capability value that disagrees with
-  the configured SDK instead of shipping a payload the endpoint cannot parse.
+  the configured SDK instead of shipping a payload the endpoint cannot parse. Gemini's
+  native `google_search` grounding remains available separately via `search_api="gemini"`.
 - **The tool path follows the same asymmetry (ticket #05).** `see_screen` routes through
   the same `plan_vision_route` decision as the session path (`services/vision_tool.py`):
   the main model describes the screenshot, a model that **cannot** see falls back to the

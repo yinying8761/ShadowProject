@@ -12,7 +12,6 @@ import pytest
 from services.capabilities import IMAGE_APIS
 from services.formatters import (
     AnthropicFormatter,
-    GeminiFormatter,
     MessageFormatter,
     get_image_formatter,
 )
@@ -40,11 +39,6 @@ class TestShapes:
             },
         }
 
-    def test_gemini_provides_the_native_inline_data_shape(self):
-        assert GeminiFormatter.image_part(JPEG, "image/jpeg") == {
-            "inline_data": {"mime_type": "image/jpeg", "data": B64}
-        }
-
     def test_text_part_is_the_same_shape_everywhere(self):
         assert text_part("看看这个") == {"type": "text", "text": "看看这个"}
 
@@ -55,7 +49,6 @@ class TestDispatch:
         [
             ("openai", MessageFormatter),
             ("anthropic", AnthropicFormatter),
-            ("gemini", GeminiFormatter),
         ],
     )
     def test_the_registry_maps_the_capability_to_the_formatter(self, api, formatter):

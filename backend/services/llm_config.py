@@ -155,7 +155,7 @@ class LLMRuntimeConfig:
         return self._capability("supports_vision").value
 
     def image_api(self) -> str | None:
-        """图片载荷形状（`openai` / `anthropic` / `gemini` / None=未知）。"""
+        """图片载荷形状（`openai` / `anthropic` / None=未知）。"""
         return resolve_api_shape("image_api", self._capability("image_api").value)
 
     def native_search(self) -> bool | None:

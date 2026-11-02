@@ -1,11 +1,13 @@
-"""图片内容块（ticket 02 / ADR-0011）：形状只有三种，且**住在 formatter 缝上**。
+"""图片内容块（ticket 02 / ADR-0011）：形状只有两种，且**住在 formatter 缝上**。
 
 ADR-0011 / spec: multimodal-vision 要求图片块加在既有的 `MessageFormatter` 缝上，
 不另起一套机制：
 
 - `MessageFormatter.image_part()` —— 默认就是 **OpenAI 兼容**形状（大多数厂商）
 - `AnthropicFormatter.image_part()` —— Claude 的 `source` 形状
-- `GeminiFormatter.image_part()` —— 原生 `generateContent` 形状（默认仍走 OpenAI 兼容端点）
+
+原生 Gemini 的 `inline_data` 形状已删除：`sdk_type` 只有 openai / anthropic，它永远
+过不了 `LLMService.image_part` 的 SDK 一致性检查（Gemini 走 OpenAI 兼容端点）。
 
 这个模块只放两样东西：① 与厂商无关的小工具（base64 / data URL / 文本块）；
 ② `image_part(image_api, …)` 这个"按能力表取值挑一个 formatter"的分派器 ——
@@ -28,7 +30,7 @@ def data_url(mime: str, data: bytes) -> str:
 
 
 def text_part(text: str) -> dict:
-    """多模态消息里的文本块（三种形状下都是 `{"type": "text", "text": …}`）。"""
+    """多模态消息里的文本块（两种形状下都是 `{"type": "text", "text": …}`）。"""
     return {"type": "text", "text": text}
 
 

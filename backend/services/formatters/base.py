@@ -20,8 +20,8 @@ class MessageFormatter(ABC):
         """一张图片在消息里长什么样（ticket #02 / ADR-0011）。
 
         **默认就是 OpenAI 兼容形状** —— DeepSeek / GPT / 智谱 / 通义 / Moonshot 以及
-        任何 OpenAI 兼容端点都走这个；`AnthropicFormatter`（和将来的 `GeminiFormatter`）
-        覆写它。业务代码只调 `formatter.image_part(...)`，不自己拼 payload。
+        任何 OpenAI 兼容端点都走这个；`AnthropicFormatter` 覆写它。业务代码只调
+        `formatter.image_part(...)`，不自己拼 payload。
 
         静态方法：图片形状与"消息怎么格式化"无关，按 `image_api` 取到对应的 formatter
         类即可，不需要实例化。

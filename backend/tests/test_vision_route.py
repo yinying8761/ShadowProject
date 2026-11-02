@@ -10,7 +10,7 @@ from services.vision_route import FALLBACK, MOUNT, UNAVAILABLE, VisionRoute, pla
 
 
 class TestPlan:
-    @pytest.mark.parametrize("image_api", ["openai", "anthropic", "gemini"])
+    @pytest.mark.parametrize("image_api", ["openai", "anthropic"])
     def test_a_seeing_model_mounts_the_images(self, image_api):
         route = plan_vision_route(True, image_api)
 

@@ -9,11 +9,12 @@
 - `openai` —— Responses API 的 `web_search`（也认 Chat 搜索模型的 `message` 注解）
 - `anthropic` —— 服务端 `web_search` 的 `web_search_result` 块
 - `gemini` —— 原生 `generateContent` + `google_search` 的 `groundingMetadata`
-- 抓取：`anthropic` 的 `web_fetch_tool_result` → `PageText`
+- `deepseek` —— Responses 兼容端点的 `web_search`，来源在 `web_search_call`
+- 抓取：`anthropic` 的 `web_fetch_tool_result` → `PageText`（DeepSeek 不回传正文，
+  所以没有抓取 parser）
 
-`deepseek` 暂不实现（官方没有公开的搜索响应形状，见下方注释）。**未实现的 `search_api`
-一律降级**（搜索是可选增强，不该因为配置缺项或形状不支持而打断对话 —— 与视觉"未知形状
-必须报错"正好相反，见 ADR-0011）。
+**未实现的 `search_api` 一律降级**（搜索是可选增强，不该因为配置缺项或形状不支持而
+打断对话 —— 与视觉"未知形状必须报错"正好相反，见 ADR-0011）。
 
 解析必须是**防御性**的：厂商的私有返回形状不受我们控制，缺字段就当没有，绝不像视觉那样
 把错误文本当成结果。
@@ -21,8 +22,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 
 @dataclass(frozen=True)
@@ -33,7 +36,7 @@ class SearchHit:
     url: str
     snippet: str = ""
     #: 结果从哪儿来：本地后端用后端名（duckduckgo / bing_web / …），原生搜索用它的
-    #: **形状名**（openai / anthropic / gemini —— 日志里的 `backend=native api=…` 是
+    #: **形状名**（openai / anthropic / gemini / deepseek —— 日志里的 `backend=native api=…` 是
     #: 同一件事）。目前只写进日志/评测，`SearchAgent` 只读 title/url/snippet。
     source: str = ""
 
@@ -184,19 +187,55 @@ def _parse_gemini(response: Any) -> list[SearchHit]:
     return _dedupe(hits)
 
 
-# ── DeepSeek: 暂不实现（官方没有公开的搜索响应形状） ─────────────────────────
-#
-# ticket 06 要求"DeepSeek 的分支可用"，但 DeepSeek 的公开 API 只有 OpenAI 兼容的
-# chat/completions，没有文档化的搜索/抓取端点或响应体。**不编一个**：`deepseek`
-# 这一项没有 parser，于是 `parser_for("deepseek")` 返回 None → 原生搜索直接降级到本地链。
-# 等形状确认后：加一个 parser + 在 SHAPE_SDKS 里登记传输 + `_native_search_request`
-# 加一行请求，其余不用改（这正是这张表存在的意义）。
+# ── DeepSeek: Responses 的 `web_search_call` → open_page 来源 ───────────────
+
+
+def _strip_ws_fragment(url: str) -> str:
+    """去掉 `#ws_call_id=…`：它是 DeepSeek 内部把抓取关联回调用链的标记，不是锚点。"""
+    parts = urlsplit(url)
+    if not parts.fragment.startswith("ws_call_id"):
+        return url
+    return urlunsplit(parts._replace(fragment=""))
+
+
+def _title_from_url(url: str) -> str:
+    """DeepSeek 不给标题：用 `host · 末段路径` 拼一个可读标题（末段做人性化）。"""
+    parts = urlsplit(url)
+    host = parts.netloc or url
+    segment = unquote(parts.path.rstrip("/").rsplit("/", 1)[-1])
+    segment = re.sub(r"\.(?:html?|php|aspx?|shtml)$", "", segment, flags=re.IGNORECASE)
+    segment = re.sub(r"[-_]+", " ", segment).strip()
+    return f"{host} · {segment}" if segment else host
+
+
+def _parse_deepseek_search(response: Any) -> list[SearchHit]:
+    """DeepSeek 的 `/responses` 只把来源放在 `output[]` 的 `web_search_call` 里。
+
+    实测（2026-10-29）：`message.content[].annotations` **永远是空的**（没有
+    `url_citation`），真正打开过的页面是 `action.type == "open_page"` 那几条的
+    `action.url`；URL 末尾带 `#ws_call_id=…` 的内部标记，去掉才是可引用的地址。
+    DeepSeek 不回传标题与摘要，标题由 URL 拼出来，摘要留空。
+    """
+    hits: list[SearchHit] = []
+    for item in _get(response, "output") or []:
+        if _get(item, "type") != "web_search_call":
+            continue
+        action = _get(item, "action") or {}
+        if _get(action, "type") != "open_page":
+            continue
+        raw = _get(action, "url") or ""
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        url = _strip_ws_fragment(raw.strip())
+        hits.append(SearchHit(_title_from_url(url), url, "", "deepseek"))
+    return _dedupe(hits)
 
 
 _PARSERS: dict[str, Callable[[Any], list[SearchHit]]] = {
     "openai": _parse_openai,
     "anthropic": _parse_anthropic,
     "gemini": _parse_gemini,
+    "deepseek": _parse_deepseek_search,
 }
 
 #: 每种形状由谁来发请求（None = 不走 SDK，直接用 REST）。用于"形状 ↔ 底层 SDK"的一致性
@@ -205,6 +244,7 @@ SHAPE_SDKS: dict[str, str | None] = {
     "openai": "openai",
     "anthropic": "anthropic",
     "gemini": None,            # 原生 generateContent 走 REST（不依赖 SDK）
+    "deepseek": "openai",      # /responses 走 OpenAI SDK，只是响应形状不同（见上面的 parser）
 }
 
 #: 网页正文上限：原生抓取与本地 HTML 抽取共用同一个数（ticket 06）。
