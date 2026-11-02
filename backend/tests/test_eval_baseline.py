@@ -9,6 +9,7 @@ import json
 import pytest
 
 from eval.baseline import (
+    merge_baselines,
     BASELINE_VERSION,
     BaselineDiff,
     baseline_payload,
@@ -128,6 +129,52 @@ class TestValidateBaseline:
     def test_non_object_payload_is_rejected(self):
         with pytest.raises(ValueError):
             validate_baseline([])
+
+
+class TestMergeBaselines:
+    """部分运行（--only / --live / --group）也要能安全更新基线（ticket 09）。"""
+
+    def test_cases_not_in_this_run_are_preserved(self):
+        old = _payload(passed={"A": True, "B": False, "GONE": True})
+        new = _payload(passed={"A": False})
+
+        merged = merge_baselines(old, new)
+
+        assert merged["cases"] == {"A": False, "B": False, "GONE": True}
+        assert merged["summary"]["total"] == 3
+        assert merged["summary"]["passed"] == 1
+
+    def test_this_runs_bits_win(self):
+        merged = merge_baselines(
+            _payload(passed={"A": True}), _payload(passed={"A": False})
+        )
+
+        assert merged["cases"] == {"A": False}
+
+    def test_a_live_prefix_baseline_does_not_delete_the_rest(self):
+        """先跑 --live（只有 live 用例），再合并：群聊/单轮那些位不能被删掉。"""
+        old = _payload(passed={"T01": True, "G01": True})
+        new = _payload(passed={"V01": True, "S01": False})
+
+        merged = merge_baselines(old, new)
+
+        assert merged["cases"] == {
+            "T01": True, "G01": True, "V01": True, "S01": False,
+        }
+
+    def test_the_summary_cost_fields_come_from_this_run(self):
+        old = _payload(passed={"A": True})
+        new = _payload(passed={"A": True})
+        new["summary"].update({"model_calls": 7, "tokens": 900})
+
+        merged = merge_baselines(old, new)
+
+        assert merged["summary"]["model_calls"] == 7
+        assert merged["summary"]["tokens"] == 900
+
+    def test_an_incompatible_old_baseline_is_refused(self):
+        with pytest.raises(ValueError):
+            merge_baselines({"version": 1, "cases": {}}, _payload(passed={"A": True}))
 
 
 class TestBaselineRoundTrip:

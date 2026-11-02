@@ -132,7 +132,10 @@ def score_case(case, trace: CaseTrace) -> CaseVerdict:
 
     # 引用检查看整段对话（来源可能在任意一轮给出）
     if case.must_cite:
-        checks[CHECK_CITATION] = bool(_URL_RE.search(reply))
+        hosts = getattr(case, "must_cite_hosts", []) or []
+        checks[CHECK_CITATION] = cites_host(reply, hosts) if hosts else bool(
+            _URL_RE.search(reply)
+        )
 
     if case.max_model_calls is not None:
         checks[CHECK_BUDGET] = trace.model_calls <= case.max_model_calls
@@ -147,3 +150,28 @@ def cited_urls(reply: str) -> list[str]:
         if url not in seen:
             seen.append(url)
     return seen
+
+
+def _host_of(url: str) -> str:
+    from urllib.parse import urlparse
+
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def cites_host(reply: str, hosts: Sequence[str]) -> bool:
+    """回答里是否出现了属于这些域名（含子域）的来源。
+
+    只要求"有个 https://" 太弱——编一个不存在的链接也能过。这里把"来源"收紧到
+    真实域名：`python.org` 也认 `docs.python.org`。
+    """
+    wanted = [h.lower().lstrip(".") for h in hosts if h]
+    if not wanted:
+        return True
+    for url in cited_urls(reply):
+        host = _host_of(url)
+        if any(host == w or host.endswith("." + w) for w in wanted):
+            return True
+    return False

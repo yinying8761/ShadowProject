@@ -99,3 +99,28 @@ def diff_baselines(old: dict, new: dict) -> BaselineDiff:
         only_in_new=tuple(sorted(set(new_cases) - set(old_cases))),
         only_in_old=tuple(sorted(set(old_cases) - set(new_cases))),
     )
+
+
+def merge_baselines(old: dict, new: dict) -> dict:
+    """把这次的结果**合并**进旧基线（本次跑到的用例覆盖，没跑的保留）。
+
+    这样 `--live` / `--group` / `--only` 的部分运行也能安全地更新基线：不会把没跑的
+    用例当成"已删除"，live 的结果也能真正积累下来（ticket 09 的"纳入基线对比"）。
+    `summary` 里 total/passed 按合并后的通过位重算；calls/tokens 记的是**本次运行**的
+    开销（基线本来就有这两列，混跑时以最近一次为准）。
+    """
+    validate_baseline(old)
+    validate_baseline(new)
+    cases = {**old["cases"], **new["cases"]}
+    return {
+        "version": BASELINE_VERSION,
+        "model": new.get("model") or old.get("model", ""),
+        "generated_at": new.get("generated_at", ""),
+        "summary": {
+            "total": len(cases),
+            "passed": sum(1 for ok in cases.values() if ok),
+            "model_calls": int(new.get("summary", {}).get("model_calls", 0)),
+            "tokens": int(new.get("summary", {}).get("tokens", 0)),
+        },
+        "cases": cases,
+    }

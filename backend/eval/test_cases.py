@@ -1,7 +1,8 @@
 """
 Hand-annotated eval cases for Agent tool-calling accuracy.
 
-34 cases across 8 categories:
+39 cases across 10 categories:
+
 - tool_selection (4) / argument_accuracy (3) / answer_quality (3) / edge_case (3) /
   memory (2): the original single-turn set.
 - multi_turn (6, ticket 07): pronoun reference, correction, cross-turn tool chains.
@@ -9,12 +10,12 @@ Hand-annotated eval cases for Agent tool-calling accuracy.
   approval denied — the assertion is "degrades honestly", never "must succeed".
 - group (6, ticket 08): ADR-0009 invariants, driven by a scripted model against the
   real scheduler (zero tokens, no network).
+- vision (2, ticket 09) / search (3, ticket 09): **live** — skipped unless `--live`
+  (or `EVAL_LIVE=1`); vision uses a generated fixture image, search must cite sources.
 
 Cases are **data only**: multi-turn is `turns`, fault injection is `fail_tools`,
-approval refusal is `deny_tools`; adding a case never touches the runner.
-
-Group-chat **invariants** (`kind="invariant"` + `scenario` + `invariants`) run the real
-scheduler with a scripted model (ticket 08).
+approval refusal is `deny_tools`, an attached image is `image_fixture`; adding a case
+never touches the runner.
 """
 
 from dataclasses import dataclass, field
@@ -45,6 +46,8 @@ class EvalCase:
     #: 回答断言看哪一轮：多轮用例默认只看**最后一轮**的回复（"第二轮引用第一轮"的判定点）
     answer_scope: Literal["final", "all"] = "final"
     must_cite: bool = False                     # 回答里必须出现来源 URL（search 类）
+    #: `must_cite` 时要求来源属于这些域名（含子域）——只要求"有个 URL"太弱，编一个也能过
+    must_cite_hosts: list[str] = field(default_factory=list)
     #: invariant: 注册在 eval.group_turn_eval.INVARIANTS 里的名字
     invariants: list[str] = field(default_factory=list)
     #: invariant: 场景名（`eval.group_turn_eval.SCENARIOS` 里的键）
@@ -54,6 +57,8 @@ class EvalCase:
     fail_tools: dict[str, str] = field(default_factory=dict)
     #: recovery: 这些工具的审批会被拒绝（用户点了"拒绝"）
     deny_tools: list[str] = field(default_factory=list)
+    #: vision: 这一轮要附上的**固定素材**图（`eval.fixtures.FIXTURES` 里的名字）
+    image_fixture: str = ""
     live: bool = False                          # 需要真外网/真并发，默认不跑
     category: str = "tool_selection"            # tool_selection | argument_accuracy | answer_quality | edge_case | memory | …
 
@@ -503,5 +508,73 @@ EVAL_CASES: list[EvalCase] = [
             "silent_not_persisted",
         ],
         category="group",
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Category: vision (2 cases, ticket 09) —— **live**：默认不跑，--live 才跑
+    # ═══════════════════════════════════════════════════════════════════
+
+    EvalCase(
+        id="V01",
+        query="这张图里写的是什么词？只回答你看到的那个词。",
+        description="看图答题：回答必须基于图中内容（图里写着 SHADOWBOT）",
+        expected_tools=None,
+        image_fixture="vision_word",
+        answer_should_contain=["shadowbot"],
+        live=True,
+        category="vision",
+    ),
+
+    EvalCase(
+        id="V02",
+        kind="recovery",
+        query="帮我看看我的屏幕上写了什么？",
+        description="视觉不可用（熔断）→ 必须真的尝试去看、失败后如实说没看成，不编造屏幕内容",
+        expected_tools=["see_screen"],
+        fail_tools={"see_screen": "circuit_open"},
+        answer_should_contain_any=["没看成", "看不到", "失败", "无法", "不可用", "熔断"],
+        live=True,
+        category="vision",
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Category: search (3 cases, ticket 09) —— **live**：要真联网
+    # 全链失败的那一条在 recovery 里（R03/R04：注入故障、零网络、不编造来源）。
+    # ═══════════════════════════════════════════════════════════════════
+
+    EvalCase(
+        id="S01",
+        query="查一下 Python 3.14 是什么时候发布的，并给出来源链接。",
+        description="原生搜索：答案必须带**真实域名**的来源（python.org）",
+        expected_tools=None,
+        must_cite=True,
+        must_cite_hosts=["python.org"],
+        answer_should_contain_any=["python"],
+        live=True,
+        category="search",
+    ),
+
+    EvalCase(
+        id="S02",
+        query="帮我查一下 Rust 编程语言的官方网站是哪个，给出链接。",
+        description="原生搜索：来源必须是 rust-lang.org（或子域），不是编的链接",
+        expected_tools=None,
+        must_cite=True,
+        must_cite_hosts=["rust-lang.org"],
+        answer_should_contain_any=["rust"],
+        live=True,
+        category="search",
+    ),
+
+    EvalCase(
+        id="S03",
+        query="查一下 Rust 最新稳定版是哪个版本，并给出来源。",
+        description="原生搜索（时效性）：答案要带 rust-lang.org / 官方博客的来源",
+        expected_tools=None,
+        must_cite=True,
+        must_cite_hosts=["rust-lang.org", "blog.rust-lang.org"],
+        answer_should_contain_any=["rust"],
+        live=True,
+        category="search",
     ),
 ]

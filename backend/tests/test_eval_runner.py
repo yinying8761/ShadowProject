@@ -551,6 +551,134 @@ class TestCaseTable:
         assert {c.id for c in default} >= {c.id for c in EVAL_CASES if c.category in {"multi_turn", "recovery"}}
 
 
+class TestLiveCapabilityCases:
+    """ticket 09：视觉/搜索的 live 用例 —— 默认跳过，图片只在第一轮挂上。"""
+
+    def test_live_cases_are_skipped_by_default_and_selected_with_the_flag(self):
+        default_ids = {c.id for c in select_cases(EVAL_CASES)}
+        live_ids = {c.id for c in select_cases(EVAL_CASES, include_live=True)}
+
+        assert {"V01", "V02", "S01"} <= live_ids
+        assert not ({"V01", "V02", "S01"} & default_ids)
+
+    def test_every_vision_case_names_a_real_fixture(self):
+        from eval.fixtures import FIXTURES
+
+        for case in EVAL_CASES:
+            if case.image_fixture:
+                assert case.image_fixture in FIXTURES, case.id
+
+    def test_the_live_switch_honours_the_environment_variable(self, monkeypatch):
+        """与 MCP live 测试同一约定：`EVAL_LIVE=1` 也算打开。"""
+        from eval.runner import _parse_args, live_enabled
+
+        monkeypatch.delenv("EVAL_LIVE", raising=False)
+        assert live_enabled(_parse_args([])) is False
+        assert live_enabled(_parse_args(["--live"])) is True
+
+        monkeypatch.setenv("EVAL_LIVE", "1")
+        assert live_enabled(_parse_args([])) is True
+        monkeypatch.setenv("EVAL_LIVE", "true")
+        assert live_enabled(_parse_args([])) is True
+        # 只有真值才算打开（"显式开关应该显式"）
+        monkeypatch.setenv("EVAL_LIVE", "0")
+        assert live_enabled(_parse_args([])) is False
+
+    @pytest.mark.asyncio
+    async def test_the_fixture_image_rides_only_on_the_first_turn(self, monkeypatch):
+        from eval import runner as runner_mod
+
+        TestRunnerWiring._quiet_memory(monkeypatch)
+        engine = runner_mod._create_eval_engine()
+        factory = await runner_mod._setup_eval_db(engine)
+        fake = FakeUsageLLM(["图里写的是 SHADOWBOT", "还是 SHADOWBOT"])
+
+        trace = await runner_mod._run_case(
+            EvalCase(
+                id="VX",
+                kind="multi_turn",
+                turns=["这张图里写的是什么？", "再看一眼，还是那个词吗？"],
+                description="vision plumbing",
+                image_fixture="vision_word",
+            ),
+            factory,
+            TestRunnerWiring._registry(),
+            llm_service=fake,
+        )
+        await engine.dispose()
+
+        def _has_image(messages) -> bool:
+            content = messages[-1]["content"]
+            return isinstance(content, list) and any(
+                part.get("type") == "image_url" for part in content
+            )
+
+        assert _has_image(fake.seen[0])       # 第一轮带图
+        assert not _has_image(fake.seen[1])   # 第二轮不再重复挂同一张图
+        assert "SHADOWBOT" in trace.reply
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_fixture_is_a_failed_case_not_a_crash(self, monkeypatch):
+        from eval import runner as runner_mod
+
+        TestRunnerWiring._quiet_memory(monkeypatch)
+        engine = runner_mod._create_eval_engine()
+        factory = await runner_mod._setup_eval_db(engine)
+
+        trace = await runner_mod._run_case(
+            EvalCase(
+                id="VX",
+                query="这张图里写的是什么？",
+                description="bad fixture",
+                image_fixture="no_such_fixture",
+            ),
+            factory,
+            TestRunnerWiring._registry(),
+            llm_service=FakeUsageLLM(["嗯"]),
+        )
+        await engine.dispose()
+
+        assert trace.error is not None
+        assert "no_such_fixture" in trace.error
+
+
+class TestCitationHosts:
+    """`must_cite_hosts`：只要求"某个 https://" 太弱 —— 编一个链接也能过（ticket 09）。"""
+
+    def test_a_real_host_satisfies_the_citation_check(self):
+        from eval.scoring import cites_host
+
+        assert cites_host("见 https://docs.python.org/3.14/whatsnew/", ["python.org"])
+        assert cites_host("见 https://python.org/downloads", ["python.org"])
+
+    def test_a_fabricated_or_wrong_host_does_not(self):
+        from eval.scoring import cites_host
+
+        assert not cites_host("见 https://example.com/python", ["python.org"])
+        assert not cites_host("没有链接", ["python.org"])
+
+    def test_scoring_uses_the_hosts_when_declared(self):
+        case = _case(must_cite=True, must_cite_hosts=["python.org"])
+
+        assert score_case(case, CaseTrace(reply="见 https://python.org/x")).passed
+        assert not score_case(case, CaseTrace(reply="见 https://fake.example/x")).passed
+
+
+class TestVisionCaseIsWiredToTheFixture:
+    def test_v01_asserts_the_word_the_fixture_draws(self):
+        from eval.fixtures import VISION_WORD
+
+        case = next(c for c in EVAL_CASES if c.id == "V01")
+
+        assert case.image_fixture == "vision_word"
+        assert VISION_WORD.lower() in [k.lower() for k in case.answer_should_contain]
+
+    def test_every_live_case_declares_a_capability_category(self):
+        for case in EVAL_CASES:
+            if case.live:
+                assert case.category in {"vision", "search"}, case.id
+
+
 class TestGroupInvariantCases:
     """ticket 08：群聊不变量用例是数据，且真能跑出结论（零模型调用）。"""
 
@@ -661,6 +789,12 @@ class FakeUsageLLM:
 
     async def estimate_prompt_tokens(self, messages) -> int:
         return 11
+
+    def image_part(self, data: bytes, mime: str = "image/jpeg") -> dict:
+        """视觉用例要用的形状（与真 `LLMService.image_part` 同一个契约）。"""
+        from services.formatters import MessageFormatter
+
+        return MessageFormatter.image_part(data, mime)
 
 
 class TestRunnerWiring:

@@ -65,7 +65,13 @@ from models.user_config import UserConfig  # noqa: E402
 from core.agent import Agent  # noqa: E402
 from core.tool_registry import ToolRegistry  # noqa: E402
 from core.tool_runtime import ToolRuntime  # noqa: E402
-from eval.baseline import baseline_payload, diff_baselines, read_baseline, write_baseline  # noqa: E402
+from eval.baseline import (  # noqa: E402
+    baseline_payload,
+    diff_baselines,
+    merge_baselines,
+    read_baseline,
+    write_baseline,
+)
 from eval.faults import FaultInjectingRuntime, validate_case  # noqa: E402
 from eval.report import CaseReport, render_report  # noqa: E402
 from eval.scoring import CaseTrace, score_case  # noqa: E402
@@ -220,7 +226,21 @@ async def _run_case(
     error: str | None = None
     conversation_id: str | None = None
 
+    # 视觉用例的固定素材（ticket 09）：只在第一轮挂上图。写错的素材名要像别的坏用例
+    # 一样**记成失败用例**，而不是把整轮评测带走。
+    fixture_images: list[tuple[bytes, str]] | None = None
+    if case.image_fixture:
+        from eval.fixtures import fixture
+
+        try:
+            fixture_images = [fixture(case.image_fixture)]
+        except ValueError as exc:
+            error = f"invalid case: {exc}"
+            _safe_print(f"  [invalid case] {error}")
+
     try:
+        if error is not None:
+            raise RuntimeError(error)
         async with session_factory() as session:
             conv = Conversation(character_id=EVAL_CHAR_ID, title=f"Eval: {case.id}")
             session.add(conv)
@@ -237,7 +257,8 @@ async def _run_case(
                 agent_kwargs["llm_service"] = llm_service
             agent = Agent(**agent_kwargs)
 
-            for turn in case.user_turns:
+            for turn_index, turn in enumerate(case.user_turns):
+                first_turn = turn_index == 0
                 turn_text = ""
                 _safe_print(f"  [turn] {turn[:80]}")
                 try:
@@ -247,6 +268,8 @@ async def _run_case(
                         conversation_id=conv.id,
                         character_id=EVAL_CHAR_ID,
                         approval_callback=approve,
+                        # 视觉用例：第一轮把固定素材图挂上去（ticket 09）
+                        images=fixture_images if first_turn else None,
                     ):
                         if event["type"] == "tool_use":
                             tools.append(event["name"])
@@ -451,7 +474,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--live",
         action="store_true",
-        help="包含 live 用例（真外网 / 真并发，默认不跑）。",
+        help="包含 live 用例（真外网 / 真截图 / 真搜索；默认不跑）。也可用环境变量 EVAL_LIVE=1。",
     )
     parser.add_argument(
         "--group",
@@ -494,23 +517,38 @@ def _categories(chunks: list[str]) -> list[str]:
     return categories
 
 
+_LIVE_VALUES = {"1", "true", "yes", "on"}
+
+
+def live_enabled(args: argparse.Namespace) -> bool:
+    """要不要跑 live 用例：`--live`，或环境变量 `EVAL_LIVE` 取 1/true/yes/on。
+
+    与 MCP live 测试同一约定（环境变量开关），但**只认真值**：`EVAL_LIVE=0` 不算打开 ——
+    "显式开关"应该显式。
+    """
+    if args.live:
+        return True
+    return os.environ.get("EVAL_LIVE", "").strip().lower() in _LIVE_VALUES
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     started_at = datetime.now(timezone.utc)
     root = Path(__file__).resolve().parent.parent.parent
 
+    include_live = live_enabled(args)
     categories = _categories(args.only)
     cases = select_cases(
         EVAL_CASES,
         categories=categories,
-        include_live=args.live,
+        include_live=include_live,
         include_group=args.group,
     )
 
     if not cases:
         _safe_print(
             f"没有匹配的用例（categories={categories or '全部'}, "
-            f"live={args.live}, group={args.group}）"
+            f"live={include_live}, group={args.group}）"
         )
         return 2
 
@@ -518,8 +556,8 @@ def main(argv: list[str] | None = None) -> int:
     _safe_print(f"  Cases: {len(cases)} / {len(EVAL_CASES)}")
     for case in cases:
         _safe_print(f"    - {case.id} [{case.category}/{case.kind}] live={case.live}")
-    if not args.live:
-        _safe_print("  (live 用例已跳过；--live 打开)")
+    if not include_live:
+        _safe_print("  (live 用例已跳过；--live 或 EVAL_LIVE=1 打开)")
     if not args.group:
         _safe_print("  (群聊不变量用例已跳过；--group 打开)")
 
@@ -541,9 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         reports, model=model, generated_at=started_at.isoformat(),
     )
 
-    # 部分运行（--only / --live / --group）不覆盖全量基线，否则下次全量运行会把没跑的
-    # 用例当成"已删除"，历史回归信息就没了；要写就显式 --baseline-out。
-    partial = bool(categories) or args.live or args.group
+    # 基线 diff 用来对比；写入时走**合并**（见下），所以部分运行不会误删用例
     baseline_diff = None
     baseline_path = Path(args.baseline) if args.baseline else root / _BASELINE_NAME
     if args.baseline and not baseline_path.exists():
@@ -563,21 +599,27 @@ def main(argv: list[str] | None = None) -> int:
         started_at=started_at,
         baseline_diff=baseline_diff,
         skipped=[],
-        note=None if args.live else "live 用例未包含（默认不跑贵用例）",
+        note=None if include_live else "live 用例未包含（默认不跑贵用例）",
     )
 
     output_path = Path(args.out) if args.out else root / _REPORT_NAME
     output_path.write_text(report, encoding="utf-8")
     _safe_print(f"\nReport written to: {output_path}")
 
+    # 基线**合并**写入：本次跑到的用例覆盖，没跑到的保留 —— 这样 `--only/--live/--group`
+    # 这类部分运行也安全（不会把没跑的用例当成"已删除"，live 结果也能积累）。
     baseline_out = Path(args.baseline_out) if args.baseline_out else root / _BASELINE_NAME
-    if partial and not args.baseline_out:
-        _safe_print(
-            "  [skip] 部分运行（--only/--live/--group）不覆盖基线；要写基线请用 --baseline-out"
-        )
-    else:
-        write_baseline(baseline_out, payload)
-        _safe_print(f"Baseline written to: {baseline_out}")
+    merged = payload
+    if baseline_out.exists():
+        try:
+            merged = merge_baselines(read_baseline(baseline_out), payload)
+        except (ValueError, json.JSONDecodeError) as exc:
+            _safe_print(f"  [warn] 旧基线无法合并，改为覆盖：{exc}")
+    write_baseline(baseline_out, merged)
+    _safe_print(
+        f"Baseline written to: {baseline_out}"
+        f"（{merged['summary']['passed']}/{merged['summary']['total']} 条通过位）"
+    )
 
     total = len(reports)
     passed = sum(1 for r in reports if r.verdict.passed)

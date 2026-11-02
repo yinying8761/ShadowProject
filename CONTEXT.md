@@ -438,21 +438,36 @@ testable without a model:
 
 | Module | Kind | Responsibility |
 |---|---|---|
-| `eval/test_cases.py` | data | `EvalCase` (kind/category/turns/expected & forbidden tools/args/answer rules/`must_cite`/`invariants`/`max_model_calls`/`live`) + the shipped cases |
-| `eval/scoring.py` | **pure** | `score_case(case, trace) -> CaseVerdict` (per-check verdicts + machine-readable failure reasons) |
+| `eval/test_cases.py` | data | `EvalCase` (kind/category/turns/expected & forbidden tools/args/answer rules/`must_cite` + `must_cite_hosts`/`invariants`/`fail_tools`/`deny_tools`/`image_fixture`/`max_model_calls`/`live`) + the shipped 39 cases |
+| `eval/scoring.py` | **pure** | `score_case(case, trace) -> CaseVerdict` (per-check verdicts + machine-readable failure reasons; `must_cite_hosts` accepts only the declared hosts) |
 | `eval/report.py` | **pure** | `render_report(...)` → `eval_results.md`: per-category summary, check breakdown, cost (calls/tokens per case), failed-case **minimal repro**, baseline diff |
-| `eval/baseline.py` | **pure** + file I/O | `baseline_payload` / `validate_baseline` / `write_baseline` / `read_baseline` / `diff_baselines` (new fail / new pass / still fail / added / removed; an unknown format version is a clear `ValueError`, never a silent misread) |
+| `eval/baseline.py` | **pure** + file I/O | `baseline_payload` / `validate_baseline` / `write_baseline` / `read_baseline` / `diff_baselines` (new fail / new pass / still fail / added / removed) / `merge_baselines` (partial & live runs accumulate instead of deleting the rest) |
 | `eval/selection.py` | **pure** | `select_cases(cases, categories=…, include_live=…, include_group=…)` — live and invariant cases are **off by default** |
 | `eval/faults.py` | seam | `FaultInjectingRuntime` — per-case fault injection (error / timeout / empty / circuit_open) for recovery cases |
-| `eval/runner.py` | I/O only | builds an in-memory DB, runs the Agent (multi-turn = several `run()` calls in one conversation), reads per-case calls/tokens from `llm_usage`, writes the report + `eval_baseline.json` |
+| `eval/fixtures.py` | data | deterministic assets for live vision cases (a card that says `SHADOWBOT`, attached via `Agent.run(images=…)`) |
+| `eval/group_turn_eval.py` | seam + pure checks | scripted-model group scenarios + the ADR-0009 invariant registry |
+| `eval/runner.py` | I/O only | builds an in-memory DB, runs the Agent (multi-turn = several `run()` calls in one conversation), reads per-case calls/tokens from `llm_usage`, writes the report + merged `eval_baseline.json` |
 
 - CLI: `python -m eval.runner [--only cat[,cat]] [--live] [--group] [--baseline PATH]
   [--out PATH] [--baseline-out PATH] [--dry-run]`. Default = every shipped non-live,
   non-invariant case; `--dry-run` lists the selection without touching DB/model/files.
-- **Cases are data only** (tickets #04/#07/#08): the table ships 33 cases — 15 single-turn, 6
-  multi-turn (`kind="multi_turn"` + `turns`), 7 recovery (`kind="recovery"` + `fail_tools` /
-  `deny_tools`) and 5 group invariants (`kind="invariant"` + `scenario` + `invariants`).
-  Adding a case never edits the runner.
+- **Cases are data only** (tickets #04/#07/#08/#09): the table ships 39 cases — 15
+  single-turn, 6 multi-turn (`kind="multi_turn"` + `turns`), 7 recovery
+  (`kind="recovery"` + `fail_tools` / `deny_tools`), 6 group invariants
+  (`kind="invariant"` + `scenario` + `invariants`) and 5 **live** capability cases
+  (vision ×2 + search ×3). Adding a case never edits the runner.
+- **Live cases are opt-in** (ticket #09): `--live` or a truthy `EVAL_LIVE`
+  (`1/true/yes/on`; `EVAL_LIVE=0` does **not** enable them) — the same env-var switch
+  convention as the MCP live tests. Vision uses a deterministic fixture image
+  (`eval/fixtures.py`: a white card that says `SHADOWBOT`, the case asserts exactly that
+  word) attached to the first turn via `Agent.run(images=…)`, so "did it really look?" is
+  assertable; the second vision case faults `see_screen` and requires an honest "couldn't
+  look" **after actually trying** (`expected_tools=["see_screen"]`). Search is `must_cite`
+  **plus** `must_cite_hosts` (a fabricated URL on the wrong host does not count).
+- **The baseline is merged, not overwritten** (ticket #09): a run only updates the case
+  bits it actually ran, so `--only` / `--live` / `--group` runs are safe and live results
+  accumulate — they show up in later diffs as `new fail` / `new pass` rather than as
+  deleted cases. `summary.model_calls` / `tokens` always describe the most recent run.
 - **Group-chat invariants run the real scheduler with a scripted model** (ticket #08,
   `eval/group_turn_eval.py`): `GroupChatSession` + `GroupTurnOrchestrator` are real (so the
   ADR-0009 scheduling is what gets tested), the "model" is a per-member script and the DB is

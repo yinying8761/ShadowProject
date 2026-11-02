@@ -78,14 +78,14 @@ class TestCategories:
 
 
 class TestRealCaseTable:
-    def test_the_default_selection_runs_every_non_invariant_case(self):
-        """默认命令跑完行为类用例；群聊不变量要 --group（ticket 04/07/08）。"""
+    def test_the_default_selection_runs_every_non_live_case(self):
+        """默认命令跑完行为类用例；群聊不变量要 --group、视觉/搜索要 --live。"""
         selected = select_cases(EVAL_CASES)
 
-        assert len(EVAL_CASES) == 34          # 15 单轮 + 6 多轮 + 7 恢复 + 5 不变量
+        assert len(EVAL_CASES) == 39          # 15 单轮 + 6 多轮 + 7 恢复 + 6 不变量 + 5 live
         assert len(selected) == 28
         assert [c.id for c in selected] == [
-            c.id for c in EVAL_CASES if c.kind != "invariant"
+            c.id for c in EVAL_CASES if c.kind != "invariant" and not c.live
         ]
 
     def test_group_flag_adds_the_invariant_cases(self):
@@ -96,6 +96,17 @@ class TestRealCaseTable:
             "G01", "G02", "G03", "G04", "G05", "G06",
         ]
 
+    def test_live_flag_adds_the_vision_and_search_cases(self):
+        selected = select_cases(EVAL_CASES, include_live=True)
+
+        assert len(selected) == 33
+        assert [c.id for c in selected if c.live] == [
+            "V01", "V02", "S01", "S02", "S03",
+        ]
+
+    def test_both_flags_select_every_case(self):
+        assert len(select_cases(EVAL_CASES, include_live=True, include_group=True)) == 39
+
     def test_category_filter_works_on_the_real_table(self):
         assert _ids(select_cases(EVAL_CASES, categories=["memory"])) == ["T14", "T15"]
         assert len(select_cases(EVAL_CASES, categories=["multi_turn"])) == 6
@@ -103,3 +114,9 @@ class TestRealCaseTable:
         assert len(
             select_cases(EVAL_CASES, categories=["group"], include_group=True)
         ) == 6
+        assert len(
+            select_cases(EVAL_CASES, categories=["vision"], include_live=True)
+        ) == 2
+        assert _ids(
+            select_cases(EVAL_CASES, categories=["search"], include_live=True)
+        ) == ["S01", "S02", "S03"]
