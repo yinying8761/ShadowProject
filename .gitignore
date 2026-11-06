@@ -28,6 +28,9 @@ tools/GPT-SoVITS/
 # Temporary working files
 .scratch/
 
+# Local DeepSeek Harness plugin sources installed into the desktop profile
+.dsh-plugins/
+
 # Hermes desktop tool local artifacts
 .hermes/
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Mapping, Sequence
 
 #: 发现的来源 URL（`must_cite` 用）。容忍中文标点/括号包住的情况。
 _URL_RE = re.compile(r"https?://[^\s)\]<>\"'，。；）]+")

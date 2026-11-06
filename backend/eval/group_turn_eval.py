@@ -276,7 +276,7 @@ async def _persisted_rows(session_factory, conversation_id: str) -> tuple[Persis
             await session.execute(
                 select(Message)
                 .where(Message.conversation_id == conversation_id)
-                .order_by(Message.seq, Message.id)
+                .order_by(*Message.chronological_order())
             )
         ).scalars().all()
     return tuple(
