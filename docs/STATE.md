@@ -70,28 +70,25 @@
 
 ## 4. 当前焦点 / 已知缺口 / 下一步（人工段）
 
-> 来源：审查者会话（`session-06ed43db…`）2026-11-06 对账，三句原样引用。
+> 来源：审查者会话（`session-06ed43db…`）2026-11-06 的对账与 triage。
 
-- **当前焦点**：eval v2 全量已跑通（**25/33**，84 次模型调用 / 292,538 tokens；失败项 `T03/R01/R04/R05/R06/R07/V01/S03`），正在 triage 6 个 recovery 失败与 `--group` 挂起。
+- **当前焦点**：eval v2 全量已跑通（**25/33**，84 次调用 / 292,538 tokens；失败项 `T03/R01/R04/R05/R06/R07/V01/S03`）。**triage 已完成**，等用户决定「先修哪几条」。
 - **已知缺口**：
-  1. `--group` 免费层起步即挂起、零输出；
-  2. 7 个 recovery 用例挂了 6 个，尚未归因；
-  3. 标 `live=False` 的用例实际在联网（违反 ADR-0012 的边界，有运行时证据）；
+  1. **评测 8 项失败**——归类见 [`docs/analysis/eval-triage-2026-11-06.md`](analysis/eval-triage-2026-11-06.md)。一句话：**没有一项是产品功能 bug 的直接证据**——R04–R07 同因于 harness 把"注入的故障"判成 run 失败；R01 疑似预算断言把重试算进去；S03 确认断言过窄（答对了但引用 host 不匹配）；T03/V01 待人工读实际输出。**投入产出最高的是 R04–R07：一处修复解决四例。**
+  2. `--group` 免费层起步即挂起、零输出（33 条里不含群聊不变量用例）。
+  3. 标 `live=False` 的用例实际在联网（违反 ADR-0012 的边界，有运行时证据）。
   4. **pydantic 2.14.1 × mcp 1.8.1 导入故障**：`mcp` 内部还在 `from pydantic._internal._typing_extra import eval_type_backport`，该符号自 pydantic 2.12 被移除 → `test_mcp_manager.py` / `test_mcp_amap_live.py` 在**收集阶段**就失败，故 §1 的测试数不含它们。**应用仍能启动**（`mcp` 在 `mcp_manager.py` 是函数内懒加载），只有真连 MCP 时才抛错。两条常规修法都被 ADR-0010 的死结堵住（`pydantic<2.12` 无 cp314 wheel；升级 `mcp` 会撞 `starlette<0.47`）。**用户已决定暂不修。**
   5. README / `.env.example` 部分描述过期，等大任务结束后统一改。
-- **下一步**：triage recovery 失败 → 修 `--group` → 提交那三处改动 + ADR-0012 → 再回填本文件。
+  6. **可复现性**：评测依赖网络，而本机 SOCKS 代理（`127.0.0.1:7890`）当前不可用；recovery / 搜索类用例重跑会得到不同的失败集，对比基线前先确认网络条件一致。
+- **下一步**：用户定价 → 修 R04–R07（一处解决四例）→ 修 `--group` → 处理 S03/R01 口径 → T03/V01 人工判定 → 重跑并回填本文件。
 
-### 4.1 工作区里"已改未提交"的东西（别丢）
+### 4.1 工作区里"未入库"的东西
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
-| `backend/eval/scoring.py` | 已改 | 补 `Sequence` 导入（修复） |
-| `backend/eval/group_turn_eval.py` | 已改 | 手写排序键 → `*Message.chronological_order()` |
-| `docs/adr/0012-eval-layering.md` | 未跟踪 | 评测分层决策（行为类 / 不变量 / live 的边界） |
-| `backend/eval_results.md` | 未跟踪 | 最近一次全量报告（37 KB） |
-| `eval_baseline.json` | 未跟踪（**仓库根**） | 基线；入库才有 diff 可看 |
-| `.gitignore` | 已改 | 新增 `.dsh-plugins/`（DSH 插件源码） |
-| `docs/analysis/vision-search-eval-status.md` | 未跟踪 | 交接快照，本文件 §4 的原始来源之一 |
+| `backend/eval_results.md` | 未跟踪（**故意**） | 全量报告是生成物（37 KB），每次跑都会变；triage 依据已固化在 `docs/analysis/eval-triage-2026-11-06.md`，故不入库 |
+
+> 上一批未提交工作（`scoring.py`、`group_turn_eval.py`、ADR-0012、`eval_baseline.json`、交接快照、`.gitignore`）已随 `9bd76ed` 入库。
 
 > **关于 866 这个数字**：它是**当前工作区**的实测值，已包含 `scoring.py` / `group_turn_eval.py` 两处待提交修复（这两处不增删用例，所以提交后数字不变）。时点 = `HEAD 7d60820` + 3 处未提交改动；之后每提交一批都会变，按 §6.4 的约定更新。
 
