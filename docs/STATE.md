@@ -135,6 +135,13 @@ python -u -m eval.runner --out eval_results_74.md --baseline-out eval_baseline_7
 
 **结论：只跑 recovery ≈ 8.5 万；全量非 live ≈ 20 万；加 live ≈ 30 万+。按需点单，别默认全量。**
 
+**⚠️ 这是 token 规模，不是报价**：
+
+- 成本要分三档单价——**新输入 / 缓存命中的输入 / 输出（含 reasoning）**；缓存命中的单价通常远低于新输入，输出又比输入贵一个档。
+- **reasoning token 计入输出计费**；`max_tokens=60` 把输出吃光那个坑，本质就是推理吃掉了预算——报价按 **output 预算**估，比按回答长度估准。
+- **我们自己的记录里没有 cached 拆分**（`llm_usage` 只有 prompt/completion/total；eval 报告只有每例 total）→ **真钱只能看服务商账单**，本表只用于判断"这次是几万还是几十万量级"。
+- 同一场景连跑会吃到缓存，**"跑两遍"的成本通常低于 2×**，但仍不是免费。
+
 ### 4.3 当前阻塞：API 余额（HTTP 402）
 
 - **`#75` 已落地**（`cbf3f67`，pytest **924 passed**）：`tools` 断言改为「必备集合 + 禁止集合 + 每工具调用次数上界」，报告三行分列。
