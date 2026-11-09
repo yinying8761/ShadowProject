@@ -4,6 +4,8 @@
 
 **Blocked by:** None — 可立即开始（建议排在 #74 之后，避免与基线重建并行）。
 
+**为什么必须排在 #74 之后**：基线重建前后各跑一次对比，中间若插一次 `llm_usage` 改列，会说不清"数字变了到底是谁造成的"——成本口径的改动必须与基线重建分开做。
+
 **Status:** ready-for-agent
 
 **参考:** docs/specs/recovery-give-up.md
