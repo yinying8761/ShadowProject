@@ -9,6 +9,7 @@ from core.conversation_manager import ConversationManager
 from core.tool_runtime import ToolRuntime
 from services.llm_service import LLMService
 from services.formatters.images import text_part
+from core.failure_ledger import FailureLedger
 from services.memory_service import memory_service, pop_memory_notifications
 from services.retry import RetryCallback
 from models.character import CharacterProfile
@@ -363,6 +364,8 @@ class Agent:
             messages.append({"role": "user", "content": user_nudge})
 
         tools = self.tool_registry.get_tool_definitions()
+        # 本轮的工具失败账本（ticket #71）：连续失败 2 次 → 停用；替代也失败 → 停手
+        ledger = FailureLedger()
 
         max_tool_rounds = 5 if not is_proactive else 1
         full_response = ""
@@ -381,9 +384,20 @@ class Agent:
             return {"type": "done", "message_id": msg.id, **extra}
 
         for round_num in range(max_tool_rounds):
+            if ledger.should_stop:
+                # 替补工具也失败了：不再开新回合，直接收尾（ticket #71）
+                print(
+                    f"[Agent] 工具账本：{ledger.describe()} → 停止尝试",
+                    flush=True,
+                )
+                break
+
             tool_use_blocks: list[dict] = []
             round_text = ""
             usage = None
+
+            # 停用的工具不再发给模型（硬限制的一半：不给它继续踩坑的机会）
+            offered_tools = [t for t in tools if not ledger.is_disabled(t["name"])]
 
             # Pre-estimate the prompt tokens about to be sent (Workflow G).
             # Estimation never interrupts the request — tokenizer problems
@@ -392,7 +406,11 @@ class Agent:
 
             async for event in self.llm_service.stream_chat(
                 messages=messages,
-                tools=None if suppress_tool_calls or is_proactive else (tools if tools else None),
+                tools=(
+                    None
+                    if suppress_tool_calls or is_proactive or not offered_tools
+                    else offered_tools
+                ),
                 on_retry=on_llm_retry,
             ):
                 if event["type"] == "token":
@@ -476,8 +494,8 @@ class Agent:
                 ],
             })
 
-            tool_results = await self._execute_tools_with_approval(
-                tool_use_blocks, approval_callback, character_id
+            tool_results = await self._execute_tools_with_ledger(
+                tool_use_blocks, approval_callback, character_id, ledger
             )
             for tr_event, tool_msg in tool_results:
                 yield tr_event
@@ -588,6 +606,72 @@ class Agent:
             out.append((event, tool_msg))
 
         return out
+
+    async def _execute_tools_with_ledger(
+        self,
+        tool_use_blocks: list[dict],
+        approval_callback: ApprovalCallback | None,
+        character_id: str | None,
+        ledger: FailureLedger,
+    ) -> list[tuple[dict, dict]]:
+        """执行工具并记账（ticket #71）。
+
+        - 已停用的工具**不执行**：直接回一个"本轮已停用"的工具结果，让模型换路；
+        - 用户拒绝 → 不计入失败账本，但该工具本轮停用；
+        - 失败 → 记连续失败；连续 2 次即停用；替代工具失败 → 立即停止（`should_stop`）。
+        """
+        out: list[tuple[dict, dict]] = []
+        for tb in tool_use_blocks:
+            name = tb["name"]
+            if not ledger.note_tool_started(name):
+                reason = ledger.disabled_tools.get(name, "本轮已停用")
+                content = (
+                    f"（{name} 本轮已停用：{reason}。"
+                    "别再调用它：换一个工具，或者直接如实告诉用户没拿到。）"
+                )
+                out.append(
+                    (
+                        {
+                            "type": "tool_result",
+                            "name": name,
+                            "result": content,
+                            "is_error": True,
+                            "disabled": True,
+                        },
+                        {"role": "tool", "tool_call_id": tb["id"], "content": content},
+                    )
+                )
+                continue
+
+            for event, tool_msg in await self._execute_tools_with_approval(
+                [tb], approval_callback, character_id
+            ):
+                self._book_tool_result(ledger, name, event)
+                out.append((event, tool_msg))
+        return out
+
+    @staticmethod
+    def _book_tool_result(ledger: FailureLedger, name: str, event: dict) -> None:
+        """把一次工具结果记进账本（成功清零 / 失败计数 / 拒绝停用），并记日志。"""
+        if event.get("denied"):
+            ledger.record_denial(name)
+            print(f"[Agent] 工具账本：{name} 被用户拒绝 → 本轮停用", flush=True)
+            return
+        if not event.get("is_error"):
+            ledger.record_success(name)
+            return
+
+        before = set(ledger.disabled_tools)
+        ledger.record_failure(name)
+        if ledger.should_stop:
+            print(
+                f"[Agent] 工具账本：{ledger.describe()} → 停止尝试", flush=True
+            )
+        elif name in ledger.disabled_tools and name not in before:
+            print(
+                f"[Agent] 工具账本：{name} {ledger.disabled_tools[name]} → 本轮停用",
+                flush=True,
+            )
 
     def _get_usage_store(self) -> "LLMUsageStore":
         """Lazy-init the token usage store (avoids import at module level)."""
