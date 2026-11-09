@@ -118,6 +118,23 @@ python -u -m eval.runner --out eval_results_74.md --baseline-out eval_baseline_7
 
 在 STATE 里绝不把两者合并写成"通过率上升"。
 
+### 4.2.1 点单价格表（估算，锚点来自实测）
+
+实测锚点：全量 84 calls / 292,538 tokens；recovery 7 条 28 calls / 84,817 tokens → **约 3.0–3.5k tokens/次调用**。
+
+| 类别 | 用例 | 默认跑 | 估算调用 | 估算 tokens |
+|---|---|---|---|---|
+| tool_selection | 4（2 live） | 2 | ~2 | ~7k |
+| argument_accuracy / answer_quality / edge_case | 9 | 9 | ~10 | ~34k |
+| memory | 2 | 2 | ~2 | ~7k |
+| multi_turn | 6 | 6 | ~15 | ~50k |
+| **recovery** | 7 | 7 | **28（实测）** | **~85k（实测）** |
+| group（不变量） | 6 | 需 `--group` | 0 | **0（假模型）** |
+| live：search | 3 | 需 `--live` | ~5 | **~100k+**（原生搜索单次 19–28k） |
+| live：vision | 2 | 需 `--live` | ~4 | ~15k |
+
+**结论：只跑 recovery ≈ 8.5 万；全量非 live ≈ 20 万；加 live ≈ 30 万+。按需点单，别默认全量。**
+
 ### 4.3 当前阻塞：API 余额（HTTP 402）
 
 - **`#75` 已落地**（`cbf3f67`，pytest **924 passed**）：`tools` 断言改为「必备集合 + 禁止集合 + 每工具调用次数上界」，报告三行分列。
