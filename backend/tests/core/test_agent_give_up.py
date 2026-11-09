@@ -12,7 +12,7 @@ Seam: `Agent.run` + 一个**脚本化假 LLM**（按轮吐 tool_use / token）+ 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from core.agent import Agent
+from core.agent import GIVE_UP_MESSAGE, Agent
 from core.tool_registry import ToolRegistry
 from core.tool_runtime import ToolRuntime
 from database import Base
@@ -156,9 +156,10 @@ class TestFailureLedgerInTheLoop:
         tools = FlakyTools({"read_file": [False]})
         llm = ScriptedLLM(_tool_rounds("read_file", 5))
 
-        events, _reply, _ = await _run(llm, factory, tools.registry())
+        events, reply, _ = await _run(llm, factory, tools.registry())
 
         assert tools.calls["read_file"] == 2      # 后三次被账本拦下
+        assert reply                                   # 而且有话说
         blocked = [e for e in events if e.get("disabled")]
         assert blocked and "本轮已停用" in blocked[0]["result"]
 
@@ -181,11 +182,12 @@ class TestFailureLedgerInTheLoop:
         tools = FlakyTools({"read_file": [False, True, False]})
         llm = ScriptedLLM(_tool_rounds("read_file", 5))
 
-        events, _reply, _ = await _run(llm, factory, tools.registry())
+        events, reply, _ = await _run(llm, factory, tools.registry())
 
         assert tools.calls["read_file"] == 4        # 比"连续两次就停"多跑一次，证明清零生效
         blocked = [e for e in events if e.get("disabled")]
         assert blocked and "连续失败 2 次" in blocked[0]["result"]
+        assert reply
 
     @pytest.mark.asyncio
     async def test_a_failing_substitute_tool_stops_the_loop(self, factory):
@@ -197,9 +199,10 @@ class TestFailureLedgerInTheLoop:
             [_call("write_file", call_id="c4")],       # 不该再有机会
         ])
 
-        events, _reply, _ = await _run(llm, factory, tools.registry())
+        events, reply, _ = await _run(llm, factory, tools.registry())
 
         assert tools.calls == {"read_file": 2, "fetch_url": 1}   # 替补失败后立刻停
+        assert reply
         normal = [r for r in llm.requests if not r["wrap"]]
         assert len(normal) == 3                        # 3 个工具轮 + 1 次收尾
 
@@ -214,7 +217,7 @@ class TestFailureLedgerInTheLoop:
         async def deny(_name, _args):
             return False
 
-        events, _reply, _ = await _run(
+        events, reply, _ = await _run(
             llm, factory, tools.registry(approval=("write_file",)), approval=deny
         )
 
@@ -222,3 +225,54 @@ class TestFailureLedgerInTheLoop:
         assert [e for e in events if e.get("denied")]    # 第一次：审批被拒
         blocked = [e for e in events if e.get("disabled")]
         assert blocked and "用户拒绝审批" in blocked[0]["result"]   # 第二次直接拦下
+        assert reply
+
+
+class TestFinishOnExhaustion:
+    """ticket #72：轮次用完必须说一句话，绝不空回答。"""
+
+    @pytest.mark.asyncio
+    async def test_five_successful_tool_rounds_still_produce_a_reply(self, factory):
+        tools = FlakyTools(default_ok=True)
+        llm = ScriptedLLM(_tool_rounds("read_file", 6), wrap_up="这次我没拿到能用的内容。")
+
+        events, reply, _ = await _run(llm, factory, tools.registry())
+
+        assert tools.calls["read_file"] == 5           # 硬上限仍是 5
+        assert reply == "这次我没拿到能用的内容。"
+        assert any(r["wrap"] for r in llm.requests)    # 确实发了收尾请求
+
+    @pytest.mark.asyncio
+    async def test_the_wrap_up_request_carries_no_tools(self, factory):
+        tools = FlakyTools(default_ok=True)
+        llm = ScriptedLLM(_tool_rounds("read_file", 6))
+
+        await _run(llm, factory, tools.registry())
+
+        wrap_requests = [r for r in llm.requests if r["wrap"]]
+        assert wrap_requests and wrap_requests[0]["tools"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_empty_wrap_up_falls_back_to_fixed_text(self, factory):
+        tools = FlakyTools(default_ok=True)
+        llm = ScriptedLLM(_tool_rounds("read_file", 6), wrap_up="")
+
+        events, reply, _ = await _run(llm, factory, tools.registry())
+
+        assert reply == GIVE_UP_MESSAGE
+        assert reply.strip()
+        assert any(e["type"] == "token" and GIVE_UP_MESSAGE in e["content"] for e in events)
+
+    @pytest.mark.asyncio
+    async def test_the_reply_is_persisted(self, factory):
+        tools = FlakyTools(default_ok=True)
+        llm = ScriptedLLM(_tool_rounds("read_file", 6), wrap_up="没拿到内容。")
+
+        _events, reply, conv_id = await _run(llm, factory, tools.registry())
+
+        async with factory() as s:
+            rows = (await s.execute(
+                Message.__table__.select().where(Message.conversation_id == conv_id)
+            )).all()
+        assistant = [r for r in rows if r.role == "assistant"]
+        assert assistant and assistant[-1].content == reply

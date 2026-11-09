@@ -15,6 +15,15 @@ from services.retry import RetryCallback
 from models.character import CharacterProfile
 from models.conversation import Conversation
 
+#: 轮次耗尽 / 放弃时的收尾提示：只要求说一句话，**不带工具**（ticket #72）。
+WRAP_UP_PROMPT = (
+    "（系统：本轮的工具尝试已经结束（{reason}），没有拿到更多内容。"
+    "请用一两句话如实告诉用户这次没拿到 / 没做成，不要再调用任何工具。）"
+)
+
+#: 收尾请求也拿不到内容时的固定文案 —— 绝不返回空回答（ticket #72）。
+GIVE_UP_MESSAGE = "我试了几次都没能拿到内容，先如实告诉你：这次没成功。"
+
 ApprovalCallback = Callable[[str, dict], Awaitable[bool]]
 
 
@@ -503,8 +512,23 @@ class Agent:
                 if tr_event.get("name") == "save_memory" and not tr_event.get("is_error"):
                     yield {"type": "memory_updated", "count": 1}
 
+        if is_proactive:
+            # 主动陪伴有自己的 SKIP 协议，没有"用户"可交代：保持原行为
+            yield await _finish(
+                full_response or "I've used several tools but reached the limit."
+            )
+            return
+
+        # 轮次耗尽 / 主动放弃：**必须说一句话**（ticket #72），不许空回答
+        wrap_text = ""
+        async for event in self._stream_wrap_up(
+            messages, ledger=ledger, on_retry=on_llm_retry
+        ):
+            if event["type"] == "token":
+                wrap_text += event["content"]
+            yield event
         yield await _finish(
-            full_response or "I've used several tools but reached the limit."
+            (full_response + wrap_text).strip() or GIVE_UP_MESSAGE
         )
 
     async def _summarize_background(self, conversation_id: str):
@@ -672,6 +696,34 @@ class Agent:
                 f"[Agent] 工具账本：{name} {ledger.disabled_tools[name]} → 本轮停用",
                 flush=True,
             )
+
+    async def _stream_wrap_up(
+        self, messages: list[dict], *, ledger: FailureLedger, on_retry=None
+    ):
+        """收尾请求：**不带工具**，只让模型说一句话（ticket #72）。
+
+        模型返回空（或请求直接失败）→ 发一段固定文案，绝不留空。收尾不产生工具调用，
+        所以也不会进失败账本。
+        """
+        prompt = WRAP_UP_PROMPT.format(reason=ledger.describe())
+        wrap_messages = [*messages, {"role": "user", "content": prompt}]
+        text = ""
+        try:
+            async for event in self.llm_service.stream_chat(
+                messages=wrap_messages, tools=None, on_retry=on_retry
+            ):
+                if event["type"] == "token":
+                    text += event["content"]
+                    yield event
+                elif event["type"] == "error":
+                    print(
+                        f"[Agent] 收尾请求失败：{event.get('message')}", flush=True
+                    )
+        except Exception as e:
+            print(f"[Agent] 收尾请求异常：{type(e).__name__}: {e}", flush=True)
+        if not text.strip():
+            print("[Agent] 收尾请求没有内容 → 用固定文案兜底", flush=True)
+            yield {"type": "token", "content": GIVE_UP_MESSAGE}
 
     def _get_usage_store(self) -> "LLMUsageStore":
         """Lazy-init the token usage store (avoids import at module level)."""
