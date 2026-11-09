@@ -75,3 +75,65 @@ red build people learn to ignore.
 - The runner's pure functions (`score_case`, `render_report`, `diff_baselines`,
   `select_cases`) are covered by pytest, because they *are* code whose failure means
   the code is wrong. The CLI around them stays I/O.
+
+## Amendment: what an assertion may assert (ticket #70)
+
+The layering above answers *where* a case runs. It says nothing about *what* a case
+may check, and the 2026-11-04 / 2026-11-09 runs show that gap producing red verdicts
+for correct behaviour. So the split needs one more rule, at the assertion itself.
+
+### The rule
+
+**An assertion may constrain only a decidable property.** There are four:
+
+1. **Whether a source / citation is present** — a URL exists, or it does not.
+2. **Whether the case was reported as not completed** — "I could not see the
+   screen", "the write was denied". Decidable: does the reply claim the action
+   happened, or claim it did not?
+3. **Whether the agent stopped** — did it give up, or loop to `max_tool_rounds`?
+4. **An upper bound on call counts** — `see_screen ≤ 2`, not "exactly 2".
+
+**Keywords and strings are permitted only for hard facts**: exact URLs, numbers,
+versions, protocol markers (`<silent>`). A keyword table may ask "is `1.99.1`
+there?"; it may not ask "did it sound like it failed?". Anything that needs
+judgement about wording or meaning goes to a **semantic judge** — a scoring model or
+a human — never to a list of synonyms.
+
+### Evidence: one root cause, two instances
+
+Both are measured, not hypothesised:
+
+- **`S03` (search, `citation`) failed while its answer was correct.** It found Rust
+  `1.99.1` on `releases.rs` and cited it; the case demanded `rust-lang.org`, and
+  `scoring.py` compares hosts exactly. The real question was "is this a credible
+  source?", a judgement — exact-host matching put a literal comparison where the
+  judgement belonged.
+- **`R02` and `R05` (recovery) failed on `answer` while their replies were
+  behaviourally correct.** R02 said 「好的，那我就不写了…」 — the write did not happen.
+  R05 said 「工具好像有点抽风，试了几次都没抓到画面…我换个方式帮你」 — it did not see
+  the screen. Each was judged by a closed keyword set (`未写入`/`没有执行`,
+  `没看成`/`看不到`), so a correct statement scored as a miss for choosing other words.
+
+Same defect in both: a literal match standing in for a semantic judgement. Fix the
+rule, not the synonyms — otherwise the next case just adds one more keyword.
+
+### Why the semantic judge is not in default CI
+
+By boundary rule #1: default execution stays free and offline. A semantic judge costs
+money, is non-deterministic run to run, and its red verdict must not be read as "the
+code is broken" — boundary rule #2 says that signal may not share a channel with one
+that does. So semantic assertions belong to the quality / baseline layer: their
+results are **reported, not asserted**, and a human or a later diff reads them.
+
+### Consequences
+
+- **A pass rate built from literal assertions is not a quality score.** The 2026-11-04
+  `25/33` is a problem list, not a baseline: it carries at least `R02`/`R05` and `S03`
+  as false negatives. It must not be quoted as a number until the assertions migrate.
+- **Adding a case no longer means "add keywords".** The first question is which of the
+  four decidable properties it constrains; if none of them, the case is a quality case
+  and its check belongs in the judge, not in a table.
+- **Call-count upper bounds stay assertions** — decidable and cheap. *Which* tools were
+  chosen should be checked as "at least contains X", not "exactly X": retries and
+  equivalent tools (`fetch_url` for `research`) make exact matching brittle in exactly
+  the way this amendment forbids.
