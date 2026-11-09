@@ -459,6 +459,28 @@ class TestReportRendering:
         assert "仍通过（未变）：2 条" in text
         assert "有回归" in text
 
+    def test_a_legacy_bool_baseline_diff_is_flagged_as_legacy(self):
+        """ticket #76：旧 bool 基线能读，但报告要明确说明口径差异。"""
+        from eval.baseline import BaselineDiff
+
+        report = _report(_case(id="D1"), CaseTrace(reply="ok"))
+        diff = BaselineDiff(
+            new_review=("R02",),
+            review_cleared=("R05",),
+            old_legacy=True,
+        )
+
+        text = render_report(
+            [report],
+            model="m",
+            started_at=datetime.now(timezone.utc),
+            baseline_diff=diff,
+        )
+
+        assert "新进 needs_review" in text and "`R02`" in text
+        assert "复核结论已出" in text and "`R05`" in text
+        assert "legacy **v2 bool**" in text
+
     def test_cited_sources_are_listed_for_search_cases(self):
         report = _report(
             _case(id="Q1", category="search", must_cite=True, query="python 3.14"),
@@ -650,14 +672,14 @@ class TestCaseTable:
         assert len(sources) >= 4, sources
 
     def test_every_recovery_case_asserts_honest_degradation(self):
+        """ticket #76：恢复用例的手写措辞已全部换成可判定性质 2，不再靠关键词闭集。"""
         for case in EVAL_CASES:
             if case.category != "recovery":
                 continue
-            assert (
-                case.answer_should_contain_any
-                or case.answer_should_contain
-                or case.must_report_not_completed
-            ), case.id
+            assert case.must_report_not_completed, case.id
+            assert not case.answer_should_contain_any, case.id
+            assert not case.answer_should_contain, case.id
+            assert case.needs_review and case.needs_review_reason, case.id
 
     def test_no_new_case_is_live_so_the_default_run_stays_offline(self):
         default = select_cases(EVAL_CASES)
@@ -755,6 +777,128 @@ class TestLiveCapabilityCases:
 
         assert trace.error is not None
         assert "no_such_fixture" in trace.error
+
+
+class TestOfflineBoundary:
+    """ticket #76 / ADR-0012 边界规则 #1：非 live 的默认运行不能碰网络。"""
+
+    def test_t03_is_live_and_keeps_its_tool_assertions(self):
+        """T03 的 research 会真联网；只把"要不要跑"改成 --live，断言一点没弱化。"""
+        case = next(c for c in EVAL_CASES if c.id == "T03")
+
+        assert case.live is True
+        assert case.expected_tools == ["research"]
+        assert case.expected_args_contain == {"research": ["Python"]}
+
+    def test_t03_is_not_selected_by_the_default_run(self):
+        assert "T03" not in {c.id for c in select_cases(EVAL_CASES)}
+
+    def test_no_case_that_runs_research_offline_is_selected_by_default(self):
+        """默认集合里不能再出现"会真搜网、又没有注入故障"的 research 用例。"""
+        for case in select_cases(EVAL_CASES):
+            un_faulted = set(case.expected_tools or ()) - set(case.fail_tools)
+            assert "research" not in un_faulted, case.id
+
+
+class TestKeywordMigration:
+    """ticket #76：剩余关键词 OR 闭集全部迁移成可判定性质或 needs_review。"""
+
+    MIGRATED = ("T09", "R01", "R03", "R04", "R06", "R07", "V02")
+
+    @staticmethod
+    def _case(case_id: str) -> EvalCase:
+        return next(c for c in EVAL_CASES if c.id == case_id)
+
+    def test_the_migrated_cases_no_longer_carry_keyword_or_lists(self):
+        for case_id in self.MIGRATED:
+            case = self._case(case_id)
+            assert not case.answer_should_contain_any, case_id
+            # T09 没有可判定性质，连"禁词"也一并删掉；其余恢复用例的
+            # answer_should_not_contain 只保留硬事实（无来源 URL）。
+            if case_id != "T09":
+                assert not case.answer_should_contain, case_id
+
+    def test_cases_with_a_decidable_property_assert_it_and_go_to_review(self):
+        """恢复用例：性质 2（工具被尝试且失败/被拒/返回空 + 回答了）取代措辞。"""
+        for case_id in ("R01", "R03", "R04", "R06", "R07", "V02"):
+            case = self._case(case_id)
+            assert case.must_report_not_completed, case_id
+            assert case.needs_review and case.needs_review_reason, case_id
+
+    def test_t09_has_no_decidable_property_and_is_marked_needs_review(self):
+        case = self._case("T09")
+
+        assert case.expected_tools == []
+        assert case.needs_review is True
+        assert case.needs_review_reason
+        assert not case.answer_should_contain_any
+        assert not case.answer_should_not_contain
+
+    def test_r03_and_r04_keep_the_decidable_no_source_link_check(self):
+        for case_id in ("R03", "R04"):
+            case = self._case(case_id)
+            assert "https://" in case.answer_should_not_contain, case_id
+
+    def test_r06_empty_result_is_evidence_not_a_keyword(self):
+        case = self._case("R06")
+
+        # 工具"成功"但返回空：没有 failed_tools，靠 empty_tools 这个事实判定
+        verdict = score_case(
+            case,
+            CaseTrace(
+                tools=("read_file",),
+                empty_tools=("read_file",),
+                reply="没读到内容。",
+            ),
+        )
+        assert verdict.checks["not_completed"] is True
+        assert verdict.status == "needs_review"
+
+        # 没有空结果事实时，"说没内容"不算数（可判定检查必须真的成立）
+        liar = score_case(
+            case,
+            CaseTrace(tools=("read_file",), reply="没读到内容。"),
+        )
+        assert liar.status == "fail"
+        assert "not_completed" in liar.reasons
+
+    def test_r07_without_a_failed_tool_is_a_real_failure(self):
+        case = self._case("R07")
+
+        verdict = score_case(
+            case,
+            CaseTrace(tools=("fetch_url",), reply="抓到了内容。"),
+        )
+
+        assert verdict.status == "fail"
+        assert "not_completed" in verdict.reasons
+
+    def test_needs_review_cases_keep_their_decidable_checks(self):
+        """needs_review 不是"随便过"：必备工具/次数上界/无来源链接仍然会红。"""
+        r03 = self._case("R03")
+
+        no_tool = score_case(r03, CaseTrace(tools=(), reply="搜索暂时不可用。"))
+        assert "tools" in no_tool.reasons
+
+        over_cap = score_case(
+            r03,
+            CaseTrace(
+                tools=("research",) * 3,
+                failed_tools=("research",) * 3,
+                reply="搜索暂时不可用。",
+            ),
+        )
+        assert "tool_calls" in over_cap.reasons
+
+        fake_source = score_case(
+            r03,
+            CaseTrace(
+                tools=("research",),
+                failed_tools=("research",),
+                reply="搜索暂时不可用，见 https://example.com/news",
+            ),
+        )
+        assert "answer" in fake_source.reasons
 
 
 class TestCitationHosts:
@@ -1009,10 +1153,16 @@ class TestVisionCaseIsWiredToTheFixture:
         assert case.image_fixture == "vision_word"
         assert VISION_WORD.lower() in [k.lower() for k in case.answer_should_contain]
 
-    def test_every_live_case_declares_a_capability_category(self):
+    def test_every_live_case_declares_why_it_needs_a_real_run(self):
+        """live 必须有真实外部依赖（联网工具 / 真实截图 / 真搜索引用），不能随便标。"""
+        network_tools = {"research", "fetch_url", "see_screen"}
         for case in EVAL_CASES:
             if case.live:
-                assert case.category in {"vision", "search"}, case.id
+                assert (
+                    case.image_fixture
+                    or case.must_cite
+                    or network_tools & set(case.expected_tools or ())
+                ), case.id
 
 
 class TestGroupInvariantCases:
@@ -1141,11 +1291,14 @@ class TestRecoveryToolAssertions:
             self._case("R06"),
             CaseTrace(
                 tools=("read_file", "read_file"),
+                empty_tools=("read_file", "read_file"),
                 reply="文件是空的，没有内容。",
             ),
         )
 
         assert verdict.passed, verdict.reasons
+        # 空结果是可判定事实；"有没有承认没内容"仍交 needs_review
+        assert verdict.status == "needs_review"
 
     def test_r01_over_the_cap_is_still_red(self):
         """反例 (a)：R01 把 `read_file` 调到 3 次（上界 2）必须红。"""
@@ -1435,6 +1588,45 @@ class TestRecoveryWiring:
             str(m.get("content", "")) for m in fake.seen[1] if m.get("role") == "tool"
         )
         assert "injected fault" in tool_messages
+
+    @pytest.mark.asyncio
+    async def test_an_empty_result_is_recorded_as_a_non_completion_fact(self, monkeypatch):
+        """R06：`empty` 故障是"成功但没内容"，必须落成 trace 事实（不是靠回复措辞）。"""
+        from core.tool_registry import ToolRegistry
+        from eval import runner as runner_mod
+
+        self._quiet_memory(monkeypatch)
+        engine = runner_mod._create_eval_engine()
+        factory = await runner_mod._setup_eval_db(engine)
+
+        async def read_file(**_kwargs) -> str:
+            raise AssertionError("注入 empty 故障后不该真的执行工具")
+
+        registry = ToolRegistry()
+        registry.register(
+            name="read_file",
+            description="read a file",
+            parameters={"type": "object", "properties": {}},
+            handler=read_file,
+        )
+        fake = FakeToolCallLLM("read_file", {"path": "F:/empty.md"}, "没读到内容")
+
+        trace = await runner_mod._run_case(
+            EvalCase(
+                id="R6",
+                query="读 F:/empty.md",
+                description="empty fault smoke",
+                fail_tools={"read_file": "empty"},
+            ),
+            factory,
+            registry,
+            llm_service=fake,
+        )
+        await engine.dispose()
+
+        assert trace.tools == ("read_file",)
+        assert trace.failed_tools == ()          # 工具没有报错 —— 它是"成功但空"
+        assert trace.empty_tools == ("read_file",)
 
     @pytest.mark.asyncio
     async def test_a_denied_tool_call_is_reported_as_denied_and_writes_nothing(

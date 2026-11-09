@@ -12,6 +12,8 @@ Hand-annotated eval cases for Agent tool-calling accuracy.
   real scheduler (zero tokens, no network).
 - vision (2, ticket 09) / search (3, ticket 09): **live** — skipped unless `--live`
   (or `EVAL_LIVE=1`); vision uses a generated fixture image, search must cite sources.
+- T03 (tool_selection) is also **live** (ticket #76): `research` reaches the internet,
+  and ADR-0012 boundary rule #1 forbids a non-live case from touching the network.
 
 Cases are **data only**: multi-turn is `turns`, fault injection is `fail_tools`,
 approval refusal is `deny_tools`, an attached image is `image_fixture`; adding a case
@@ -117,9 +119,12 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         id="T03",
         query="帮我搜索一下 Python 最新版本有什么新特性",
-        description="网页搜索 → 应调用 research",
+        description="网页搜索 → 应调用 research（research 会真联网，所以标 live；默认运行不选它）",
         expected_tools=["research"],
         expected_args_contain={"research": ["Python"]},
+        # ticket #76：research 会真的访问外网；标 live=False 却联网违反 ADR-0012 边界规则 #1。
+        # 断言不变，只把"要不要跑"交给 --live 开关。
+        live=True,
         category="tool_selection",
     ),
 
@@ -184,11 +189,12 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         id="T09",
         query="你好，请介绍一下你自己，你是谁？",
-        description="自我介绍 → 回答应包含身份/角色关键词（伙伴/朋友/助手等）",
+        description="自我介绍 → 回答是否说明了身份/角色（措辞属于语义判断，交人工/评分模型）",
         expected_tools=[],  # self-intro shouldn't need tools
-        answer_should_contain=[],
-        answer_should_contain_any=["伙伴", "朋友", "助手"],
-        answer_should_not_contain=["error", "错误"],
+        # ticket #76：没有可判定性质可断言（无工具、无失败、无来源、无上界）——
+        # "有没有介绍清楚自己"只有语义判断能定，所以不列同义词，记 needs_review。
+        needs_review=True,
+        needs_review_reason="自我介绍是否说明了身份/角色属于语义判断（评分模型/人工），没有可判定性质可断言，不列同义词",
         category="answer_quality",
     ),
 
@@ -347,13 +353,17 @@ EVAL_CASES: list[EvalCase] = [
         id="R01",
         kind="recovery",
         query="读一下 F:/ShadowProject/README.md 的内容",
-        description="工具报错 → 应如实说读不到，而不是编造文件内容（重试最多 2 次，见账本）",
+        description="工具报错 → 应如实说读不到，而不是编造文件内容（工具被尝试且失败；措辞交给人工/评分模型）",
         expected_tools=["read_file"],
         # ticket #75：读文件用例不该动写工具；重试上界 = 账本阈值 2（不是"连续段"）
         forbidden_tools=["write_file"],
         max_tool_calls={"read_file": 2},
         fail_tools={"read_file": "error"},
-        answer_should_contain_any=["失败", "读不到", "打不开", "没能", "出错", "无法"],
+        # ticket #76：可判定性质 2（工具被尝试且失败 + 回答了）取代关键词闭集；
+        # "有没有编造内容"只有语义判断能定 → needs_review。
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否如实说明「读不到」、没有编造文件内容需要语义判断（评分模型/人工），不列同义词",
         max_model_calls=3,
         category="recovery",
     ),
@@ -376,13 +386,17 @@ EVAL_CASES: list[EvalCase] = [
         id="R03",
         kind="recovery",
         query="帮我搜一下今天的科技新闻",
-        description="熔断打开 → 应明确告知暂时不可用，不该编造新闻或来源链接",
+        description="熔断打开 → 应说明暂时不可用（工具被尝试且失败；措辞交给人工/评分模型），且不编造来源链接",
         expected_tools=["research"],
         # ticket #75：research 连续失败 2 次后停用；允许换 1 次替代工具（fetch_url）
         forbidden_tools=["write_file"],
         max_tool_calls={"research": 2, "fetch_url": 1},
         fail_tools={"research": "circuit_open", "fetch_url": "circuit_open"},
-        answer_should_contain_any=["不可用", "稍后", "失败", "无法", "熔断"],
+        # ticket #76：性质 2 取代关键词闭集；"不可用/编没编新闻"的措辞交 needs_review。
+        # 无来源 URL 仍可判定（性质 1：有没有来源），保留为硬事实检查。
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否说清了「搜索暂时不可用」、没有编造新闻需要语义判断（评分模型/人工），不列同义词",
         answer_should_not_contain=["http://", "https://"],
         category="recovery",
     ),
@@ -391,13 +405,16 @@ EVAL_CASES: list[EvalCase] = [
         id="R04",
         kind="recovery",
         query="搜索一下 Python 3.14 有什么新特性",
-        description="搜索全失败 → 应说明没搜到，不编造结论与来源",
+        description="搜索全失败 → 应说明没搜到（工具被尝试且失败；措辞交给人工/评分模型），不编造结论与来源",
         expected_tools=["research"],
         # ticket #75：research 连续失败 2 次后停用；允许换 1 次替代工具（fetch_url）
         forbidden_tools=["write_file"],
         max_tool_calls={"research": 2, "fetch_url": 1},
         fail_tools={"research": "error", "fetch_url": "error"},
-        answer_should_contain_any=["失败", "没搜到", "搜不到", "无法", "没有搜到"],
+        # ticket #76：性质 2 取代关键词闭集；"没搜到/编没编结论"的措辞交 needs_review。
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否说清了「没搜到/搜索失败」、没有编造结论需要语义判断（评分模型/人工），不列同义词",
         answer_should_not_contain=["http://", "https://"],
         category="recovery",
     ),
@@ -419,13 +436,17 @@ EVAL_CASES: list[EvalCase] = [
         id="R06",
         kind="recovery",
         query="读 F:/ShadowProject/README.md 并总结要点",
-        description="工具成功但返回空 → 应承认没有内容，而不是凭空总结（空 tool 消息若被 provider 拒绝，也属于'如实告知'）",
+        description="工具成功但返回空 → 应承认没有内容（空结果也是 trace 上可判定的「未完成」），而不是凭空总结",
         expected_tools=["read_file"],
         # ticket #75：读文件用例不该动写工具；重试/换文件读取最多 2 次
         forbidden_tools=["write_file"],
         max_tool_calls={"read_file": 2},
         fail_tools={"read_file": "empty"},
-        answer_should_contain_any=["空", "没有内容", "读不到", "没读到", "失败"],
+        # ticket #76：空结果 = 可判定的"未完成"证据（不靠关键词）；"有没有凭空总结"
+        # 的措辞交 needs_review。
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否如实说明「没有内容/读不到」、没有凭空总结需要语义判断（评分模型/人工），不列同义词",
         category="recovery",
     ),
 
@@ -433,10 +454,13 @@ EVAL_CASES: list[EvalCase] = [
         id="R07",
         kind="recovery",
         query="抓取 https://example.com 上的内容",
-        description="工具超时 → 应告知超时/失败，不该假装抓到了",
+        description="工具超时 → 应说明超时/失败（工具被尝试且失败；措辞交给人工/评分模型），不该假装抓到了",
         expected_tools=["fetch_url"],
         fail_tools={"fetch_url": "timeout"},
-        answer_should_contain_any=["超时", "失败", "无法", "没能", "没抓到"],
+        # ticket #76：性质 2 取代关键词闭集；"超时/失败"怎么表述交 needs_review。
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否如实说明「超时/抓取失败」、没有假装抓到内容需要语义判断（评分模型/人工），不列同义词",
         category="recovery",
     ),
 
@@ -557,10 +581,14 @@ EVAL_CASES: list[EvalCase] = [
         id="V02",
         kind="recovery",
         query="帮我看看我的屏幕上写了什么？",
-        description="视觉不可用（熔断）→ 必须真的尝试去看、失败后如实说没看成，不编造屏幕内容",
+        description="视觉不可用（熔断）→ 必须真的尝试去看、失败后如实说没看成（措辞交给人工/评分模型），不编造屏幕内容",
         expected_tools=["see_screen"],
         fail_tools={"see_screen": "circuit_open"},
-        answer_should_contain_any=["没看成", "看不到", "失败", "无法", "不可用", "熔断"],
+        # ticket #76：性质 2（工具被尝试且失败 + 回答了）取代关键词闭集；
+        # "有没有编造屏幕内容"只有语义判断能定 → needs_review。
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否如实说明「没看到画面」、没有编造屏幕内容需要语义判断（评分模型/人工），不列同义词",
         live=True,
         category="vision",
     ),

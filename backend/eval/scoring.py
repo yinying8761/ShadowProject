@@ -30,7 +30,7 @@ CHECK_FORBIDDEN = "forbidden"   # 不该出现的工具
 CHECK_TOOL_CALLS = "tool_calls"  # 每工具**总**调用次数上界（ticket #75）
 CHECK_ARGS = "arguments"   # 关键参数子串
 CHECK_ANSWER = "answer"    # 回答要点（含 / 任一 / 不含；没有要点时 = 回答非空）
-CHECK_NOT_COMPLETED = "not_completed"  # 相关工具被尝试且失败/被拒 + 回答非空（性质 2）
+CHECK_NOT_COMPLETED = "not_completed"  # 相关工具被尝试且失败/被拒/返回空 + 回答非空（性质 2）
 CHECK_CITATION = "citation"     # 必须带来源 URL（性质 1：有没有来源）
 CHECK_CREDIBLE = "credible_source"  # 来源属于用例**声明的**可信集合（域名后缀，硬事实）
 CHECK_BUDGET = "budget"    # 模型调用数上限
@@ -50,6 +50,9 @@ class CaseTrace:
     failed_tools: tuple[str, ...] = ()
     #: 其中由用户拒绝审批造成的（`tool_result` 里带 `denied`）
     denied_tools: tuple[str, ...] = ()
+    #: 成功执行但**结果为空**的工具名（按发生顺序，可重复）—— 例如 `empty` 故障；
+    #: 空结果也是"没有拿到内容"这一可判定事实，不是措辞判断（ticket #76 / R06）
+    empty_tools: tuple[str, ...] = ()
     #: 每一轮的用户消息对应的回复（多轮用例的断言看最后一轮）
     turn_replies: tuple[str, ...] = ()
     reply: str = ""
@@ -237,16 +240,17 @@ def score_case(case, trace: CaseTrace) -> CaseVerdict:
 
 
 def reported_not_completed(case, trace: CaseTrace) -> bool:
-    """可判定性质 2：**相关工具确实被尝试且失败/被拒绝**，并且给出了一句非空回答。
+    """可判定性质 2：**相关工具确实被尝试且失败/被拒/返回空**，并且给出了一句非空回答。
 
     - "相关工具" = 用例声明的 `fail_tools` / `deny_tools`（没声明就无从判定 → False）；
-    - "失败/被拒" 是 trace 上的事实（`tool_result` 的 `is_error` / `denied`），不是措辞；
+    - "失败/被拒/空结果" 是 trace 上的事实（`tool_result` 的 `is_error` / `denied` /
+      空串），不是措辞；空结果同样属于"没有拿到内容"；
     - 回答是否**说清**了未完成、有没有假装成功，属于语义判断 —— 交给 `needs_review`
       （评分模型/人工），这里不猜、也不列同义词。
     """
     relevant = set(case.fail_tools) | set(case.deny_tools)
-    failed = set(trace.failed_tools) | set(trace.denied_tools)
-    if not relevant or not (relevant & failed):
+    evidence = set(trace.failed_tools) | set(trace.denied_tools) | set(trace.empty_tools)
+    if not relevant or not (relevant & evidence):
         return False
     return bool(answer_text(case, trace).strip())
 

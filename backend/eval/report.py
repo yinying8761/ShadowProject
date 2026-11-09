@@ -236,13 +236,22 @@ def _render_cost(lines: list[str], reports: Sequence[CaseReport]) -> None:
 
 def _render_diff(lines: list[str], diff) -> None:
     lines.append("## Baseline diff\n")
-    lines.append(f"- **新挂（上次过 → 这次挂）**：{_ids(diff.new_fail)}")
-    lines.append(f"- 新过（上次挂 → 这次过）：{_ids(diff.new_pass)}")
+    lines.append(f"- **新挂（上次不是 fail → 这次 fail）**：{_ids(diff.new_fail)}")
+    lines.append(f"- 新过（上次 fail → 这次 pass）：{_ids(diff.new_pass)}")
     lines.append(f"- 仍未过：{_ids(diff.still_fail)}")
     lines.append(f"- 仍通过（未变）：{len(diff.still_pass)} 条")
+    lines.append(f"- 新进 needs_review（不计入分母）：{_ids(diff.new_review)}")
+    lines.append(f"- 仍待复核（needs_review）：{_ids(diff.still_review)}")
+    lines.append(f"- 复核结论已出（needs_review → pass/fail）：{_ids(diff.review_cleared)}")
     lines.append(f"- 新增用例：{_ids(diff.only_in_new)}")
     lines.append(f"- 已删除用例：{_ids(diff.only_in_old)}")
     lines.append("")
+    if getattr(diff, "old_legacy", False):
+        lines.append(
+            "> ⚠️ 旧基线是 legacy **v2 bool** 格式：`needs_review` 当时被记成「未失败」，"
+            "与报告的分母口径不一致；本次已按 `pass` / `fail` / `needs_review` 三态记录。"
+        )
+        lines.append("")
     if diff.has_regressions:
         lines.append("> ⚠️ 有回归（新挂用例）。")
         lines.append("")

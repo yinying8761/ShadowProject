@@ -66,8 +66,10 @@ from core.agent import Agent  # noqa: E402
 from core.tool_registry import ToolRegistry  # noqa: E402
 from core.tool_runtime import ToolRuntime  # noqa: E402
 from eval.baseline import (  # noqa: E402
+    BASELINE_VERSION,
     baseline_payload,
     diff_baselines,
+    is_legacy_baseline,
     merge_baselines,
     read_baseline,
     write_baseline,
@@ -226,6 +228,8 @@ async def _run_case(
     #: 断言的"是否说明未完成"只认它，不认措辞）；`denied` 是其中用户拒绝的那部分
     failed_tools: list[str] = []
     denied_tools: list[str] = []
+    #: 成功但结果为空串的工具名（`empty` 故障）：也是"没有拿到内容"的可判定事实（R06）
+    empty_tools: list[str] = []
     turn_replies: list[str] = []
     error: str | None = None
     conversation_id: str | None = None
@@ -293,6 +297,10 @@ async def _run_case(
                                 failed_tools.append(event["name"])
                                 if event.get("denied"):
                                     denied_tools.append(event["name"])
+                            elif not str(event.get("result", "")).strip():
+                                # 空结果：工具"成功"了但什么都没返回（`empty` 故障）。
+                                # 把它记成事实，R06 的"有没有承认没内容"才有可判定依据。
+                                empty_tools.append(event["name"])
                         elif event["type"] == "error":
                             error = event.get("message", "Unknown error")
                             _safe_print(f"  [ERROR] {error}")
@@ -313,6 +321,7 @@ async def _run_case(
         calls=tuple(calls),
         failed_tools=tuple(failed_tools),
         denied_tools=tuple(denied_tools),
+        empty_tools=tuple(empty_tools),
         turn_replies=tuple(turn_replies),
         reply="\n".join(r for r in turn_replies if r),
         model_calls=len(rows),
@@ -602,13 +611,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.baseline and not baseline_path.exists():
         _safe_print(f"  [error] 基线文件不存在：{baseline_path}")
         return 2
+    legacy_compared = False
     if baseline_path.exists():
         try:
-            baseline_diff = diff_baselines(read_baseline(baseline_path), payload)
+            old_baseline = read_baseline(baseline_path)
+            legacy_compared = is_legacy_baseline(old_baseline)
+            if legacy_compared:
+                _safe_print(
+                    f"  [warn] 基线 {baseline_path} 是 legacy v2 bool 格式："
+                    "needs_review 当时被记成「未失败」，本次按三态记录并对比。"
+                )
+            baseline_diff = diff_baselines(old_baseline, payload)
         except (ValueError, json.JSONDecodeError) as exc:
             _safe_print(f"  [error] 基线无法对比：{exc}")
             if args.baseline:
                 return 2
+
+    notes: list[str] = []
+    if not include_live:
+        notes.append("live 用例未包含（默认不跑贵用例）")
+    if legacy_compared:
+        notes.append("旧基线为 legacy v2 bool 格式（needs_review 当时记为未失败）")
 
     report = render_report(
         reports,
@@ -616,7 +639,7 @@ def main(argv: list[str] | None = None) -> int:
         started_at=started_at,
         baseline_diff=baseline_diff,
         skipped=[],
-        note=None if include_live else "live 用例未包含（默认不跑贵用例）",
+        note="；".join(notes) or None,
     )
 
     output_path = Path(args.out) if args.out else root / _REPORT_NAME
@@ -625,18 +648,30 @@ def main(argv: list[str] | None = None) -> int:
 
     # 基线**合并**写入：本次跑到的用例覆盖，没跑到的保留 —— 这样 `--only/--live/--group`
     # 这类部分运行也安全（不会把没跑的用例当成"已删除"，live 结果也能积累）。
+    # ticket #76：旧 v2 bool 基线可读、可升级；无法识别的版本**拒绝覆盖**（别静默丢结果）。
     baseline_out = Path(args.baseline_out) if args.baseline_out else root / _BASELINE_NAME
     merged = payload
     if baseline_out.exists():
         try:
-            merged = merge_baselines(read_baseline(baseline_out), payload)
+            old_baseline = read_baseline(baseline_out)
+            if is_legacy_baseline(old_baseline):
+                _safe_print(
+                    f"  [warn] 旧基线 {baseline_out} 是 legacy v2 bool 格式，"
+                    f"将升级为 v{BASELINE_VERSION}（needs_review 单独记录）。"
+                )
+            merged = merge_baselines(old_baseline, payload)
         except (ValueError, json.JSONDecodeError) as exc:
-            _safe_print(f"  [warn] 旧基线无法合并，改为覆盖：{exc}")
+            _safe_print(
+                f"  [error] 旧基线无法合并，拒绝覆盖（避免丢掉旧结果）：{exc}"
+            )
+            return 2
     write_baseline(baseline_out, merged)
+    baseline_summary = merged["summary"]
+    counted = baseline_summary["total"] - baseline_summary.get("needs_review", 0)
     _safe_print(
         f"Baseline written to: {baseline_out}"
-        f"（{merged['summary']['passed']}/{merged['summary']['total']} 条通过位；"
-        "needs_review 记为未失败，不进报告的通过率分母）"
+        f"（{baseline_summary['passed']}/{counted} 条计入通过率分母；"
+        f"needs_review {baseline_summary.get('needs_review', 0)} 条单列、不进分母）"
     )
 
     total = sum(1 for r in reports if r.verdict.counted)
