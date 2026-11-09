@@ -105,7 +105,7 @@ $env:PYTHONIOENCODING='utf-8'
 python -u -m eval.runner --out eval_results_74.md --baseline-out eval_baseline_74.json
 ```
 
-四条纪律：① 不 `--live`；② 不 `--group`（该层起步即挂起，另案）；③ **不传 `--baseline`**（会把未运行用例报成"已删除"，产生假 diff）；④ `--baseline-out` **必须重定向**（默认会覆盖入库的 `eval_baseline.json`）——跑完删 `eval_baseline_74.json`，`eval_results_74.md` 按生成物处理、不入库。
+五条纪律：① 不 `--live`；② 不 `--group`（该层起步即挂起，另案）；③ **不传 `--baseline`**（会把未运行用例报成"已删除"，产生假 diff）；④ `--baseline-out` **必须重定向**（默认会覆盖入库的 `eval_baseline.json`）——跑完删 `eval_baseline_74.json`，`eval_results_74.md` 按生成物处理、不入库；⑤ **跑前 `git status` 里 `eval_baseline.json` 必须干净**，跑后再确认它的 blob 与 HEAD 相同——不依赖谁记性好。
 
 **报数格式**：**分子与分母分开报**，再列失败集变化。不要只给百分比——上一轮 R02/R05 是"分子不变、分母变小"，只看百分比会误读成改进。
 
