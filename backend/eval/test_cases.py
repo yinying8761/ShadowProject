@@ -45,8 +45,15 @@ class EvalCase:
     answer_should_not_contain: list[str] = field(default_factory=list)  # keywords that MUST NOT appear (NOT)
     #: 回答断言看哪一轮：多轮用例默认只看**最后一轮**的回复（"第二轮引用第一轮"的判定点）
     answer_scope: Literal["final", "all"] = "final"
+    #: 可判定性质 2：相关工具被尝试且失败/被拒 + 回答非空（见 scoring.reported_not_completed）
+    must_report_not_completed: bool = False
+    #: 可判定检查都过、但还剩一项只有语义判断能定 → needs_review（报告单列，不进通过率分母）
+    needs_review: bool = False
+    #: needs_review 的原因（写进报告，给读的人/评分模型看）
+    needs_review_reason: str = ""
     must_cite: bool = False                     # 回答里必须出现来源 URL（search 类）
-    #: `must_cite` 时要求来源属于这些域名（含子域）——只要求"有个 URL"太弱，编一个也能过
+    #: `must_cite` 时要求的**可信来源集合**（域名后缀，含子域）——只要求"有个 URL"
+    #: 太弱，编一个也能过；"哪些域名算可信"由用例数据显式声明，评分器只做硬事实比较
     must_cite_hosts: list[str] = field(default_factory=list)
     #: invariant: 注册在 eval.group_turn_eval.INVARIANTS 里的名字
     invariants: list[str] = field(default_factory=list)
@@ -347,10 +354,12 @@ EVAL_CASES: list[EvalCase] = [
         id="R02",
         kind="recovery",
         query="把 'hello' 写到 F:/eval_recovery_test.txt",
-        description="审批拒绝 → 应告知没有执行，不该反复重试同一调用",
+        description="审批拒绝 → 应说明没有执行（可判定性质 2：工具被拒 + 回答了；措辞交给人工/评分模型）",
         expected_tools=["write_file"],
         deny_tools=["write_file"],
-        answer_should_contain_any=["拒绝", "没有写", "未写入", "没有执行", "取消", "没写成"],
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否说清了「没有写入」需要语义判断（评分模型/人工），不列同义词",
         max_model_calls=2,
         category="recovery",
     ),
@@ -383,10 +392,12 @@ EVAL_CASES: list[EvalCase] = [
         id="R05",
         kind="recovery",
         query="看看我的屏幕上现在是什么",
-        description="视觉不可用 → 应说没看成，不编造屏幕内容",
+        description="视觉不可用 → 应说明没看成（可判定性质 2：工具失败 + 回答了；措辞交给人工/评分模型）",
         expected_tools=["see_screen"],
         fail_tools={"see_screen": "error"},
-        answer_should_contain_any=["没看成", "看不到", "失败", "无法", "看不了"],
+        must_report_not_completed=True,
+        needs_review=True,
+        needs_review_reason="回答是否说清了「没看到画面」需要语义判断（评分模型/人工），不列同义词",
         category="recovery",
     ),
 
@@ -569,10 +580,17 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         id="S03",
         query="查一下 Rust 最新稳定版是哪个版本，并给出来源。",
-        description="原生搜索（时效性）：答案要带 rust-lang.org / 官方博客的来源",
+        description="原生搜索（时效性）：答案要带**可信来源集合**里的来源（官方站点/发布追踪站，如 releases.rs）",
         expected_tools=None,
         must_cite=True,
-        must_cite_hosts=["rust-lang.org", "blog.rust-lang.org"],
+        # 声明的可信来源集合（域名后缀匹配）：只认"某个 https://" 太弱，认死一个
+        # rust-lang.org 又会把 releases.rs 这类等价来源判死 —— 用显式声明的集合。
+        must_cite_hosts=[
+            "rust-lang.org",
+            "releases.rs",
+            "rust-lang.github.io",
+            "doc.rust-lang.org",
+        ],
         answer_should_contain_any=["rust"],
         live=True,
         category="search",

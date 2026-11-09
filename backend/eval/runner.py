@@ -222,6 +222,10 @@ async def _run_case(
     tools: list[str] = []
     args: dict[str, dict] = {}
     calls: list[tuple[str, dict]] = []
+    #: `tool_result` 里 `is_error=True` 的工具名（"工具失败了"是 trace 上的事实，
+    #: 断言的"是否说明未完成"只认它，不认措辞）；`denied` 是其中用户拒绝的那部分
+    failed_tools: list[str] = []
+    denied_tools: list[str] = []
     turn_replies: list[str] = []
     error: str | None = None
     conversation_id: str | None = None
@@ -285,6 +289,10 @@ async def _run_case(
                             marker = " [ERROR]" if event.get("is_error") else ""
                             preview = str(event.get("result", ""))[:100]
                             _safe_print(f"  [tool_result] {event['name']}{marker}: {preview}")
+                            if event.get("is_error"):
+                                failed_tools.append(event["name"])
+                                if event.get("denied"):
+                                    denied_tools.append(event["name"])
                         elif event["type"] == "error":
                             error = event.get("message", "Unknown error")
                             _safe_print(f"  [ERROR] {error}")
@@ -303,6 +311,8 @@ async def _run_case(
         tools=tuple(tools),
         args=args,
         calls=tuple(calls),
+        failed_tools=tuple(failed_tools),
+        denied_tools=tuple(denied_tools),
         turn_replies=tuple(turn_replies),
         reply="\n".join(r for r in turn_replies if r),
         model_calls=len(rows),
@@ -442,9 +452,16 @@ async def run_eval(cases: list[EvalCase], *, llm_service=None) -> list[CaseRepor
                 case, session_factory, registry, llm_service=llm_service
             )
             verdict = score_case(case, trace)
+            label = {"pass": "PASS", "fail": "FAIL", "needs_review": "NEEDS REVIEW"}[
+                verdict.status
+            ]
+            detail = (
+                " (" + ", ".join(verdict.reasons) + ")"
+                if verdict.status == "fail"
+                else ""
+            )
             _safe_print(
-                f"  [verdict] {'PASS' if verdict.passed else 'FAIL'}"
-                f"{'' if verdict.passed else ' (' + ', '.join(verdict.reasons) + ')'}"
+                f"  [verdict] {label}{detail}"
                 f"  calls={trace.model_calls} tokens={trace.tokens}"
             )
             reports.append(CaseReport(case=case, trace=trace, verdict=verdict))
@@ -618,13 +635,19 @@ def main(argv: list[str] | None = None) -> int:
     write_baseline(baseline_out, merged)
     _safe_print(
         f"Baseline written to: {baseline_out}"
-        f"（{merged['summary']['passed']}/{merged['summary']['total']} 条通过位）"
+        f"（{merged['summary']['passed']}/{merged['summary']['total']} 条通过位；"
+        "needs_review 记为未失败，不进报告的通过率分母）"
     )
 
-    total = len(reports)
-    passed = sum(1 for r in reports if r.verdict.passed)
+    total = sum(1 for r in reports if r.verdict.counted)
+    passed = sum(1 for r in reports if r.verdict.status == "pass")
+    review = [r.case.id for r in reports if r.verdict.status == "needs_review"]
     _safe_print(f"\n{'=' * 60}")
-    _safe_print(f"RESULTS: {passed}/{total} pass ({passed / total * 100:.1f}%)")
+    _safe_print(f"RESULTS: {passed}/{total} pass ({passed / total * 100 if total else 0:.1f}%)")
+    if review:
+        _safe_print(
+            f"  Needs review (not in the pass-rate denominator): {', '.join(review)}"
+        )
     _safe_print(
         f"  Model calls: {payload['summary']['model_calls']}  "
         f"Tokens: {payload['summary']['tokens']}"
@@ -638,7 +661,7 @@ def main(argv: list[str] | None = None) -> int:
         if baseline_diff.has_regressions:
             _safe_print("  ⚠️ 有回归（新挂用例）")
 
-    failed = [r.case.id for r in reports if not r.verdict.passed]
+    failed = [r.case.id for r in reports if r.verdict.status == "fail"]
     if failed:
         _safe_print(f"  Failed: {', '.join(failed)}")
     return 0

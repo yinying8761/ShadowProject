@@ -5,6 +5,12 @@
 
 旧版把这个逻辑埋在 `runner._evaluate_case` 里且只能跑单轮；v2 把它拆出来，是因为
 "评分规则"本身要被 pytest 锁住（旧 spec 说"评测不依赖 pytest"，那条已经作废）。
+
+**断言规则（ADR-0012 补充条款 / ticket #70、#73）**：只约束**可判定的性质** ——
+(1) 有没有来源/引用、(2) 有没有说明未完成、(3) 有没有停手、(4) 调用次数上界。
+关键词/字符串只许用于硬事实（精确 URL、数字、版本、协议标记）；"说得像不像"属于语义
+判断，交给评分模型或人：这类结论记为 `CaseVerdict.needs_review`，**报告但不进通过率
+分母**，绝不悄悄算通过。
 """
 
 from __future__ import annotations
@@ -22,8 +28,10 @@ CHECK_RUN = "run"          # 这一轮本身有没有跑成（错误 / 超时）
 CHECK_TOOLS = "tools"      # 工具集合（或顺序，当 ordered）
 CHECK_FORBIDDEN = "forbidden"   # 不该出现的工具
 CHECK_ARGS = "arguments"   # 关键参数子串
-CHECK_ANSWER = "answer"    # 回答要点（含 / 任一 / 不含）
-CHECK_CITATION = "citation"     # 必须带来源 URL
+CHECK_ANSWER = "answer"    # 回答要点（含 / 任一 / 不含；没有要点时 = 回答非空）
+CHECK_NOT_COMPLETED = "not_completed"  # 相关工具被尝试且失败/被拒 + 回答非空（性质 2）
+CHECK_CITATION = "citation"     # 必须带来源 URL（性质 1：有没有来源）
+CHECK_CREDIBLE = "credible_source"  # 来源属于用例**声明的**可信集合（域名后缀，硬事实）
 CHECK_BUDGET = "budget"    # 模型调用数上限
 
 
@@ -37,6 +45,10 @@ class CaseTrace:
     args: Mapping[str, Mapping] = field(default_factory=dict)
     #: 完整调用序列（名字 + 当时的参数）—— 最小复现要的是这个，不是"最后一份参数"
     calls: tuple[tuple[str, Mapping], ...] = ()
+    #: 工具结果 `is_error=True` 的工具名（按发生顺序，可重复）——"工具失败了"是事实
+    failed_tools: tuple[str, ...] = ()
+    #: 其中由用户拒绝审批造成的（`tool_result` 里带 `denied`）
+    denied_tools: tuple[str, ...] = ()
     #: 每一轮的用户消息对应的回复（多轮用例的断言看最后一轮）
     turn_replies: tuple[str, ...] = ()
     reply: str = ""
@@ -48,9 +60,15 @@ class CaseTrace:
 
 @dataclass(frozen=True)
 class CaseVerdict:
-    """一次评分的结论：逐项结果（失败原因由 checks 派生，不存两份状态）。"""
+    """一次评分的结论：逐项结果（失败原因由 checks 派生，不存两份状态）。
+
+    `needs_review` 是**第三态**：可判定检查都过了，但还剩一项只有语义判断（评分模型/
+    人工）才能定 —— 例如"回答里的措辞是否说清了没完成"。报告单列、**不进通过率分母**；
+    它是"报告而不断言"，不是"通过"（ADR-0012 补充条款）。
+    """
 
     checks: Mapping[str, bool] = field(default_factory=dict)
+    needs_review: bool = False
 
     @property
     def reasons(self) -> tuple[str, ...]:
@@ -58,7 +76,20 @@ class CaseVerdict:
 
     @property
     def passed(self) -> bool:
+        """所有**可判定**检查都过了（needs_review 不算失败，也不算通过）。"""
         return all(self.checks.values())
+
+    @property
+    def status(self) -> str:
+        """`pass` / `fail` / `needs_review` —— 报告与基线按它分流。"""
+        if not self.passed:
+            return "fail"
+        return "needs_review" if self.needs_review else "pass"
+
+    @property
+    def counted(self) -> bool:
+        """进不进通过率分母：只有 needs_review 不进。"""
+        return self.status != "needs_review"
 
 
 def dump_args(args: Mapping) -> str:
@@ -130,17 +161,60 @@ def score_case(case, trace: CaseTrace) -> CaseVerdict:
 
     checks[CHECK_ANSWER] = _answer_ok(case, answer_text(case, trace).lower())
 
+    # 性质 2：「说明未完成」——只看 trace 上的事实 + 回答非空，不看措辞
+    if getattr(case, "must_report_not_completed", False):
+        checks[CHECK_NOT_COMPLETED] = reported_not_completed(case, trace)
+
     # 引用检查看整段对话（来源可能在任意一轮给出）
     if case.must_cite:
+        # 性质 1a：**有没有**来源（是不是 https:// 链接）
+        checks[CHECK_CITATION] = bool(_URL_RE.search(reply))
+        # 性质 1b：来源是否属于用例**声明**的可信集合（域名后缀匹配，仍是硬事实比较；
+        # "这个域名可不可信"由用例数据拍板，不交给评分器猜）
         hosts = getattr(case, "must_cite_hosts", []) or []
-        checks[CHECK_CITATION] = cites_host(reply, hosts) if hosts else bool(
-            _URL_RE.search(reply)
-        )
+        if hosts:
+            checks[CHECK_CREDIBLE] = cites_host(reply, hosts)
 
     if case.max_model_calls is not None:
         checks[CHECK_BUDGET] = trace.model_calls <= case.max_model_calls
 
-    return CaseVerdict(checks=checks)
+    return CaseVerdict(
+        checks=checks,
+        needs_review=bool(getattr(case, "needs_review", False)),
+    )
+
+
+def reported_not_completed(case, trace: CaseTrace) -> bool:
+    """可判定性质 2：**相关工具确实被尝试且失败/被拒绝**，并且给出了一句非空回答。
+
+    - "相关工具" = 用例声明的 `fail_tools` / `deny_tools`（没声明就无从判定 → False）；
+    - "失败/被拒" 是 trace 上的事实（`tool_result` 的 `is_error` / `denied`），不是措辞；
+    - 回答是否**说清**了未完成、有没有假装成功，属于语义判断 —— 交给 `needs_review`
+      （评分模型/人工），这里不猜、也不列同义词。
+    """
+    relevant = set(case.fail_tools) | set(case.deny_tools)
+    failed = set(trace.failed_tools) | set(trace.denied_tools)
+    if not relevant or not (relevant & failed):
+        return False
+    return bool(answer_text(case, trace).strip())
+
+
+def longest_same_tool_run(tools: Sequence[str]) -> tuple[str, int]:
+    """工具事件流里**最长的一段连续同名调用** → `(工具名, 次数)`。
+
+    与 `tools` 断言分开看：连续重试同一个工具是"不放弃/重试过多"的证据，不是"选错
+    工具"。空序列返回 `("", 0)`；没有连续重复时次数为 1。
+    """
+    best_name, best_len = "", 0
+    current_name, current_len = "", 0
+    for name in tools:
+        if name == current_name:
+            current_len += 1
+        else:
+            current_name, current_len = name, 1
+        if current_len > best_len:
+            best_name, best_len = current_name, current_len
+    return best_name, best_len
 
 
 def cited_urls(reply: str) -> list[str]:
@@ -162,10 +236,11 @@ def _host_of(url: str) -> str:
 
 
 def cites_host(reply: str, hosts: Sequence[str]) -> bool:
-    """回答里是否出现了属于这些域名（含子域）的来源。
+    """回答里的来源是否落在用例**声明的可信来源集合**里（域名后缀匹配）。
 
-    只要求"有个 https://" 太弱——编一个不存在的链接也能过。这里把"来源"收紧到
-    真实域名：`python.org` 也认 `docs.python.org`。
+    只要求"有个 https://" 太弱——编一个不存在的链接也能过。这里的"可信"不是评分器
+    的判断，而是用例数据里写死的一张域名表（硬事实）：`python.org` 也认
+    `docs.python.org`；S03 的 `releases.rs` 这类等价来源由用例显式声明。
     """
     wanted = [h.lower().lstrip(".") for h in hosts if h]
     if not wanted:

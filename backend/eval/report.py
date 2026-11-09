@@ -2,8 +2,10 @@
 
 `eval_results.md` 的路径不变（仓库根，历史位置），内容升级成：
 
-- 按类别汇总（类别 / 通过 / 总数 / 比例）+ 逐项检查通过率
-- 成本列：每例的模型调用数与 token（来自 `llm_usage` 表，不额外埋点）
+- 按类别汇总（类别 / 通过 / 总数 / 比例）+ 逐项检查通过率；`needs_review` 单列、
+  不进通过率分母（ADR-0012 补充条款：语义判断报告而不断言）
+- 成本列：每例的模型调用数、token（来自 `llm_usage` 表，不额外埋点）与
+  **`repeated_calls`**（最长一段连续同名工具调用，与 `tools` 断言分开读）
 - 失败用例的**最小复现**：工具调用序列（带参数）+ 回复首尾片段
 - 与上次基线的 diff（新挂 / 新过 / 仍未过 / 增删用例）
 """
@@ -19,7 +21,9 @@ from eval.scoring import (
     CHECK_ARGS,
     CHECK_BUDGET,
     CHECK_CITATION,
+    CHECK_CREDIBLE,
     CHECK_FORBIDDEN,
+    CHECK_NOT_COMPLETED,
     CHECK_RUN,
     CHECK_TOOLS,
     CaseTrace,
@@ -27,6 +31,7 @@ from eval.scoring import (
     answer_text,
     cited_urls,
     dump_args,
+    longest_same_tool_run,
 )
 
 #: 检查项在报告里的展示顺序与标题。
@@ -36,7 +41,9 @@ CHECK_ORDER = (
     CHECK_FORBIDDEN,
     CHECK_ARGS,
     CHECK_ANSWER,
+    CHECK_NOT_COMPLETED,
     CHECK_CITATION,
+    CHECK_CREDIBLE,
     CHECK_BUDGET,
 )
 CHECK_LABELS = {
@@ -45,7 +52,9 @@ CHECK_LABELS = {
     CHECK_FORBIDDEN: "Forbidden",
     CHECK_ARGS: "Args",
     CHECK_ANSWER: "Answer",
+    CHECK_NOT_COMPLETED: "Not completed",
     CHECK_CITATION: "Citation",
+    CHECK_CREDIBLE: "Credible source",
     CHECK_BUDGET: "Budget",
 }
 
@@ -116,13 +125,20 @@ def _render_keyword_checks(
     lines.append("")
 
 
-def category_rows(reports: Sequence[CaseReport]) -> list[tuple[str, int, int]]:
-    """(类别, 通过数, 总数)，按 `CATEGORY_ORDER` 排序，未知类别排在最后。"""
+def category_rows(reports: Sequence[CaseReport]) -> list[tuple[str, int, int, int]]:
+    """(类别, 通过数, 进分母的总数, needs_review 数)，按 `CATEGORY_ORDER` 排序。
+
+    `needs_review` 只有语义判断能定（报告而不断言）→ 单列、**不进分母**；这样把两个
+    等价叙述的用例从"假红"移出失败集，也不会顺手把通过率做大。
+    """
     counts: dict[str, list[int]] = {}
     for report in reports:
-        bucket = counts.setdefault(report.case.category, [0, 0])
+        bucket = counts.setdefault(report.case.category, [0, 0, 0])
+        if report.verdict.status == "needs_review":
+            bucket[2] += 1
+            continue
         bucket[1] += 1
-        if report.verdict.passed:
+        if report.verdict.status == "pass":
             bucket[0] += 1
 
     def order(category: str) -> tuple[int, str]:
@@ -131,26 +147,38 @@ def category_rows(reports: Sequence[CaseReport]) -> list[tuple[str, int, int]]:
         except ValueError:
             return (len(CATEGORY_ORDER), category)
 
-    return [(c, counts[c][0], counts[c][1]) for c in sorted(counts, key=order)]
+    return [
+        (c, counts[c][0], counts[c][1], counts[c][2]) for c in sorted(counts, key=order)
+    ]
 
 
 def _render_summary(lines: list[str], reports: Sequence[CaseReport]) -> None:
     rows = category_rows(reports)
-    total_pass = sum(1 for r in reports if r.verdict.passed)
-    total = len(reports)
+    total_pass = sum(1 for r in reports if r.verdict.status == "pass")
+    total = sum(1 for r in reports if r.verdict.counted)
+    review = [r.case.id for r in reports if r.verdict.status == "needs_review"]
 
     lines.append("## Summary\n")
-    lines.append("| Category | Pass | Total | Rate |")
-    lines.append("|---|---|---|---|")
-    for category, passed, count in rows:
+    lines.append("| Category | Pass | Total | Rate | Needs review |")
+    lines.append("|---|---|---|---|---|")
+    for category, passed, count, review_count in rows:
         rate = passed / count * 100 if count else 0.0
         lines.append(
-            f"| {CATEGORY_LABELS.get(category, category)} | {passed} | {count} | {rate:.1f}% |"
+            f"| {CATEGORY_LABELS.get(category, category)} | {passed} | {count} | "
+            f"{rate:.1f}% | {review_count} |"
         )
     overall = total_pass / total * 100 if total else 0.0
     lines.append(
-        f"| **Combined** | **{total_pass}** | **{total}** | **{overall:.1f}%** |"
+        f"| **Combined** | **{total_pass}** | **{total}** | **{overall:.1f}%** | "
+        f"**{len(review)}** |"
     )
+    lines.append("")
+    lines.append(
+        "> 通过率分母**不含** `needs_review` 用例（语义判断交给评分模型/人工，"
+        "报告而不断言，不进默认 CI 的通过率）。"
+    )
+    if review:
+        lines.append(f">\n> Needs review：{_ids(review)}")
     lines.append("")
 
     # 逐项检查的通过率（工具/参数/回答/must_cite/预算，以及不变量名），便于一眼看出退在哪儿
@@ -170,18 +198,33 @@ def _render_summary(lines: list[str], reports: Sequence[CaseReport]) -> None:
     lines.append("")
 
 
+def _repeated_calls_label(trace: CaseTrace) -> str:
+    """报告里的 `repeated_calls` 列：最长的连续同名调用，如 `read_file×4`。
+
+    和 `tools` 断言**分开读**：R01/R04/R06 的"工具选对了但一直在重试"要在这里一眼
+    看出来，而不是混进"选错工具"的结论里。
+    """
+    name, count = longest_same_tool_run(trace.tools)
+    return f"{name}×{count}" if count >= 2 else "—"
+
+
 def _render_cost(lines: list[str], reports: Sequence[CaseReport]) -> None:
     calls = sum(int(r.trace.model_calls) for r in reports)
     tokens = sum(int(r.trace.tokens) for r in reports)
     lines.append("## Cost\n")
     lines.append(f"- 模型调用合计：**{calls}**")
     lines.append(f"- token 合计：**{tokens}**")
+    lines.append(
+        "- `Repeated calls` = 连续调用同一工具的最长一段（重试多 ≠ 选错工具，"
+        "与 `Tools` 断言分开看）。"
+    )
     lines.append("")
-    lines.append("| Case | Model calls | Tokens |")
-    lines.append("|---|---|---|")
+    lines.append("| Case | Model calls | Tokens | Repeated calls |")
+    lines.append("|---|---|---|---|")
     for report in reports:
         lines.append(
-            f"| {report.case.id} | {report.trace.model_calls} | {report.trace.tokens} |"
+            f"| {report.case.id} | {report.trace.model_calls} | {report.trace.tokens} | "
+            f"{_repeated_calls_label(report.trace)} |"
         )
     lines.append("")
 
@@ -318,6 +361,12 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
         lines.append("| " + " | ".join(_check_mark(verdict.checks[c]) for c in checks) + " |")
         lines.append("")
 
+    if verdict.status == "needs_review":
+        reason = getattr(case, "needs_review_reason", "") or (
+            "剩下的问题只有语义判断（评分模型/人工）能定"
+        )
+        lines.append(f"**Needs review（不进通过率分母）：** {reason}\n")
+
     if len(turns) > 1 and trace.turn_replies:
         lines.append("**Turn replies:**")
         for index, turn_reply in enumerate(trace.turn_replies, start=1):
@@ -325,7 +374,7 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
             lines.append(f"{index}. {snippet}")
         lines.append("")
 
-    if not verdict.passed:
+    if verdict.status == "fail":
         lines.append(f"**Failed checks:** {', '.join(verdict.reasons)}\n")
         _render_repro(lines, report)
 
@@ -371,13 +420,13 @@ def render_report(
     if baseline_diff is not None:
         _render_diff(lines, baseline_diff)
 
-    for category, _passed, _total in category_rows(reports):
+    for category, _passed, _total, _review in category_rows(reports):
         lines.append(f"## {CATEGORY_LABELS.get(category, category)}\n")
         for report in reports:
             if report.case.category == category:
                 _render_case(lines, report)
 
-    failed = [r for r in reports if not r.verdict.passed]
+    failed = [r for r in reports if r.verdict.status == "fail"]
     if failed:
         lines.append("## Failed Cases\n")
         for report in failed:
@@ -385,6 +434,14 @@ def render_report(
                 f"- **{report.case.id}** ({report.case.category}): "
                 f"{', '.join(report.verdict.reasons)}"
             )
+        lines.append("")
+
+    review = [r for r in reports if r.verdict.status == "needs_review"]
+    if review:
+        lines.append("## Needs Review（不进通过率分母）\n")
+        for report in review:
+            reason = getattr(report.case, "needs_review_reason", "") or "语义判断"
+            lines.append(f"- **{report.case.id}** ({report.case.category}): {reason}")
         lines.append("")
 
     return "\n".join(lines)

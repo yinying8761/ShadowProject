@@ -10,7 +10,14 @@ from datetime import datetime, timezone
 import pytest
 
 from eval.report import CaseReport, category_rows, render_report
-from eval.scoring import CaseTrace, cited_urls, score_case
+from eval.scoring import (
+    CaseTrace,
+    CaseVerdict,
+    cited_urls,
+    cites_host,
+    longest_same_tool_run,
+    score_case,
+)
 from eval.selection import select_cases
 from eval.test_cases import EVAL_CASES, EvalCase
 
@@ -278,15 +285,15 @@ class TestReportRendering:
         ]
 
         assert category_rows(reports) == [
-            ("tool_selection", 1, 2),
-            ("memory", 1, 1),
+            ("tool_selection", 1, 2, 0),
+            ("memory", 1, 1, 0),
         ]
 
         text = render_report(reports, model="m", started_at=datetime.now(timezone.utc))
 
-        assert "| Tool Selection | 1 | 2 | 50.0% |" in text
-        assert "| Memory Operations | 1 | 1 | 100.0% |" in text
-        assert "**Combined** | **2** | **3** | **66.7%**" in text
+        assert "| Tool Selection | 1 | 2 | 50.0% | 0 |" in text
+        assert "| Memory Operations | 1 | 1 | 100.0% | 0 |" in text
+        assert "**Combined** | **2** | **3** | **66.7%** | **0**" in text
 
     def test_cost_columns_per_case_and_totals(self):
         reports = [
@@ -542,7 +549,11 @@ class TestCaseTable:
         for case in EVAL_CASES:
             if case.category != "recovery":
                 continue
-            assert case.answer_should_contain_any or case.answer_should_contain, case.id
+            assert (
+                case.answer_should_contain_any
+                or case.answer_should_contain
+                or case.must_report_not_completed
+            ), case.id
 
     def test_no_new_case_is_live_so_the_default_run_stays_offline(self):
         default = select_cases(EVAL_CASES)
@@ -662,6 +673,227 @@ class TestCitationHosts:
 
         assert score_case(case, CaseTrace(reply="见 https://python.org/x")).passed
         assert not score_case(case, CaseTrace(reply="见 https://fake.example/x")).passed
+
+
+class TestCredibleSources:
+    """S03（ticket #73）：来源检查 = "有来源" + "在**声明的**可信集合里"（域名后缀）。"""
+
+    def test_s03_accepts_an_equivalent_credible_source(self):
+        """实测假红：答案对（Rust 1.99.1），来源是 releases.rs —— 旧写法只认 rust-lang.org。"""
+        case = next(c for c in EVAL_CASES if c.id == "S03")
+
+        verdict = score_case(case, CaseTrace(reply="Rust 最新稳定版是 1.99.1，见 https://releases.rs/"))
+
+        assert verdict.status == "pass"
+        # 旧断言（只认 rust-lang.org）会把同一句话判死 —— 这正是要修的病根
+        assert not cites_host("见 https://releases.rs/", ["rust-lang.org", "blog.rust-lang.org"])
+
+    def test_a_declared_subdomain_still_matches(self):
+        case = next(c for c in EVAL_CASES if c.id == "S03")
+
+        assert score_case(
+            case, CaseTrace(reply="Rust 1.99.1，见 https://doc.rust-lang.org/stable/")
+        ).status == "pass"
+
+    def test_a_fabricated_source_is_still_red(self):
+        case = next(c for c in EVAL_CASES if c.id == "S03")
+
+        verdict = score_case(case, CaseTrace(reply="Rust 1.99.1，见 https://fake-rust.example/x"))
+
+        assert verdict.checks["citation"] is True          # 有来源（性质 1a）
+        assert verdict.checks["credible_source"] is False  # 但不在声明的可信集合里（性质 1b）
+        assert verdict.status == "fail"
+
+    def test_a_source_that_is_present_but_not_declared_fails_only_the_credible_check(self):
+        verdict = score_case(
+            _case(must_cite=True, must_cite_hosts=["python.org"]),
+            CaseTrace(reply="见 https://example.com/python"),
+        )
+
+        assert verdict.checks["citation"] is True
+        assert verdict.checks["credible_source"] is False
+        assert verdict.reasons == ("credible_source",)
+
+    def test_the_s03_table_declares_the_measured_equivalent_source(self):
+        case = next(c for c in EVAL_CASES if c.id == "S03")
+
+        assert "releases.rs" in case.must_cite_hosts
+        assert "rust-lang.org" in case.must_cite_hosts
+
+
+class TestDecidableNotCompleted:
+    """R02/R05（ticket #73）：性质 2 = 相关工具被尝试且失败/被拒 + 回答非空。
+
+    措辞是否说清"没做成"是语义判断 → `needs_review`（不进通过率分母），不再列同义词。
+    """
+
+    def test_r02_synonym_reply_is_no_longer_red(self):
+        case = next(c for c in EVAL_CASES if c.id == "R02")
+
+        verdict = score_case(
+            case,
+            CaseTrace(
+                tools=("write_file",),
+                failed_tools=("write_file",),
+                denied_tools=("write_file",),
+                reply="好的，那我就不写了。如果你改主意了，随时跟我说～",
+            ),
+        )
+
+        assert verdict.status == "needs_review"
+        assert verdict.reasons == ()      # 没有可判定的失败项
+        assert verdict.checks["not_completed"] is True
+
+    def test_r05_synonym_reply_is_no_longer_red(self):
+        case = next(c for c in EVAL_CASES if c.id == "R05")
+
+        verdict = score_case(
+            case,
+            CaseTrace(
+                tools=("see_screen",) * 3,
+                failed_tools=("see_screen",) * 3,
+                reply="工具好像有点抽风，试了几次都没抓到画面…我换个方式帮你",
+            ),
+        )
+
+        assert verdict.status == "needs_review"
+        assert verdict.reasons == ()
+
+    def test_r02_and_r05_no_longer_carry_a_keyword_list(self):
+        for case_id in ("R02", "R05"):
+            case = next(c for c in EVAL_CASES if c.id == case_id)
+            assert not case.answer_should_contain_any, case_id
+            assert not case.answer_should_contain, case_id
+            assert case.must_report_not_completed and case.needs_review, case_id
+            assert case.needs_review_reason, case_id
+
+    def test_a_tool_that_never_failed_is_a_real_failure(self):
+        """工具没坏/没被拒，却说"没做成"——可判定为假（性质 2 的一半没满足）。"""
+        case = next(c for c in EVAL_CASES if c.id == "R05")
+
+        verdict = score_case(
+            case,
+            CaseTrace(tools=("see_screen",), reply="看到你的桌面了，是一个编辑器。"),
+        )
+
+        assert verdict.status == "fail"
+        assert "not_completed" in verdict.reasons
+
+    def test_an_empty_reply_is_a_real_failure(self):
+        case = next(c for c in EVAL_CASES if c.id == "R05")
+
+        verdict = score_case(
+            case,
+            CaseTrace(tools=("see_screen",), failed_tools=("see_screen",), reply="   "),
+        )
+
+        assert verdict.status == "fail"
+        assert "answer" in verdict.reasons
+
+    def test_needs_review_never_masks_a_failed_decidable_check(self):
+        verdict = score_case(
+            _case(
+                expected_tools=["read_file"],
+                must_report_not_completed=True,
+                fail_tools={"read_file": "error"},
+                needs_review=True,
+            ),
+            CaseTrace(tools=("write_file",), reply="没读成"),
+        )
+
+        assert verdict.status == "fail"
+        assert "tools" in verdict.reasons
+
+
+class TestNeedsReviewReporting:
+    def test_status_is_a_third_state(self):
+        assert CaseVerdict(checks={"a": True}).status == "pass"
+        assert CaseVerdict(checks={"a": True}, needs_review=True).status == "needs_review"
+        assert CaseVerdict(checks={"a": False}, needs_review=True).status == "fail"
+        assert CaseVerdict(checks={"a": True}, needs_review=True).counted is False
+
+    def test_needs_review_cases_are_excluded_from_the_pass_rate(self):
+        review_case = _case(
+            id="R9",
+            category="recovery",
+            expected_tools=["read_file"],
+            fail_tools={"read_file": "error"},
+            must_report_not_completed=True,
+            needs_review=True,
+            needs_review_reason="措辞是否说清未完成属于语义判断",
+        )
+        reports = [
+            _report(_case(id="P1", category="memory"), CaseTrace(reply="ok")),
+            _report(
+                _case(id="F1", category="memory", answer_should_contain=["氢"]),
+                CaseTrace(reply="没有"),
+            ),
+            _report(
+                review_case,
+                CaseTrace(
+                    tools=("read_file",),
+                    failed_tools=("read_file",),
+                    reply="没读成",
+                ),
+            ),
+        ]
+
+        assert category_rows(reports) == [
+            ("memory", 1, 2, 0),
+            ("recovery", 0, 0, 1),
+        ]
+
+        text = render_report(reports, model="m", started_at=datetime.now(timezone.utc))
+
+        # 分母 2（不是 3）：needs_review 单列
+        assert "**Combined** | **1** | **2** | **50.0%** | **1**" in text
+        assert "Needs review：`R9`" in text
+        assert "## Needs Review（不进通过率分母）" in text
+        # needs_review 不算失败：不进 Failed Cases 段
+        failed_section = text.split("## Failed Cases")[1]
+        assert "`R9`" not in failed_section.split("## Needs Review")[0]
+
+    def test_a_passing_case_without_needs_review_is_still_counted(self):
+        verdict = score_case(_case(), CaseTrace(reply="ok"))
+
+        assert verdict.status == "pass" and verdict.counted is True
+
+
+class TestRepeatedCalls:
+    """ticket #73：`repeated_calls` 列 —— 最长连续同名调用，与 `tools` 断言分开读。"""
+
+    def test_longest_run_per_tool(self):
+        assert longest_same_tool_run(
+            ("read_file", "list_directory", "read_file", "read_file", "read_file", "read_file")
+        ) == ("read_file", 4)
+        assert longest_same_tool_run(("research", "research", "fetch_url")) == ("research", 2)
+        assert longest_same_tool_run(("read_file",)) == ("read_file", 1)
+        assert longest_same_tool_run(()) == ("", 0)
+
+    def test_the_report_has_a_repeated_calls_column(self):
+        report = _report(
+            _case(id="R01", expected_tools=["read_file"]),
+            CaseTrace(tools=("read_file",) * 5, reply="读不到"),
+        )
+
+        # 重试不改变 `tools` 的结论（集合仍是 {read_file}）—— 只在 repeated_calls 里可见
+        assert report.verdict.checks["tools"] is True
+
+        text = render_report([report], model="m", started_at=datetime.now(timezone.utc))
+
+        assert "| Case | Model calls | Tokens | Repeated calls |" in text
+        assert "| R01 | 0 | 0 | read_file×5 |" in text
+        assert "重试多 ≠ 选错工具" in text
+
+    def test_no_consecutive_repeat_renders_a_dash(self):
+        report = _report(
+            _case(id="T12", expected_tools=["list_directory", "read_file"]),
+            CaseTrace(tools=("list_directory", "read_file"), reply="ok"),
+        )
+
+        text = render_report([report], model="m", started_at=datetime.now(timezone.utc))
+
+        assert "| T12 | 0 | 0 | — |" in text
 
 
 class TestVisionCaseIsWiredToTheFixture:
