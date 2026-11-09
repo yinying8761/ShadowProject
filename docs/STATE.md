@@ -72,16 +72,17 @@
 
 > 来源：审查者会话（`session-06ed43db…`）2026-11-06 的对账与 triage。
 
-- **当前焦点**：eval v2 全量已跑通（**25/33**，84 次调用 / 292,538 tokens；失败项 `T03/R01/R04/R05/R06/R07/V01/S03`），**triage 已完成并修正过一次**（见下），等网络恢复后重跑 recovery 子集。
+- **当前焦点**：eval v2 全量 **25/33**；recovery 子集已复跑（**1/7**，28 次调用 / 84,817 tokens），根因是产品行为而非评测——见缺口 1。
 - **已知缺口**：
-  1. **评测 8 项失败**——归类见 [`docs/analysis/eval-triage-2026-11-06.md`](analysis/eval-triage-2026-11-06.md)。**没有一项是产品功能 bug 的直接证据**：**R04–R07 已改判为环境噪声**（真实 LLM 连接错误 `Connection error.` / `Request timed out.`，与 `faults.py` 的四种注入信封字样不符——曾误判为 harness 判定错，若照改会掩盖真实失败）；S03 断言过窄（答对但引用 host 不匹配）；R01 预算口径可疑；T03/V01 待人工读输出。**注意：「Failure Recovery 2/7」目前不可信**——4 个噪声都落在 recovery 层，真实恢复能力尚未测出。
-  2. `--group` 免费层起步即挂起、零输出（33 条里不含群聊不变量用例）。
-  3. 标 `live=False` 的用例实际在联网（违反 ADR-0012 的边界，有运行时证据）。
-  4. **pydantic 2.14.1 × mcp 1.8.1 导入故障**：`mcp` 内部还在 `from pydantic._internal._typing_extra import eval_type_backport`，该符号自 pydantic 2.12 被移除 → `test_mcp_manager.py` / `test_mcp_amap_live.py` 在**收集阶段**就失败，故 §1 的测试数不含它们。**应用仍能启动**（`mcp` 在 `mcp_manager.py` 是函数内懒加载），只有真连 MCP 时才抛错。两条常规修法都被 ADR-0010 的死结堵住（`pydantic<2.12` 无 cp314 wheel；升级 `mcp` 会撞 `starlette<0.47`）。**用户已决定暂不修。**
-  5. README / `.env.example` 部分描述过期，等大任务结束后统一改。
-  6. **可复现性**：评测依赖网络，而本机 SOCKS 代理（`127.0.0.1:7890`）当前不可用；recovery / 搜索类用例重跑会得到不同的失败集，对比基线前先确认网络条件一致。
+  1. **恢复能力 1/7（11-09 复跑，真实数字）**——"同一个失败的工具被反复重试到 5 轮上限"：R01 `read_file`×5、R04 `research`×4、R05 `see_screen`×3、R06 换文件读到轮次耗尽；**R07 通过**，因为它两次超时后如实报告。→ 修复方向是**产品侧"放弃策略"**（连续失败 N 次后换策略或如实报告），不是放宽断言。归类详见 [`docs/analysis/eval-triage-2026-11-06.md`](analysis/eval-triage-2026-11-06.md)。
+  2. **用例级不稳定**：R02/R03 在 11-04 通过、11-09 失败，R07 反之；恢复类用例单跑一次不足以定论，比较时至少两遍。
+  3. `--group` 免费层起步即挂起、零输出（33 条里不含群聊不变量用例）。
+  4. 标 `live=False` 的用例实际在联网（违反 ADR-0012 的边界，有运行时证据）。
+  5. **pydantic 2.14.1 × mcp 1.8.1 导入故障**：`mcp` 内部还在 `from pydantic._internal._typing_extra import eval_type_backport`，该符号自 pydantic 2.12 被移除 → `test_mcp_manager.py` / `test_mcp_amap_live.py` 在**收集阶段**就失败，故 §1 的测试数不含它们。**应用仍能启动**（`mcp` 在 `mcp_manager.py` 是函数内懒加载），只有真连 MCP 时才抛错。两条常规修法都被 ADR-0010 的死结堵住（`pydantic<2.12` 无 cp314 wheel；升级 `mcp` 会撞 `starlette<0.47`）。**用户已决定暂不修。**
+  6. README / `.env.example` 部分描述过期，等大任务结束后统一改。
   7. **（候选，未决）** 基础设施失败应与行为失败分开记账（`not_run` / `infra_error`，不进通过率分母）——审查者的建议，会扩大判定语义，需单独立项。
-- **下一步**：**等代理恢复** → 重跑 recovery 子集（拿到真实恢复能力）→ 处理 S03/R01 口径 → T03/V01 人工判定 → 回填本文件；`--group` 挂起另开。
+  8. **视觉能力表可能"撒谎"**：`deepseek` 预设 `supports_vision: True`，但评测模型是 `deepseek-v4-flash`；V01 的回复是"看不到这张图片"，怀疑图片被发给了一个不支持视觉的模型。待验证（ADR-0011 要求"不认识的 image_api 必须报错"，同样的原则也要求"能力默认值不能撒谎"）。
+- **下一步**：产品侧加"放弃策略"并重跑 recovery（R07 作为正面样例）→ 验证 V01 的视觉能力表问题 → 处理 S03/R01 口径 → T03/V01 → `--group` 挂起另开。
 
 ### 4.1 工作区里"未入库"的东西
 
