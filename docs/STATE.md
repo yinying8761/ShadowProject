@@ -118,6 +118,14 @@ python -u -m eval.runner --out eval_results_74.md --baseline-out eval_baseline_7
 
 在 STATE 里绝不把两者合并写成"通过率上升"。
 
+### 4.3 当前阻塞：API 余额（HTTP 402）
+
+- **`#75` 已落地**（`cbf3f67`，pytest **924 passed**）：`tools` 断言改为「必备集合 + 禁止集合 + 每工具调用次数上界」，报告三行分列。
+- **评测复跑被 `HTTP 402 Insufficient Balance` 挡住**：recovery 7 条全部 `run` 失败、`calls=0` → **无效失败，不能当分母**；`20/28` 里的 7 条同理。**在此期间不得引用任何新百分比。**
+- 替代 key 已查尽（两个 DeepSeek key 同值、OpenCode 401 过期、无本地 Ollama）→ **唯一出路是充值**。
+- **#75 里 R01/R03/R04/R06 的"绿"是断言层 + 旧实测 trace 的复算**（单测锁定），**不是新跑出来的结果**；真实前后对比必须等充值后重跑。
+- **更正一条**：T03 的旧红是**旧断言**造成的（`research`×3 + `fetch_url`×2 被精确集合判负）；新断言下同一 trace 复算为 **pass**。它剩下的唯一问题是 `live=False` 却联网，属 #76。
+
 > **关于 866 这个数字**：它是**当前工作区**的实测值，已包含 `scoring.py` / `group_turn_eval.py` 两处待提交修复（这两处不增删用例，所以提交后数字不变）。时点 = `HEAD 7d60820` + 3 处未提交改动；之后每提交一批都会变，按 §6.4 的约定更新。
 
 ---
