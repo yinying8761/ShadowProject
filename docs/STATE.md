@@ -125,6 +125,9 @@ python -u -m eval.runner --out eval_results_74.md --baseline-out eval_baseline_7
 - 替代 key 已查尽（两个 DeepSeek key 同值、OpenCode 401 过期、无本地 Ollama）→ **唯一出路是充值**。
 - **#75 里 R01/R03/R04/R06 的"绿"是断言层 + 旧实测 trace 的复算**（单测锁定），**不是新跑出来的结果**；真实前后对比必须等充值后重跑。
 - **更正一条**：T03 的旧红是**旧断言**造成的（`research`×3 + `fetch_url`×2 被精确集合判负）；新断言下同一 trace 复算为 **pass**。它剩下的唯一问题是 `live=False` 却联网，属 #76。
+- **`#76` 已落地**（`e205221`，pytest **943 passed**，**零 API 调用**）：9 例进 `needs_review`（R02/R05 + R01/R03/R04/R06/R07/V02/T09，单列、不进分母）；`BASELINE_VERSION=3`（三态；旧 v2 可读并标 legacy；无法合并时**拒绝覆盖并以 2 退出**，不再静默覆盖）；已入库的 `eval_baseline.json` 经 `git diff` 核实**未动**；T03 只把 `live=True`，断言未削弱。
+- **T04 是同类违规，票面漏了**：`T04` 声明 `fetch_url` 却 `live=False`，默认运行会联网 → 已开**票 08**（本地；GitHub issue 待网络恢复后补建）。
+- **口径决定（我拍的）**：R01/R03/R04/R06/R07/V02 这 7 例保留 `needs_review`——它们虽已具备可判定检查，但仍残留"有没有编造内容"的语义成分；按 ADR「语义结果只报告、不静默算通过」，不进分母。
 
 > **关于 866 这个数字**：它是**当前工作区**的实测值，已包含 `scoring.py` / `group_turn_eval.py` 两处待提交修复（这两处不增删用例，所以提交后数字不变）。时点 = `HEAD 7d60820` + 3 处未提交改动；之后每提交一批都会变，按 §6.4 的约定更新。
 
