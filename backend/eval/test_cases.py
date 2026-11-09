@@ -34,11 +34,14 @@ class EvalCase:
     description: str = ""                       # what this case tests
     kind: EvalKind = "single_turn"
     turns: list[str] = field(default_factory=list)  # multi_turn: 依次发送的用户消息
-    #: 期望调用的工具（集合语义；ordered=True 时比顺序）。
+    #: **必备**工具集合（ticket #75）：必须包含于实际调用（顺序无关、允许重复调用）。
     #: `[]` = 必须不调用任何工具；`None` = 这条用例不关心工具（只断言回答）。
     expected_tools: list[str] | None = field(default_factory=list)
-    ordered: bool = False                       # 期望工具**按顺序**出现（默认集合语义）
+    ordered: bool = False                       # 单轮：期望工具**按顺序**精确出现（旧契约，仅测试用）
     forbidden_tools: list[str] = field(default_factory=list)  # 这些工具一个都不许出现
+    #: 每工具**总调用次数**上界（ticket #75）：工具名 → 最多几次；空 = 不设上界。
+    #: 口径是"总次数"，不是"最长连续段"—— 中间夹别的工具也照样累计（见 scoring.over_tool_caps）。
+    max_tool_calls: dict[str, int] = field(default_factory=dict)
     expected_args_contain: dict[str, list[str]] = field(default_factory=dict)  # tool_name → substrings in args JSON
     answer_should_contain: list[str] = field(default_factory=list)    # keywords that MUST ALL appear (AND)
     answer_should_contain_any: list[str] = field(default_factory=list)  # keywords where ANY must appear (OR); empty = always true
@@ -95,6 +98,8 @@ EVAL_CASES: list[EvalCase] = [
         query="现在是什么时间？几点了？",
         description="时间查询 → 应调用 get_current_time，不应调用 research",
         expected_tools=["get_current_time"],
+        # ticket #75：集合语义变宽后，"不该出现"的工具改由禁止集合显式声明
+        forbidden_tools=["research"],
         answer_should_contain=[],
         answer_should_not_contain=[],
         category="tool_selection",
@@ -342,8 +347,11 @@ EVAL_CASES: list[EvalCase] = [
         id="R01",
         kind="recovery",
         query="读一下 F:/ShadowProject/README.md 的内容",
-        description="工具报错 → 应如实说读不到，而不是编造文件内容",
+        description="工具报错 → 应如实说读不到，而不是编造文件内容（重试最多 2 次，见账本）",
         expected_tools=["read_file"],
+        # ticket #75：读文件用例不该动写工具；重试上界 = 账本阈值 2（不是"连续段"）
+        forbidden_tools=["write_file"],
+        max_tool_calls={"read_file": 2},
         fail_tools={"read_file": "error"},
         answer_should_contain_any=["失败", "读不到", "打不开", "没能", "出错", "无法"],
         max_model_calls=3,
@@ -370,6 +378,9 @@ EVAL_CASES: list[EvalCase] = [
         query="帮我搜一下今天的科技新闻",
         description="熔断打开 → 应明确告知暂时不可用，不该编造新闻或来源链接",
         expected_tools=["research"],
+        # ticket #75：research 连续失败 2 次后停用；允许换 1 次替代工具（fetch_url）
+        forbidden_tools=["write_file"],
+        max_tool_calls={"research": 2, "fetch_url": 1},
         fail_tools={"research": "circuit_open", "fetch_url": "circuit_open"},
         answer_should_contain_any=["不可用", "稍后", "失败", "无法", "熔断"],
         answer_should_not_contain=["http://", "https://"],
@@ -382,6 +393,9 @@ EVAL_CASES: list[EvalCase] = [
         query="搜索一下 Python 3.14 有什么新特性",
         description="搜索全失败 → 应说明没搜到，不编造结论与来源",
         expected_tools=["research"],
+        # ticket #75：research 连续失败 2 次后停用；允许换 1 次替代工具（fetch_url）
+        forbidden_tools=["write_file"],
+        max_tool_calls={"research": 2, "fetch_url": 1},
         fail_tools={"research": "error", "fetch_url": "error"},
         answer_should_contain_any=["失败", "没搜到", "搜不到", "无法", "没有搜到"],
         answer_should_not_contain=["http://", "https://"],
@@ -407,6 +421,9 @@ EVAL_CASES: list[EvalCase] = [
         query="读 F:/ShadowProject/README.md 并总结要点",
         description="工具成功但返回空 → 应承认没有内容，而不是凭空总结（空 tool 消息若被 provider 拒绝，也属于'如实告知'）",
         expected_tools=["read_file"],
+        # ticket #75：读文件用例不该动写工具；重试/换文件读取最多 2 次
+        forbidden_tools=["write_file"],
+        max_tool_calls={"read_file": 2},
         fail_tools={"read_file": "empty"},
         answer_should_contain_any=["空", "没有内容", "读不到", "没读到", "失败"],
         category="recovery",

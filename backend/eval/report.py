@@ -25,6 +25,7 @@ from eval.scoring import (
     CHECK_FORBIDDEN,
     CHECK_NOT_COMPLETED,
     CHECK_RUN,
+    CHECK_TOOL_CALLS,
     CHECK_TOOLS,
     CaseTrace,
     CaseVerdict,
@@ -32,6 +33,7 @@ from eval.scoring import (
     cited_urls,
     dump_args,
     longest_same_tool_run,
+    tool_call_counts,
 )
 
 #: 检查项在报告里的展示顺序与标题。
@@ -39,6 +41,7 @@ CHECK_ORDER = (
     CHECK_RUN,
     CHECK_TOOLS,
     CHECK_FORBIDDEN,
+    CHECK_TOOL_CALLS,
     CHECK_ARGS,
     CHECK_ANSWER,
     CHECK_NOT_COMPLETED,
@@ -48,8 +51,10 @@ CHECK_ORDER = (
 )
 CHECK_LABELS = {
     CHECK_RUN: "Run",
-    CHECK_TOOLS: "Tools",
+    # ticket #75：`expected_tools` 现在是"必备集合"（⊆ 实际），不再是精确集合
+    CHECK_TOOLS: "Required tools",
     CHECK_FORBIDDEN: "Forbidden",
+    CHECK_TOOL_CALLS: "Call cap",
     CHECK_ARGS: "Args",
     CHECK_ANSWER: "Answer",
     CHECK_NOT_COMPLETED: "Not completed",
@@ -284,6 +289,78 @@ def _render_repro(lines: list[str], report: CaseReport) -> None:
     lines.append("\n</details>\n")
 
 
+def _counts_label(tools: Sequence[str], names: Iterable[str] | None = None) -> str:
+    """工具 → ``name×count`` 的展示；*names* 为空时展示全部。"""
+    counts = tool_call_counts(tools)
+    wanted = list(names) if names is not None else list(counts)
+    if not wanted:
+        return "—"
+    return "、".join(f"`{name}`×{counts.get(name, 0)}" for name in wanted)
+
+
+def _render_tool_assertions(lines: list[str], report: CaseReport) -> None:
+    """ticket #75：把 tool 断言的**三行口径**分开写清（必备 / 禁止 / 次数上界）。
+
+    与评分用同一套 helper（`missing/called/over`），避免报告和结论各说各的。
+    """
+    case = report.case
+    trace = report.trace
+    checks = report.verdict.checks
+    required = list(case.expected_tools or [])
+    forbidden = list(case.forbidden_tools or [])
+    caps = dict(case.max_tool_calls or {})
+
+    if case.expected_tools is None and not forbidden and not caps:
+        return
+
+    lines.append("**Tool assertions:**\n")
+    lines.append("| Rule | Declared | Actual | Result |")
+    lines.append("|---|---|---|---|")
+
+    # ① 必备集合（⊆ 实际调用；顺序无关、允许重复）
+    if case.expected_tools is None:
+        required_declared, required_actual, required_result = "（不判工具）", "—", "—"
+    elif not required:
+        required_declared = "（不可调用任何工具）"
+        required_actual = _counts_label(trace.tools)
+        required_result = _check_mark(checks.get(CHECK_TOOLS, True))
+    else:
+        required_declared = "、".join(f"`{t}`" for t in required)
+        required_actual = _counts_label(trace.tools, required)
+        required_result = _check_mark(checks.get(CHECK_TOOLS, True))
+
+    # ② 禁止集合（一个都不许出现）
+    if forbidden:
+        forbidden_declared = "、".join(f"`{t}`" for t in forbidden)
+        forbidden_actual = _counts_label(trace.tools, forbidden)
+        forbidden_result = _check_mark(checks.get(CHECK_FORBIDDEN, True))
+    else:
+        forbidden_declared, forbidden_actual, forbidden_result = "（未声明）", "—", "—"
+
+    # ③ 每工具**总**调用次数上界（不是"最长连续段"）
+    if caps:
+        cap_declared = "、".join(f"`{t}` ≤ {cap}" for t, cap in caps.items())
+        cap_actual = _counts_label(trace.tools, caps)
+        cap_result = _check_mark(checks.get(CHECK_TOOL_CALLS, True))
+    else:
+        cap_declared, cap_actual, cap_result = "（未声明）", "—", "—"
+
+    lines.append(
+        f"| Required (⊆ actual) | {required_declared} | {required_actual} | "
+        f"{required_result} |"
+    )
+    lines.append(
+        f"| Forbidden (∅ actual) | {forbidden_declared} | {forbidden_actual} | "
+        f"{forbidden_result} |"
+    )
+    lines.append(
+        f"| Call cap (total per tool) | {cap_declared} | {cap_actual} | "
+        f"{cap_result} |"
+    )
+    lines.append("")
+    lines.append(f"**Actual calls:** {_counts_label(trace.tools)}\n")
+
+
 def _render_case(lines: list[str], report: CaseReport) -> None:
     case = report.case
     trace = report.trace
@@ -301,14 +378,7 @@ def _render_case(lines: list[str], report: CaseReport) -> None:
             lines.append(f"{index}. {turn}")
         lines.append("")
 
-    if case.expected_tools is not None:
-        exp_tools = ", ".join(f"`{t}`" for t in case.expected_tools) or "(none)"
-        act_tools = ", ".join(f"`{t}`" for t in trace.tools) or "(none)"
-        lines.append("| | Tools |")
-        lines.append("|---|---|")
-        lines.append(f"| Expected | {exp_tools} |")
-        lines.append(f"| Actual | {act_tools} |")
-        lines.append("")
+    _render_tool_assertions(lines, report)
 
     if case.expected_args_contain:
         lines.append("**Argument checks:**")

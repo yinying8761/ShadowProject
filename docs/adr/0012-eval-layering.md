@@ -107,7 +107,10 @@ Both are measured, not hypothesised:
   `1.99.1` on `releases.rs` and cited it; the case demanded `rust-lang.org`, and
   `scoring.py` compares hosts exactly. The real question was "is this a credible
   source?", a judgement — exact-host matching put a literal comparison where the
-  judgement belonged.
+  judgement belonged. The current `credible_source` implementation is a **literal
+  relaxation** (a declared set plus domain-suffix matching), **not the terminal
+  state**: a genuinely credible source outside the declared set still fails, and the
+  end goal is a semantic judgement, which this ADR keeps outside default CI.
 - **`R02` and `R05` (recovery) failed on `answer` while their replies were
   behaviourally correct.** R02 said 「好的，那我就不写了…」 — the write did not happen.
   R05 said 「工具好像有点抽风，试了几次都没抓到画面…我换个方式帮你」 — it did not see

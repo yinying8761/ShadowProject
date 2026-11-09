@@ -25,8 +25,9 @@ _URL_RE = re.compile(r"https?://[^\s)\]<>\"'，。；）]+")
 
 #: 检查项名字 —— 报告、基线、原因都按它展示（保持稳定，别随实现改）。
 CHECK_RUN = "run"          # 这一轮本身有没有跑成（错误 / 超时）
-CHECK_TOOLS = "tools"      # 工具集合（或顺序，当 ordered）
+CHECK_TOOLS = "tools"      # **必备**工具是否都在实际调用里（ticket #75；空集合 = 一个都不许调）
 CHECK_FORBIDDEN = "forbidden"   # 不该出现的工具
+CHECK_TOOL_CALLS = "tool_calls"  # 每工具**总**调用次数上界（ticket #75）
 CHECK_ARGS = "arguments"   # 关键参数子串
 CHECK_ANSWER = "answer"    # 回答要点（含 / 任一 / 不含；没有要点时 = 回答非空）
 CHECK_NOT_COMPLETED = "not_completed"  # 相关工具被尝试且失败/被拒 + 回答非空（性质 2）
@@ -97,6 +98,46 @@ def dump_args(args: Mapping) -> str:
     return json.dumps(args or {}, ensure_ascii=False, default=str)
 
 
+def tool_call_counts(tools: Sequence[str]) -> dict[str, int]:
+    """工具名 → 这条 trace 里**总共**被调用的次数（ticket #75 的上界口径）。"""
+    counts: dict[str, int] = {}
+    for name in tools:
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def missing_required_tools(
+    required: Sequence[str], tools: Sequence[str]
+) -> tuple[str, ...]:
+    """必备工具里没出现的那些（顺序无关；重复调用不影响"在不在"）。"""
+    actual = set(tools)
+    return tuple(tool for tool in required if tool not in actual)
+
+
+def called_forbidden_tools(
+    forbidden: Sequence[str], tools: Sequence[str]
+) -> tuple[str, ...]:
+    """声明为禁止、却真的出现了的工具（按声明顺序去重）。"""
+    actual = set(tools)
+    seen: list[str] = []
+    for tool in forbidden:
+        if tool in actual and tool not in seen:
+            seen.append(tool)
+    return tuple(seen)
+
+
+def over_tool_caps(
+    tools: Sequence[str], caps: Mapping[str, int]
+) -> dict[str, int]:
+    """超过每工具总调用上界的工具 → 实际次数（只返回越界的）。"""
+    counts = tool_call_counts(tools)
+    return {
+        tool: counts.get(tool, 0)
+        for tool, cap in caps.items()
+        if counts.get(tool, 0) > cap
+    }
+
+
 def _answer_ok(case, lowered_text: str) -> bool:
     """回答要点：AND 全中、OR 至少一中、NOT 全不中（输入须已小写）。
 
@@ -137,18 +178,29 @@ def score_case(case, trace: CaseTrace) -> CaseVerdict:
 
     checks[CHECK_RUN] = trace.error is None
 
-    # `expected_tools=None` = 这条用例不关心调了哪些工具（比如只测"记住了没有"）；
-    # `[]` = 必须**不**调用任何工具；默认是集合比较（ordered 时比顺序）
+    # ticket #75：`expected_tools` 是**必备集合**（⊆ 实际调用；顺序无关、允许重复）。
+    # `None` = 这条用例不关心调了哪些工具（比如只测"记住了没有"）；
+    # `[]` = 必须**不**调用任何工具（空集是"一个都不许"，不是"随便"）。
+    # `ordered=True` 的单轮用例仍按顺序精确比较（唯一还比"序列"的地方，保持旧契约）。
     if case.expected_tools is None:
         checks[CHECK_TOOLS] = True
     elif case.ordered and getattr(case, "kind", "single_turn") == "single_turn":
         checks[CHECK_TOOLS] = list(trace.tools) == list(case.expected_tools)
+    elif not case.expected_tools:
+        checks[CHECK_TOOLS] = not trace.tools
     else:
-        checks[CHECK_TOOLS] = set(trace.tools) == set(case.expected_tools)
+        checks[CHECK_TOOLS] = not missing_required_tools(
+            case.expected_tools, trace.tools
+        )
 
-    checks[CHECK_FORBIDDEN] = not [
-        t for t in case.forbidden_tools if t in trace.tools
-    ]
+    checks[CHECK_FORBIDDEN] = not called_forbidden_tools(
+        case.forbidden_tools, trace.tools
+    )
+
+    # ticket #75 ③：每工具**总**调用次数上界（不是"连续同名"—— 中间夹别的工具也算）。
+    caps = getattr(case, "max_tool_calls", None) or {}
+    if caps:
+        checks[CHECK_TOOL_CALLS] = not over_tool_caps(trace.tools, caps)
 
     args_ok = True
     for tool_name, substrings in case.expected_args_contain.items():

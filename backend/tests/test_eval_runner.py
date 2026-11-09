@@ -89,10 +89,30 @@ class TestScoringTools:
             trace=CaseTrace(tools=("read_file", "list_directory"), reply="ok"),
         ).passed
 
-    def test_an_unexpected_tool_fails(self):
+    def test_required_tools_ignore_order_and_duplicates(self):
+        """ticket #75 ①：必备集合 ⊆ 实际调用，顺序无关，重复调用不影响"在不在"。"""
+        assert _score(
+            expected_tools=["list_directory", "read_file"],
+            trace=CaseTrace(
+                tools=("read_file", "read_file", "list_directory"), reply="ok"
+            ),
+        ).passed
+
+    def test_an_equivalent_tool_is_no_longer_an_automatic_failure(self):
+        """`fetch_url` 替补 `research` 不该算选错工具（ticket #75 的实测假红）。"""
+        verdict = _score(
+            expected_tools=["research"],
+            trace=CaseTrace(tools=("research", "fetch_url"), reply="ok"),
+        )
+
+        assert verdict.passed
+        assert verdict.checks["tools"] is True
+
+    def test_a_missing_required_tool_fails(self):
+        """ticket #75 反例 (b)：必备工具没出现必须红。"""
         verdict = _score(
             expected_tools=["read_file"],
-            trace=CaseTrace(tools=("read_file", "write_file"), reply="ok"),
+            trace=CaseTrace(tools=("list_directory",), reply="ok"),
         )
 
         assert not verdict.passed
@@ -103,7 +123,8 @@ class TestScoringTools:
             expected_tools=[], trace=CaseTrace(tools=("research",), reply="ok")
         ).passed
 
-    def test_a_forbidden_tool_fails_even_when_the_expected_set_matches(self):
+    def test_a_forbidden_tool_fails_while_the_required_set_still_matches(self):
+        """ticket #75 反例 (c)：命中禁止工具必须红（必备集合本身是满足的）。"""
         verdict = _score(
             expected_tools=["read_file"],
             forbidden_tools=["write_file"],
@@ -111,7 +132,55 @@ class TestScoringTools:
         )
 
         assert not verdict.passed
-        assert "forbidden" in verdict.reasons and "tools" in verdict.reasons
+        assert verdict.checks["tools"] is True
+        assert "forbidden" in verdict.reasons
+
+
+class TestToolCallCaps:
+    """ticket #75 ③：每工具**总**调用次数上界（不是"最长连续同名段"）。"""
+
+    def test_calls_within_the_cap_pass(self):
+        assert _score(
+            expected_tools=["read_file"],
+            max_tool_calls={"read_file": 2},
+            trace=CaseTrace(tools=("read_file", "read_file"), reply="ok"),
+        ).passed
+
+    def test_a_tool_called_more_than_its_cap_fails(self):
+        """反例 (a)：同一工具被调 5 次（上界 2）必须红。"""
+        verdict = _score(
+            expected_tools=["read_file"],
+            max_tool_calls={"read_file": 2},
+            trace=CaseTrace(tools=("read_file",) * 5, reply="ok"),
+        )
+
+        assert not verdict.passed
+        assert "tool_calls" in verdict.reasons
+        assert verdict.checks["tools"] is True   # 必备集合仍满足，红的是次数上界
+
+    def test_the_cap_counts_total_calls_not_the_longest_consecutive_run(self):
+        tools = ("read_file", "list_directory", "read_file", "list_directory", "read_file")
+
+        assert longest_same_tool_run(tools) == ("read_file", 1)  # 没有任何连续段
+
+        verdict = _score(
+            expected_tools=["read_file"],
+            max_tool_calls={"read_file": 2},
+            trace=CaseTrace(tools=tools, reply="ok"),
+        )
+
+        assert not verdict.passed
+        assert "tool_calls" in verdict.reasons
+
+    def test_a_tool_without_a_declared_cap_is_unbounded(self):
+        assert _score(
+            expected_tools=None,
+            max_tool_calls={"read_file": 2},
+            trace=CaseTrace(tools=("research",) * 9, reply="ok"),
+        ).passed
+
+    def test_caps_are_absent_from_the_checks_when_not_declared(self):
+        assert "tool_calls" not in _score(reply="ok").checks
 
 
 class TestScoringArguments:
@@ -466,6 +535,41 @@ class TestReportRendering:
 
         assert "- **BAD** (tool_selection): run" in text
         assert "invalid case" in text
+
+
+class TestToolAssertionRendering:
+    """ticket #75：报告里必备 / 禁止 / 次数上界**三行分开**显示。"""
+
+    def test_required_forbidden_and_cap_are_three_separate_rows(self):
+        report = _report(
+            _case(
+                id="R03",
+                expected_tools=["research"],
+                forbidden_tools=["write_file"],
+                max_tool_calls={"research": 2, "fetch_url": 1},
+            ),
+            CaseTrace(
+                tools=("research", "research", "fetch_url", "write_file"),
+                reply="工具暂时不可用",
+            ),
+        )
+
+        text = render_report([report], model="m", started_at=datetime.now(timezone.utc))
+
+        assert "**Tool assertions:**" in text
+        assert "| Required (⊆ actual) | `research` | `research`×2 | ✅ |" in text
+        assert "| Forbidden (∅ actual) | `write_file` | `write_file`×1 | ❌ |" in text
+        assert "| Call cap (total per tool) |" in text
+        assert "`research` ≤ 2" in text
+        assert "**Actual calls:**" in text
+        assert "**Failed checks:** forbidden" in text
+
+    def test_an_empty_required_set_is_rendered_as_calling_nothing(self):
+        report = _report(_case(id="T11", expected_tools=[]), CaseTrace(reply="你好"))
+
+        text = render_report([report], model="m", started_at=datetime.now(timezone.utc))
+
+        assert "| Required (⊆ actual) | （不可调用任何工具） | — | ✅ |" in text
 
 
 class TestAnswerScope:
@@ -976,6 +1080,107 @@ class TestExistingCasesStillScore:
         )
 
         assert verdict.passed
+
+
+class TestRecoveryToolAssertions:
+    """ticket #75：R01/R03/R04/R06 的重试与等价替补不再被"精确集合"判死。"""
+
+    @staticmethod
+    def _case(case_id: str) -> EvalCase:
+        return next(c for c in EVAL_CASES if c.id == case_id)
+
+    def test_the_ticket_cases_declare_required_forbidden_and_caps(self):
+        for case_id in ("R01", "R03", "R04", "R06"):
+            case = self._case(case_id)
+            assert case.expected_tools, case_id          # 必备集合
+            assert case.forbidden_tools, case_id         # 禁止集合
+            assert case.max_tool_calls, case_id          # 每工具上界
+            assert all(cap >= 1 for cap in case.max_tool_calls.values()), case_id
+
+    def test_r01_two_failed_reads_are_not_a_false_red(self):
+        """R01：同一工具重试两次（账本阈值）→ 必备集合仍满足、次数恰好到上界。"""
+        verdict = score_case(
+            self._case("R01"),
+            CaseTrace(
+                tools=("read_file", "read_file"),
+                failed_tools=("read_file", "read_file"),
+                reply="这个文件读不到，失败了。",
+                model_calls=3,
+            ),
+        )
+
+        assert verdict.passed, verdict.reasons
+
+    def test_r03_equivalent_tool_substitution_passes(self):
+        """R03：熔断后换一次 `fetch_url` 是允许的（ticket 明确要求不再算选错）。"""
+        verdict = score_case(
+            self._case("R03"),
+            CaseTrace(
+                tools=("research", "research", "fetch_url"),
+                failed_tools=("research", "research", "fetch_url"),
+                reply="搜索服务暂时不可用，请稍后再试。",
+            ),
+        )
+
+        assert verdict.passed, verdict.reasons
+
+    def test_r04_equivalent_tool_substitution_passes(self):
+        verdict = score_case(
+            self._case("R04"),
+            CaseTrace(
+                tools=("research", "research", "fetch_url"),
+                failed_tools=("research", "research", "fetch_url"),
+                reply="搜索失败了，没有搜到相关内容。",
+            ),
+        )
+
+        assert verdict.passed, verdict.reasons
+
+    def test_r06_one_retry_on_empty_result_passes(self):
+        verdict = score_case(
+            self._case("R06"),
+            CaseTrace(
+                tools=("read_file", "read_file"),
+                reply="文件是空的，没有内容。",
+            ),
+        )
+
+        assert verdict.passed, verdict.reasons
+
+    def test_r01_over_the_cap_is_still_red(self):
+        """反例 (a)：R01 把 `read_file` 调到 3 次（上界 2）必须红。"""
+        verdict = score_case(
+            self._case("R01"),
+            CaseTrace(
+                tools=("read_file", "read_file", "read_file"),
+                failed_tools=("read_file", "read_file", "read_file"),
+                reply="读不到文件。",
+                model_calls=3,
+            ),
+        )
+
+        assert "tool_calls" in verdict.reasons
+
+    def test_r03_missing_the_required_tool_is_red(self):
+        """反例 (b)：只换工具、没真的调 `research`，必备集合不满足。"""
+        verdict = score_case(
+            self._case("R03"),
+            CaseTrace(tools=("fetch_url",), reply="搜索服务暂时不可用。"),
+        )
+
+        assert "tools" in verdict.reasons
+
+    def test_r03_hitting_a_forbidden_tool_is_red(self):
+        """反例 (c)：搜索用例里出现 `write_file`，禁止集合必须红。"""
+        verdict = score_case(
+            self._case("R03"),
+            CaseTrace(
+                tools=("research", "write_file"),
+                reply="搜索服务暂时不可用。",
+            ),
+        )
+
+        assert "forbidden" in verdict.reasons
 
 
 class TestCaseTableMatchesTheRealTools:
