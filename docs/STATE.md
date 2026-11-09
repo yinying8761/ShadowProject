@@ -87,6 +87,7 @@
   8. **【已实测确认】视觉能力表对 `deepseek-v4-pro` 撒谎**：实际模型是 `deepseek-v4-pro`（`data/config.yaml` 覆盖 `.env` 里的 flash——**配置双来源、后者静默生效，改 `.env` 可能无效**）。带合法 `image_url`、预算给足（1500）的请求明确回「我无法查看这张图片」，而预设 `supports_vision: True` 仍会发图。→ `None` 救不了（视觉规则是"未知也试一次"），只有按模型显式 `False`，或给 ADR-0011 补**模型级默认表**。⚠️ 早期用 `max_tokens=60` 得到的空串是**推理 token 吃光输出**的假象，不能当"看不见图"的证据。
   9. **`25/33` 不能当质量基线**：至少 2 条假红（R02/R05），且任何 `answer` 断言都可能同病（与 S03 的 host 精确匹配**同源**）。断言语义化落地前，它只能当"问题清单"，不能当分数。
   10. **收尾调用未计入 `llm_usage`**：轮次耗尽那次收尾请求不写用量。两个后果：① 成本列少算 ≤1 次/轮；② **评测侧**——`max_model_calls` 预算断言读的是 `llm_usage` 行数，走过收尾的回合会少算 1 次，可能造成「预算内」**假通过**（仅限「轮次耗尽/账本叫停」路径，每轮最多 1 次）。已决定暂不修（动 `usage_store` 的 round 语义风险大于收益）。将来补记的坐标：`core/agent.py::_stream_wrap_up` 留住 `usage` 事件 → `save(round_num=max_tool_rounds, …)`（0–4 是工具轮，5 空着）。**#74 复跑时：走过收尾的用例，别把 `budget` 通过当独立证据。**
+  11. **离线守卫有盲区**：守卫只检查「用例声明的 `expected_tools`」。`expected_tools=None` 的用例（M01、M05、G01–G06）把工具选择交给模型，**没有任何东西能证明它们不会在真实模型下调 `fetch_url`**。要覆盖需给这些用例强制加断言——超出 #08 范围，未做，待另开票。
 - **下一步**：~~产品侧两件~~（**已完成**：`dbf6a0e` 账本 / `96d4426` 收尾）→ **#73 断言迁移（在途）** → **#74 recovery 复跑 + 全量重跑 + 基线重建** → 能力表按模型 `False` / ADR-0011 模型级默认表 → T03 → `--group` 另开。
 
 ### 4.1 工作区里"未入库"的东西
@@ -151,6 +152,7 @@ python -u -m eval.runner --out eval_results_74.md --baseline-out eval_baseline_7
 - **更正一条**：T03 的旧红是**旧断言**造成的（`research`×3 + `fetch_url`×2 被精确集合判负）；新断言下同一 trace 复算为 **pass**。它剩下的唯一问题是 `live=False` 却联网，属 #76。
 - **`#76` 已落地**（`e205221`，pytest **943 passed**，**零 API 调用**）：9 例进 `needs_review`（R02/R05 + R01/R03/R04/R06/R07/V02/T09，单列、不进分母）；`BASELINE_VERSION=3`（三态；旧 v2 可读并标 legacy；无法合并时**拒绝覆盖并以 2 退出**，不再静默覆盖）；已入库的 `eval_baseline.json` 经 `git diff` 核实**未动**；T03 只把 `live=True`，断言未削弱。
 - **T04 是同类违规，票面漏了**：`T04` 声明 `fetch_url` 却 `live=False`，默认运行会联网 → 已开**票 08**（本地；GitHub issue 待网络恢复后补建）。
+- **票 08 已落地**（`8d00fae`，pytest **948 passed**）：`T04` 归入 `live`（`expected_tools` / `expected_args_contain` 与 HEAD 字节相同），默认集 27→26；守卫测试泛化成**四条**，其中一条导入 `core.tool_runtime._NETWORK_TOOLS` 并断言测试集合覆盖它——**将来运行时新增网络工具，守卫会红**，盲区不会被静默扩大。根基线经 `git diff` 与 blob 双重核实未动。
 - **口径决定（我拍的）**：R01/R03/R04/R06/R07/V02 这 7 例保留 `needs_review`——它们虽已具备可判定检查，但仍残留"有没有编造内容"的语义成分；按 ADR「语义结果只报告、不静默算通过」，不进分母。
 
 > **关于 866 这个数字**：它是**当前工作区**的实测值，已包含 `scoring.py` / `group_turn_eval.py` 两处待提交修复（这两处不增删用例，所以提交后数字不变）。时点 = `HEAD 7d60820` + 3 处未提交改动；之后每提交一批都会变，按 §6.4 的约定更新。
