@@ -97,6 +97,27 @@
 
 > 上一批未提交工作（`scoring.py`、`group_turn_eval.py`、ADR-0012、`eval_baseline.json`、交接快照、`.gitignore`）已随 `9bd76ed` 入库。
 
+### 4.2 #74 复跑口径（照抄执行，别改参数）
+
+```powershell
+cd F:\ShadowProject\backend
+$env:PYTHONIOENCODING='utf-8'
+python -u -m eval.runner --out eval_results_74.md --baseline-out eval_baseline_74.json
+```
+
+四条纪律：① 不 `--live`；② 不 `--group`（该层起步即挂起，另案）；③ **不传 `--baseline`**（会把未运行用例报成"已删除"，产生假 diff）；④ `--baseline-out` **必须重定向**（默认会覆盖入库的 `eval_baseline.json`）——跑完删 `eval_baseline_74.json`，`eval_results_74.md` 按生成物处理、不入库。
+
+**报数格式**：**分子与分母分开报**，再列失败集变化。不要只给百分比——上一轮 R02/R05 是"分子不变、分母变小"，只看百分比会误读成改进。
+
+**两种"变绿"必须分开记**（性质完全不同）：
+
+| 类型 | 例子 | 含义 |
+|---|---|---|
+| **正当变绿** | #75 之后的 R01/R03/R04/R06 | 断言不再误判**正确的产品行为**（重试/替补本来就是 #71 允许的） |
+| **移交判断** | #73 的 R02/R05 → `needs_review` | 判不了，交给人或评分模型，**不进分母**——不是通过 |
+
+在 STATE 里绝不把两者合并写成"通过率上升"。
+
 > **关于 866 这个数字**：它是**当前工作区**的实测值，已包含 `scoring.py` / `group_turn_eval.py` 两处待提交修复（这两处不增删用例，所以提交后数字不变）。时点 = `HEAD 7d60820` + 3 处未提交改动；之后每提交一批都会变，按 §6.4 的约定更新。
 
 ---
