@@ -14,6 +14,8 @@ Hand-annotated eval cases for Agent tool-calling accuracy.
   (or `EVAL_LIVE=1`); vision uses a generated fixture image, search must cite sources.
 - T03 (tool_selection) is also **live** (ticket #76): `research` reaches the internet,
   and ADR-0012 boundary rule #1 forbids a non-live case from touching the network.
+- T04 (tool_selection) is **live** too (ticket #08): `fetch_url` reaches the internet;
+  same rule, same fix — only the `live` flag changed, assertions untouched.
 
 Cases are **data only**: multi-turn is `turns`, fault injection is `fail_tools`,
 approval refusal is `deny_tools`, an attached image is `image_fixture`; adding a case
@@ -131,9 +133,12 @@ EVAL_CASES: list[EvalCase] = [
     EvalCase(
         id="T04",
         query="帮我抓取 https://httpbin.org/get 这个网页的内容",
-        description="网页抓取 → 应调用 fetch_url",
+        description="网页抓取 → 应调用 fetch_url（fetch_url 会真联网，所以标 live；默认运行不选它）",
         expected_tools=["fetch_url"],
         expected_args_contain={"fetch_url": ["httpbin.org"]},
+        # ticket #08：fetch_url 会真的访问外网；标 live=False 却联网违反 ADR-0012 边界规则 #1。
+        # 与 T03 同一规则、同一修法：断言不变，只把"要不要跑"交给 --live 开关。
+        live=True,
         category="tool_selection",
     ),
 

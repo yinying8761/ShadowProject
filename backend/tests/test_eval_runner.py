@@ -779,8 +779,41 @@ class TestLiveCapabilityCases:
         assert "no_such_fixture" in trace.error
 
 
+#: 会真联网的工具名（ADR-0012 边界规则 #1 的"网络"口径）。
+#: 与 `core.tool_runtime._NETWORK_TOOLS` 对齐 —— 那里新增联网工具时，
+#: `test_the_network_guard_covers_the_runtime_set` 会先红，提醒把用例重判 live。
+NETWORK_TOOL_NAMES = frozenset({"fetch_url", "research"})
+
+#: MCP 工具全部走网络；运行时用 `mcp__` 前缀标记它们。
+NETWORK_TOOL_PREFIXES = ("mcp__",)
+
+
+def _is_network_tool(tool_name: str) -> bool:
+    return tool_name in NETWORK_TOOL_NAMES or tool_name.startswith(NETWORK_TOOL_PREFIXES)
+
+
+def _unfaulted_network_tools(case) -> list[str]:
+    """这条用例会真发起、又**没有**被注入故障的网络工具。
+
+    注入故障（`fail_tools`）的用例走假 handler，零网络 —— 恢复类用例正是这么写的，
+    所以它们标 `live=False` 是对的。没注入故障的才算真的会出门。
+    """
+    un_faulted = set(case.expected_tools or ()) - set(case.fail_tools)
+    return sorted(tool for tool in un_faulted if _is_network_tool(tool))
+
+
+def _offline_cases_running_network_tools(cases) -> list[tuple[str, str]]:
+    """所有 `live=False` 却会真联网的 (case.id, tool) —— 空列表才是干净状态。"""
+    return [
+        (case.id, tool)
+        for case in cases
+        if not case.live
+        for tool in _unfaulted_network_tools(case)
+    ]
+
+
 class TestOfflineBoundary:
-    """ticket #76 / ADR-0012 边界规则 #1：非 live 的默认运行不能碰网络。"""
+    """ticket #76 / #08 / ADR-0012 边界规则 #1：非 live 的默认运行不能碰网络。"""
 
     def test_t03_is_live_and_keeps_its_tool_assertions(self):
         """T03 的 research 会真联网；只把"要不要跑"改成 --live，断言一点没弱化。"""
@@ -790,14 +823,79 @@ class TestOfflineBoundary:
         assert case.expected_tools == ["research"]
         assert case.expected_args_contain == {"research": ["Python"]}
 
+    def test_t04_is_live_and_keeps_its_tool_assertions(self):
+        """T04 的 fetch_url 会真联网；同样只改 live，抓取目标与工具期望原样保留。"""
+        case = next(c for c in EVAL_CASES if c.id == "T04")
+
+        assert case.live is True
+        assert case.expected_tools == ["fetch_url"]
+        assert case.expected_args_contain == {"fetch_url": ["httpbin.org"]}
+
     def test_t03_is_not_selected_by_the_default_run(self):
         assert "T03" not in {c.id for c in select_cases(EVAL_CASES)}
 
-    def test_no_case_that_runs_research_offline_is_selected_by_default(self):
-        """默认集合里不能再出现"会真搜网、又没有注入故障"的 research 用例。"""
-        for case in select_cases(EVAL_CASES):
-            un_faulted = set(case.expected_tools or ()) - set(case.fail_tools)
-            assert "research" not in un_faulted, case.id
+    def test_t04_is_not_selected_by_the_default_run(self):
+        assert "T04" not in {c.id for c in select_cases(EVAL_CASES)}
+
+    def test_no_live_false_case_runs_an_unfaulted_network_tool(self):
+        """通用守卫：`live=False` 的用例一个都不许真的出门联网。
+
+        覆盖 T03 的 research、T04 的 fetch_url，以及任何未来的同款错误 ——
+        断言的是"用例表的数据"而不是某几个 id，所以新用例写错标记会直接红。
+        """
+        offenders = _offline_cases_running_network_tools(EVAL_CASES)
+
+        assert not offenders, (
+            "这些 live=False 用例会真联网（应标 live=True，或注入 fail_tools）："
+            f"{offenders}"
+        )
+
+    def test_no_network_tool_survives_into_the_default_selection(self):
+        """默认集合（非 live、非群聊）里不能再出现会真联网的用例。"""
+        offenders = [
+            (case.id, tool)
+            for case in select_cases(EVAL_CASES)
+            for tool in _unfaulted_network_tools(case)
+        ]
+
+        assert not offenders, f"默认运行会联网：{offenders}"
+
+    def test_the_guard_catches_the_t03_and_t04_mistakes(self):
+        """回归证明：守卫对 T03/T04 的旧状态（live=False + 直接联网）会红。
+
+        这是"以后同类错误不会静默回到默认运行"的证据 —— 用它自己的判据去测它。
+        """
+        for tool in ("research", "fetch_url", "mcp__amap__geocode"):
+            case = EvalCase(id=f"TX-{tool}", query="q", description="d", expected_tools=[tool])
+
+            assert case.live is False
+            assert _offline_cases_running_network_tools([case]) == [(case.id, tool)]
+
+        # 注入故障的恢复用例走假 handler、零网络，标 live=False 是正确的
+        faulted = EvalCase(
+            id="TX-faulted",
+            query="q",
+            description="d",
+            expected_tools=["fetch_url"],
+            fail_tools=["fetch_url"],
+        )
+        assert _offline_cases_running_network_tools([faulted]) == []
+
+    def test_the_network_guard_covers_the_runtime_set(self):
+        """守卫的联网口径不能比运行时窄：`core.tool_runtime` 认的联网工具都要被它认。"""
+        from core.tool_runtime import _NETWORK_TOOLS
+
+        runtime_tools = set(_NETWORK_TOOLS)
+        # 运行时用 `mcp__` 当"所有 MCP 工具"的前缀哨兵，这里展开成同名前缀
+        runtime_names = {name for name in runtime_tools if not name.endswith("__")}
+        runtime_prefixes = tuple(name for name in runtime_tools if name.endswith("__"))
+
+        assert runtime_names <= NETWORK_TOOL_NAMES
+        assert runtime_prefixes <= NETWORK_TOOL_PREFIXES
+        for name in runtime_names:
+            assert _is_network_tool(name), name
+        for prefix in runtime_prefixes:
+            assert _is_network_tool(f"{prefix}anything"), prefix
 
 
 class TestKeywordMigration:
