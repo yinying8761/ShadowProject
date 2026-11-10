@@ -82,7 +82,7 @@
   3. `--group` 免费层起步即挂起、零输出（33 条里不含群聊不变量用例）。
   4. 标 `live=False` 的用例实际在联网（违反 ADR-0012 的边界，有运行时证据）。
   5. **pydantic 2.14.1 × mcp 1.8.1 导入故障**：`mcp` 内部还在 `from pydantic._internal._typing_extra import eval_type_backport`，该符号自 pydantic 2.12 被移除 → `test_mcp_manager.py` / `test_mcp_amap_live.py` 在**收集阶段**就失败，故 §1 的测试数不含它们。**应用仍能启动**（`mcp` 在 `mcp_manager.py` 是函数内懒加载），只有真连 MCP 时才抛错。两条常规修法都被 ADR-0010 的死结堵住（`pydantic<2.12` 无 cp314 wheel；升级 `mcp` 会撞 `starlette<0.47`）。**用户已决定暂不修。**
-  6. README / `.env.example` 部分描述过期，等大任务结束后统一改。
+  6. ~~README / `.env.example` 部分描述过期~~（**已改**）：`.env.example` 早已跟上 ADR-0011（原生视觉 + `SEARCH_PREFER_NATIVE`），只有 README 过期。中英两份 README 已按现状重写——统计改为 93 模块 / 14,257 行后端、5,982 行前端、**948 passed**、12 ADR、31 spec、39 条评测用例；"开发状态"里四行「计划」改为已完成；「三项改造」改成「视觉与搜索」的实现说明；新增「评测」一节（行为类 / 不变量类 / `needs_review` / 基线 diff）；删掉快速开始里那段随改造一起删除的 MCP vision 适配说明。⚠️ README 里"两个 MCP 测试模块无法收集"是如实写的（怪 #5 未修），不是笔误。
   7. **（候选，未决）** 基础设施失败应与行为失败分开记账（`not_run` / `infra_error`，不进通过率分母）——审查者的建议，会扩大判定语义，需单独立项。
   8. **【已实测确认】视觉能力表对 `deepseek-v4-pro` 撒谎**：实际模型是 `deepseek-v4-pro`（`data/config.yaml` 覆盖 `.env` 里的 flash——**配置双来源、后者静默生效，改 `.env` 可能无效**）。带合法 `image_url`、预算给足（1500）的请求明确回「我无法查看这张图片」，而预设 `supports_vision: True` 仍会发图。→ `None` 救不了（视觉规则是"未知也试一次"），只有按模型显式 `False`，或给 ADR-0011 补**模型级默认表**。⚠️ 早期用 `max_tokens=60` 得到的空串是**推理 token 吃光输出**的假象，不能当"看不见图"的证据。
   9. **`25/33` 不能当质量基线**：至少 2 条假红（R02/R05），且任何 `answer` 断言都可能同病（与 S03 的 host 精确匹配**同源**）。断言语义化落地前，它只能当"问题清单"，不能当分数。

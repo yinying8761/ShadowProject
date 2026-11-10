@@ -4,7 +4,7 @@
 
 A desktop AI companion. It lives on your desktop, reads and writes files, searches the web, looks at your screen, and remembers what you've told it across sessions. Multiple characters, group chat.
 
-Backend: 83 Python modules, 11,720 lines (excluding tests). Frontend: Electron + React + TypeScript. 625 pytest cases (619 passing + 6 opt-in live cases), 11 ADRs, 30 specs. The case count moves with development; this is the order of magnitude, not a live figure.
+Backend: 93 Python modules, 14,257 lines (excluding tests). Frontend: Electron + React + TypeScript, 5,982 lines. 948 pytest cases, 12 ADRs, 31 specs, 39 eval cases. These move with development; this is the order of magnitude, not a live figure.
 
 ## Design notes
 
@@ -25,6 +25,13 @@ Tool execution always goes through schema validation, circuit breaking, backoff 
 - Arguments that fail JSON Schema validation don't raise. They return an explanation so the model can fix the arguments and retry by itself.
 - Retries are classified by error: 429 / 5xx are retryable, argument errors are not; whether a retry replays the operation depends on whether it's idempotent.
 - The breaker is a CLOSED / OPEN / HALF_OPEN state machine. After repeated failures the tool gets isolated, and both the degraded and the recovery paths have tests.
+- A tool is dropped from the round's tool list after two consecutive failures, and a substitute tool only gets one chance. Once everything is dropped, the model is asked to wrap up honestly instead of spinning. A user rejection doesn't count toward the failure budget but disables the tool all the same — a rejection means the model should change approach, not retry.
+
+### Model capability table
+
+Vision and native search aren't available on every model, so capabilities live in one model-level table ([ADR-0011](docs/adr/0011-provider-capability-matrix.md)): `supports_vision` / `image_api` / `native_search` / `search_api`. Onboarding a new model means filling in those two fields; behavioural differences are confined to configuration.
+
+Unknown capabilities are deliberately asymmetric. An unknown `image_api` must raise: the user explicitly asked to look at the screen, and silently dropping the image isn't acceptable. An unknown `search_api` degrades to local scraping instead: search is an optional addition, and a missing config entry shouldn't interrupt the conversation.
 
 ### Concurrent group chat
 
@@ -40,13 +47,33 @@ Several characters think at the same time. The design is in [ADR-0009](docs/adr/
 
 Token usage is metered by session, character and model; every tool call is traced into a table. Logs go through a custom hub: stdout is teed into an in-memory ring buffer, a rotating file, and a live push to the frontend ([ADR-0002](docs/adr/0002-stdout-log-hub.md)).
 
+## Vision and search
+
+**Vision**: a screenshot goes out as an image content block with the current request, instead of being turned into a paragraph of text first. The old path lost information, cost an extra call every time, and depended on vision models that have since been retired. If the main model can't see images, an expert `VISION_*` model can act as fallback; with neither configured, `see_screen` says plainly that it can't see this time rather than making screen content up.
+
+The rework also deleted a private adapter written for one specific MCP vision server, closing out [ADR-0010](docs/adr/0010-mcp-server-isolation.md). Spec: [`multimodal-vision(done)`](docs/specs/multimodal-vision(done).md).
+
+**Search**: provider-native search comes first, degrading to a local scraping chain (duckduckgo → bing_web → searxng → bing). The old path was scraping only, where anti-bot measures, blocked networks or a page redesign could take the whole capability down, and citations weren't reliable. The implementation branches on `search_api`, never on provider name. Spec: [`native-web-search(done)`](docs/specs/native-web-search(done).md).
+
+## Evaluation
+
+39 cases in two layers, run differently:
+
+- **Behavioural cases** run against a real model, asserting which tools were chosen, their arguments, and information that must appear in the answer. Coverage: 15 single-turn, 6 memory, 7 failure recovery, 2 vision, 3 search.
+- **Invariant cases** cover non-deterministic systems like group chat: driven by a scripted fake model, asserting eight properties (thinking rounds per member, total message count, `<silent>` not persisted, monotonic sequence, and so on). They finish in seconds and cost no tokens.
+
+Assertions only constrain what's decidable. Cases that can't be decided are marked `needs_review` and handed to a human, excluded from the pass rate — padding the denominator with undecidable cases makes the number look better and mean less.
+
+The baseline records each case's result and token cost, versioned, and a rerun produces a diff. Otherwise a prompt change shows only "73% today" with no idea whether that's better or worse. See [ADR-0012](docs/adr/0012-eval-layering.md).
+
 ## Features
 
 - **Long-term memory**: SQLite FTS5 full-text index plus vector embeddings, two-way recall fused with RRF. Memories are extracted automatically, deduplicated, decayed over time and isolated per character.
-- **Multiple providers**: Anthropic's native SDK and OpenAI-compatible endpoints sit behind one streaming interface; per-provider message shape differences are confined to `MessageFormatter`.
+- **Multiple providers**: Anthropic's native SDK, OpenAI-compatible endpoints, and Gemini's native search and image APIs, all behind one streaming interface; format differences are confined to the per-provider formatters.
 - **Voice**: GPT-SoVITS zero-shot voice cloning, a separate voice per character.
 - **Proactive companion**: idle detection plus screen fingerprint dedup (dHash, Hamming ≤ 10 counts as the same screen), combined with time, weather and location to start a conversation.
 - **Screen awareness**: screenshots are never written to disk or to the database, and only exist in memory for that one request.
+- **Group chat**: several characters think at once, wake-ups are event-driven, and speaking order under concurrency is guaranteed by a per-session monotonic sequence number.
 
 ## Screenshots
 
@@ -54,48 +81,22 @@ Token usage is metered by session, character and model; every tool call is trace
 |:---:|:---:|:---:|
 | ![Token usage](docs/screenshots/usage.png) | ![Model configuration](docs/screenshots/model-config.png) | ![Proactive companion](docs/screenshots/proactive.png) |
 
-## Status
-
-| Capability | Status | Notes |
-|---|---|---|
-| Tool loop and approval gate | Done | 10 built-in tools + MCP, up to 5 chained rounds |
-| Reliability pipeline | Done | validation, breaker, retry, timeout; the model corrects bad arguments itself |
-| Concurrent group chat | Done | event wake-ups, two caps, monotonic sequence |
-| Memory retrieval | Done | FTS5 plus vector recall, RRF fusion |
-| Observability | Done | token metering, tool tracing, log hub |
-| Eval v1 | Done | 15 single-turn cases, automatic scoring |
-| Voice cloning, proactive companion, screen awareness | Done | GPT-SoVITS, dHash dedup, in-memory screenshots |
-| Model capability table | Planned | [ADR-0011](docs/adr/0011-provider-capability-matrix.md), split into tickets #61–#69; vision and search not wired up yet |
-| Main model reads the screen directly | Planned | [spec](docs/specs/multimodal-vision.md) |
-| Native web search | Planned | [spec](docs/specs/native-web-search.md) |
-| Eval v2 | Planned | [spec](docs/specs/agent-eval-v2.md) |
-
-### Three changes in progress
-
-**Vision.** Today a screenshot is handed to a separate vision model that writes a paragraph, and that paragraph is pasted into the conversation. The main model never sees the image: information is lost, every screenshot costs an extra call, and the vision models behind it have been retired. After the change the image goes out as a content block with the current request and the main model looks at it directly; one private adapter written for a single MCP server gets deleted along the way, closing out [ADR-0010](docs/adr/0010-mcp-server-isolation.md).
-
-**Search.** Results currently come from scraping HTML ourselves (ddgs metasearch / Bing result-page scraping / searxng / Azure Bing). Anti-scraping, blocked networks and page redesigns can take the whole capability down, and citations aren't reliable. Provider-native search moves to the first position in the chain, with local scraping kept entirely as fallback. Implementation branches on `search_api`, not on provider name.
-
-**Eval.** Behavioural cases (single-turn, multi-turn, failure recovery, vision, search) are compared against expectations with a real model. Non-deterministic systems like group chat switch to invariant assertions covering eight properties (rounds per member, total messages, `<silent>` not persisted, monotonic sequence, and so on), driven by a scripted fake model, so they finish in seconds and cost no tokens. Plus baseline diffing and a cost column, otherwise after a prompt change all you see is "73% today" with no idea whether that's better or worse.
-
-All three share one model-level capability table (`supports_vision` / `image_api` / `native_search` / `search_api`). There's one deliberate asymmetry: an unknown `image_api` must raise, because the user explicitly asked to look at the screen and silently dropping the image isn't acceptable; an unknown `search_api` degrades instead, because search is an optional addition and a missing config entry shouldn't interrupt the conversation.
-
 ## How it's built
 
-- Every non-trivial decision gets an ADR (11 so far), recording the alternatives, the trade-off and the cost.
-- New features start as a spec and get split into tickets (30 specs plus `docs/Tickets/`); files get a `(done)` suffix once implemented.
-- Important behaviour is pinned by tests (625 cases today, 6 of them opt-in live cases). Invariant tests first construct a violating scenario to confirm the assertion can actually fail. The count tracks development and is not kept exactly in sync.
+- Every non-trivial decision gets an ADR (12 so far), recording the alternatives, the trade-off and the cost.
+- New features start as a spec and get split into tickets (31 specs, 30 implemented and marked `(done)`; breakdowns live in `docs/Tickets/`).
+- Important behaviour is pinned by tests: 948 cases today.
+- Invariant tests first construct a violating scenario to confirm the assertion can actually fail, so they never assert something that's true by construction.
 - Larger changes get a dedicated review written around them, under `docs/analysis/`; the three reviews from the group-chat concurrency round total about 90KB.
-- The project is built with AI assistance (Claude Code / Codex / DeepSeek Harness); architecture, interface contracts, test design and code review are mine. A large share of those ~16k lines of backend and frontend source was AI-generated — the ADRs, specs and tests above are the constraints that keep it stable.
+- The project is built with AI assistance (Claude Code / Codex / DeepSeek Harness); architecture, interface contracts, test design and code review are mine. A large share of those ~20k lines of source was AI-generated — the ADRs, specs and tests above are the constraints that keep it stable.
 
 ## Limitations
 
 - Windows only. Screen capture uses `mss`, window exclusion relies on `WDA_EXCLUDEFROMCAPTURE`, and the floating window is Electron main-process logic.
 - Single machine, single user, no accounts. Approval is a runtime constraint, not a permission system.
 - Frontend components have a higher share of AI involvement than the backend; I own the UI requirements, interface contracts and acceptance.
-- Vision and search are still on the old path, as described above.
-- The eval suite is 15 single-turn cases with narrow coverage, usually only re-run after a feature change.
-- No CI. Real-model evaluation is costly and non-deterministic; only invariant cases are a good fit for a pipeline.
+- Two MCP test modules currently fail to collect because of a `pydantic` / `mcp` version conflict; the other 948 cases pass.
+- No CI. Real-model evaluation is costly and non-deterministic, so only invariant cases are a good fit for a pipeline; a behavioural rerun is real spend, and day-to-day regression runs on the invariant layer.
 - Voice requires a local GPT-SoVITS deployment and doesn't work out of the box.
 
 ## Stack
@@ -118,12 +119,12 @@ All three share one model-level capability table (`supports_vision` / `image_api
 │   ├── tools/               # files, search, screen, memory, time
 │   ├── api/                 # REST + WebSocket routes (including tool_logs)
 │   ├── models/              # SQLAlchemy ORM
-│   └── eval/                # labelled test set + automatic scoring
+│   └── eval/                # labelled test set, automatic scoring, baseline diff
 ├── frontend/
 │   ├── electron/            # main process, preload, floating window
 │   └── src/                 # components / hooks / stores / services / i18n
 ├── docs/
-│   ├── adr/                 # architecture decision records (11)
+│   ├── adr/                 # architecture decision records (12)
 │   ├── specs/               # feature specs, `(done)` once implemented
 │   ├── analysis/            # focused technical reviews
 │   └── Tickets/             # requirement breakdown
@@ -164,8 +165,8 @@ cp .env.example .env
 | Key | Description |
 |---|---|
 | `LLM_*` | provider, model, base_url, api_key for the chat model |
-| `VISION_*` | fallback vision model, used when the main model can't see images |
-| `SEARCH_BACKEND` | local search backend: duckduckgo / searxng / bing / bing_web (duckduckgo by default) |
+| `VISION_*` | expert vision model, a fallback when the main model can't see images |
+| `SEARCH_BACKEND` | preferred backend for the local scraping chain: duckduckgo / bing_web / searxng / bing (duckduckgo by default) |
 | `AMAP_API_KEY` | Amap key (location + weather, free) |
 | `TTS_REF_BASE` | GPT-SoVITS install path |
 | `MAX_CONTEXT_TOKENS` | context window; 16000 in `.env.example`, 8000 as the code default |
@@ -192,15 +193,15 @@ To clone a voice for a character: prepare a clean 3-10 second single-speaker cli
 
 A neutral, gentle reference clip works best, ideally 5-8 seconds. A Japanese voice sample can also clone into Chinese speech (set `prompt_lang` to `ja`).
 
-### Fallback vision for screen capture
+### Screen understanding
 
-Copy `mcp_servers.example.json` to `data/mcp_servers.json` and set `VISION_API_KEY` in the `vision` entry to use a free GLM vision model (`VISION_BASE_URL` and `VISION_MODEL` already point at Zhipu's OpenAI-compatible endpoint and `glm-4.6v-flash`). The free tier answers 429 (`code 1305`, over capacity) fairly often; that's upstream rate limiting worth a retry, not a misconfiguration. This path contains an adapter written for the parameter names of one specific MCP server, and will be removed once the vision rework lands.
+If the main model supports vision, nothing needs configuring: the screenshot from "look at my screen" goes straight into that turn's request. If it can't see images, fill in a set of `VISION_*` values (provider / model / base_url / api_key) in `.env` to use an expert vision model as fallback. With neither configured, `see_screen` says plainly that it can't see this time.
 
 ## Docs
 
 | Directory | Contents |
 |---|---|
-| [`docs/adr/`](docs/adr) | architecture decision records; start with [0009 group chat concurrency](docs/adr/0009-concurrent-group-turns.md) and [0011 capability table](docs/adr/0011-provider-capability-matrix.md) |
+| [`docs/adr/`](docs/adr) | architecture decision records; start with [0009 group chat concurrency](docs/adr/0009-concurrent-group-turns.md), [0011 capability table](docs/adr/0011-provider-capability-matrix.md) and [0012 eval layering](docs/adr/0012-eval-layering.md) |
 | [`docs/specs/`](docs/specs) | feature specs; a `(done)` suffix means implemented |
 | [`docs/analysis/`](docs/analysis) | focused reviews, including the three group-chat concurrency reviews and an architecture retrospective |
 | [`docs/Tickets/`](docs/Tickets) | requirement breakdown and progress |
